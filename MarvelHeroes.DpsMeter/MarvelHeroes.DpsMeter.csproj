@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>MarvelHeroes.DpsMeter</RootNamespace>
+    <AssemblyName>MarvelHeroes.DpsMeter</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!--
+      Framework-dependent deployment (per user request).  Distribution is a small ~2 MB
+      executable plus the shared NetworkSniffer / Gazillion DLLs; end-user must have
+      the .NET 8 Desktop Runtime installed.  To produce a self-contained single-file
+      build later, publish with the win-x64 RID, the self-contained flag, and the
+      single-file MSBuild property.  The PropertyGroup above intentionally does NOT pin
+      RuntimeIdentifier so the project stays portable between deployment modes.
+    -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      The packet sniffer (PCAP capture, mux demux, protobuf decode, GazillionArchiveReader)
+      lives next to us in this repo.  Vendored from the MarvelHeroesComporator project during
+      the standalone-repo extraction; if the upstream sniffer ever gains useful improvements
+      (additional NetMessage parsers, performance fixes), pull them in by syncing the four
+      files under ..\NetworkSniffer\ — there are no cross-cutting comporator dependencies.
+    -->
+    <ProjectReference Include="..\NetworkSniffer\MarvelHeroesComporator.NetworkSniffer.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Hero costume portraits used by the leaderboard rows.  Embedded as WPF Resources so
+      they're resolvable via pack://application:,,,/Images/costumes/* at runtime — no file
+      side-by-side deployment needed.  Same convention the comporator project uses.
+    -->
+    <Resource Include="Images\costumes\*.png" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,26 @@
+# ── Build output ─────────────────────────────────────────────────────────────
+bin/
+obj/
+out/
+publish/
+*.user
+
+# ── IDE state (no preferences should bleed into the repo) ────────────────────
+.vs/
+.vscode/
+.idea/
+*.suo
+
+# ── DPS-meter runtime state (intentionally NOT shipped) ──────────────────────
+# These files are written under %LocalAppData%\MarvelHeroesComporator\ at runtime
+# and are per-user; if a contributor accidentally drags one into the repo root
+# while debugging, this rule keeps it out of commits.
+dps-overlay.json
+dps-meter.log
+dps-max-hits.json
+dps-player-index.json
+
+# ── OS noise ─────────────────────────────────────────────────────────────────
+Thumbs.db
+.DS_Store
+desktop.ini

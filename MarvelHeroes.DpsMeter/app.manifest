@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity version="1.0.0.0" name="MarvelHeroes.DpsMeter"/>
+
+  <!--
+    DPI: PerMonitorV2 so the overlay stays crisp across multi-monitor setups with mixed
+    DPIs (4K primary + 1080p secondary is the typical streamer setup, where the overlay
+    is parked on the secondary display).
+  -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/PM</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+    </windowsSettings>
+  </application>
+
+  <!--
+    Compatibility list explicitly declared so Windows knows we've been tested on 10+ and
+    won't apply legacy compatibility shims to our window styles / message hooks.
+  -->
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}"/>
+    </application>
+  </compatibility>
+
+  <!--
+    asInvoker = no UAC prompt, runs at the user's normal token.  Sniffing localhost loopback
+    via Npcap doesn't require admin (Npcap installs a separate "loopback" driver).  If a
+    user reports "no packets captured" it's almost always Npcap not installed rather than
+    a privilege issue, so we deliberately don't bait them with a UAC popup that wouldn't
+    fix anything.
+  -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
+    <security>
+      <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+</assembly>

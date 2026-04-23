@@ -1,0 +1,38 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <Platforms>x64</Platforms>
+  </PropertyGroup>
+  
+  <PropertyGroup>
+    <AssemblyVersion>1.52.0.1700</AssemblyVersion>
+    <FileVersion>$(AssemblyVersion)</FileVersion>
+    <InformationalVersion>$(AssemblyVersion)</InformationalVersion>
+  </PropertyGroup>
+  
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <NoWarn>1701;1702;CS8981</NoWarn>
+  </PropertyGroup>
+  
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <NoWarn>1701;1702;CS8981</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Vendored from EmuSource\dep\protobuf-csharp\ during the standalone-repo extraction.
+      The DLL is the legacy Google.ProtocolBuffers C# port (proto2-era, pre-3.x); MHServerEmu
+      and the Marvel Heroes client both still speak this wire format, so we ship the binary
+      verbatim rather than try to retarget onto modern Google.Protobuf (which is incompatible
+      at the descriptor level).  License lives next to it in lib\Google.ProtocolBuffers.License.
+    -->
+    <Reference Include="Google.ProtocolBuffers">
+      <HintPath>..\lib\Google.ProtocolBuffers.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

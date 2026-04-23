@@ -1,0 +1,177 @@
+<Window x:Class="MarvelHeroes.DpsMeter.DpsOverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="DPS"
+        Width="240"
+        Height="310"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        Topmost="True"
+        Focusable="False"
+        WindowStartupLocation="Manual">
+
+    <!--
+        Inlined the single FontFamily resource that the overlay needs (was previously in the
+        comporator's Styles/MainStyles.xaml dictionary).  Standalone build keeps the resource
+        graph local — no merged-dictionary file needed for one font reference.
+    -->
+    <Window.Resources>
+        <FontFamily x:Key="MarvelFontSecondary">Segoe UI Semibold</FontFamily>
+    </Window.Resources>
+
+    <Border x:Name="RootBorder"
+            Padding="20,12"
+            Background="#B2000000"
+            CornerRadius="10"
+            BorderBrush="#66FF6B00"
+            BorderThickness="1"
+            MouseLeftButtonDown="RootBorder_OnMouseLeftButtonDown"
+            Cursor="SizeAll">
+        <!--
+            Right-click menu for runtime toggles. The "Boss DPS only" toggle filters the
+            scoring window to enemies the game data classifies as Boss/MiniBoss/GroupBoss.
+            "Exit" is the only way out of this borderless app — no taskbar icon, no close
+            button, so the menu is the discoverable shutdown path.
+        -->
+        <Border.ContextMenu>
+            <ContextMenu x:Name="OverlayMenu">
+                <MenuItem x:Name="BossOnlyMenuItem"
+                          Header="Boss DPS only"
+                          IsCheckable="True"
+                          Click="BossOnlyMenuItem_OnClick"/>
+                <Separator/>
+                <MenuItem x:Name="ExitMenuItem"
+                          Header="Exit"
+                          Click="ExitMenuItem_OnClick"/>
+            </ContextMenu>
+        </Border.ContextMenu>
+        <Border.Effect>
+            <DropShadowEffect BlurRadius="20" ShadowDepth="0" Color="#FF000000" Opacity="0.85"/>
+        </Border.Effect>
+        <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
+            <TextBlock x:Name="HeroTitleText"
+                       Text="DPS"
+                       FontFamily="{StaticResource MarvelFontSecondary}"
+                       FontSize="14"
+                       Foreground="#99FFFFFF"
+                       HorizontalAlignment="Center"
+                       Margin="0,0,0,2"/>
+            <TextBlock x:Name="DpsText"
+                       Text="—"
+                       FontFamily="{StaticResource MarvelFontSecondary}"
+                       FontSize="38"
+                       FontWeight="Bold"
+                       Foreground="#FFFFB347"
+                       HorizontalAlignment="Center"
+                       LineHeight="40"
+                       LineStackingStrategy="BlockLineHeight">
+                <TextBlock.Effect>
+                    <DropShadowEffect BlurRadius="10" ShadowDepth="0" Color="#FF000000" Opacity="0.9"/>
+                </TextBlock.Effect>
+            </TextBlock>
+            <TextBlock x:Name="MaxHitText"
+                       Text=""
+                       FontFamily="{StaticResource MarvelFontSecondary}"
+                       FontSize="13"
+                       FontWeight="SemiBold"
+                       Foreground="#FFFFE0A8"
+                       HorizontalAlignment="Center"
+                       Margin="0,4,0,0"/>
+            <TextBlock x:Name="DetailText"
+                       Text=""
+                       FontFamily="{StaticResource MarvelFontSecondary}"
+                       FontSize="11"
+                       Foreground="#80FFFFFF"
+                       HorizontalAlignment="Center"
+                       Margin="0,2,0,0"/>
+
+            <!--
+                Top-5 heroes leaderboard (AOI). Rows are always rendered (fixed height per row)
+                so the overlay's total size never jumps when the list grows/shrinks; empty slots
+                show a single em-dash. Highlighting of "you" happens via Foreground swap in
+                code-behind (see DpsOverlayWindow.UpdateDps).
+            -->
+            <Border Margin="0,8,0,4" BorderBrush="#33FF6B00" BorderThickness="0,0,0,1"/>
+            <!--
+                Each leaderboard row is a WoW-Details-style horizontal bar: a left-anchored
+                coloured fill whose width scales with the row's share of AOI damage, with the
+                costume portrait + text overlaid on top.  The Grid is FIXED at the inner width
+                of the overlay (content area = Window.Width − Border.Padding*2 = 240 − 40 = 200)
+                so percentages map to a stable pixel range regardless of the current row text
+                length — the bar's right edge directly encodes "how dominant is this hero".
+
+                The fill Rectangle lives below (z-order first child); on top, a 3-column grid
+                (portrait | name with ellipsis | right-aligned percent).  Width of the bar is
+                assigned in RenderTopHeroes from the percent value.
+            -->
+            <Grid Width="200" Height="28" Margin="0,4,0,0" HorizontalAlignment="Left">
+                <Rectangle x:Name="Top1Bar" HorizontalAlignment="Left" Width="0" RadiusX="3" RadiusY="3" Fill="#66FF6B00"/>
+                <Grid VerticalAlignment="Center" Margin="0,0,4,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto" MinWidth="42"/>
+                    </Grid.ColumnDefinitions>
+                    <Image x:Name="Top1Image" Grid.Column="0" Width="28" Height="28" Stretch="UniformToFill" SnapsToDevicePixels="True" Margin="0,0,8,0"/>
+                    <TextBlock x:Name="Top1Text" Grid.Column="1" Text="" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" HorizontalAlignment="Left" Margin="0,0,6,0" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="14" Foreground="#CCFFFFFF"/>
+                    <TextBlock x:Name="Top1Pct" Grid.Column="2" Text="" TextAlignment="Right" HorizontalAlignment="Right" VerticalAlignment="Center" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="14" Foreground="#CCFFFFFF"/>
+                </Grid>
+            </Grid>
+            <Grid Width="200" Height="28" Margin="0,3,0,0" HorizontalAlignment="Left">
+                <Rectangle x:Name="Top2Bar" HorizontalAlignment="Left" Width="0" RadiusX="3" RadiusY="3" Fill="#66FF6B00"/>
+                <Grid VerticalAlignment="Center" Margin="0,0,4,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto" MinWidth="42"/>
+                    </Grid.ColumnDefinitions>
+                    <Image x:Name="Top2Image" Grid.Column="0" Width="28" Height="28" Stretch="UniformToFill" SnapsToDevicePixels="True" Margin="0,0,8,0"/>
+                    <TextBlock x:Name="Top2Text" Grid.Column="1" Text="" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" HorizontalAlignment="Left" Margin="0,0,6,0" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="14" Foreground="#CCFFFFFF"/>
+                    <TextBlock x:Name="Top2Pct" Grid.Column="2" Text="" TextAlignment="Right" HorizontalAlignment="Right" VerticalAlignment="Center" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="14" Foreground="#CCFFFFFF"/>
+                </Grid>
+            </Grid>
+            <Grid Width="200" Height="28" Margin="0,3,0,0" HorizontalAlignment="Left">
+                <Rectangle x:Name="Top3Bar" HorizontalAlignment="Left" Width="0" RadiusX="3" RadiusY="3" Fill="#66FF6B00"/>
+                <Grid VerticalAlignment="Center" Margin="0,0,4,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto" MinWidth="42"/>
+                    </Grid.ColumnDefinitions>
+                    <Image x:Name="Top3Image" Grid.Column="0" Width="28" Height="28" Stretch="UniformToFill" SnapsToDevicePixels="True" Margin="0,0,8,0"/>
+                    <TextBlock x:Name="Top3Text" Grid.Column="1" Text="" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" HorizontalAlignment="Left" Margin="0,0,6,0" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="14" Foreground="#CCFFFFFF"/>
+                    <TextBlock x:Name="Top3Pct" Grid.Column="2" Text="" TextAlignment="Right" HorizontalAlignment="Right" VerticalAlignment="Center" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="14" Foreground="#CCFFFFFF"/>
+                </Grid>
+            </Grid>
+            <Grid Width="200" Height="28" Margin="0,3,0,0" HorizontalAlignment="Left">
+                <Rectangle x:Name="Top4Bar" HorizontalAlignment="Left" Width="0" RadiusX="3" RadiusY="3" Fill="#66FF6B00"/>
+                <Grid VerticalAlignment="Center" Margin="0,0,4,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto" MinWidth="42"/>
+                    </Grid.ColumnDefinitions>
+                    <Image x:Name="Top4Image" Grid.Column="0" Width="28" Height="28" Stretch="UniformToFill" SnapsToDevicePixels="True" Margin="0,0,8,0"/>
+                    <TextBlock x:Name="Top4Text" Grid.Column="1" Text="" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" HorizontalAlignment="Left" Margin="0,0,6,0" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="14" Foreground="#CCFFFFFF"/>
+                    <TextBlock x:Name="Top4Pct" Grid.Column="2" Text="" TextAlignment="Right" HorizontalAlignment="Right" VerticalAlignment="Center" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="14" Foreground="#CCFFFFFF"/>
+                </Grid>
+            </Grid>
+            <Grid Width="200" Height="28" Margin="0,3,0,0" HorizontalAlignment="Left">
+                <Rectangle x:Name="Top5Bar" HorizontalAlignment="Left" Width="0" RadiusX="3" RadiusY="3" Fill="#66FF6B00"/>
+                <Grid VerticalAlignment="Center" Margin="0,0,4,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto" MinWidth="42"/>
+                    </Grid.ColumnDefinitions>
+                    <Image x:Name="Top5Image" Grid.Column="0" Width="28" Height="28" Stretch="UniformToFill" SnapsToDevicePixels="True" Margin="0,0,8,0"/>
+                    <TextBlock x:Name="Top5Text" Grid.Column="1" Text="" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" HorizontalAlignment="Left" Margin="0,0,6,0" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="14" Foreground="#CCFFFFFF"/>
+                    <TextBlock x:Name="Top5Pct" Grid.Column="2" Text="" TextAlignment="Right" HorizontalAlignment="Right" VerticalAlignment="Center" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="14" Foreground="#CCFFFFFF"/>
+                </Grid>
+            </Grid>
+        </StackPanel>
+    </Border>
+</Window>

@@ -1,0 +1,20 @@
+<Application x:Class="MarvelHeroes.DpsMeter.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             ShutdownMode="OnExplicitShutdown"
+             Startup="OnStartup"
+             Exit="OnExit">
+    <!--
+        ShutdownMode=OnExplicitShutdown  →  closing the overlay window must NOT terminate the
+        process.  We need the WPF dispatcher alive across the entire session so the sniffer
+        capture thread can keep marshalling DamageDealt events to UI.  The only legitimate
+        shutdown trigger is the right-click menu's "Exit" item, which calls
+        Application.Shutdown() explicitly.
+
+        Startup="OnStartup" / Exit="OnExit" — code-behind hooks where we boot the network
+        sniffer + presenter and do a clean teardown respectively.  Doing this in App rather
+        than from inside the window's constructor keeps the window dumb and lets us Stop()
+        the presenter even if window initialisation throws halfway.
+    -->
+    <Application.Resources/>
+</Application>
