@@ -1593,6 +1593,33 @@ public sealed class DpsMeter : IDisposable
                 scoringOwner = petChainRoot;
             }
 
+            // Minions the wire fully credits to themselves (wireUlt==wirePow or ult omitted) never
+            // hit peer-pet fold. If the power maps to hero H in HeroPowers and exactly ONE
+            // player-bound avatar in AOI has display name H (_dbIdByAvatarId — excludes summons),
+            // roll credit to that avatar (crogg's Ultron drones → crogg). Two human Ultron
+            // players → two dbId rows with "Ultron" → no match.
+            //
+            // Blade's own Ultron drones use the same power indices; their wire typically carries
+            // wireUlt=Blade while sole "Ultron" player is crogg — folding to a *peer* sole
+            // requires wireUlt==soleAvatar or wireUlt==0 so we never steal Bandit's drones onto
+            // crogg when wireUlt already points at the Blade avatar.
+            if (e.PowerPrototypeEnumIndex != 0
+                && HeroPowers.TryGetHero(e.PowerPrototypeEnumIndex, out string powerHeroForSole)
+                && TryGetSolePlayerHeroAvatarForPowerHeroLocked(powerHeroForSole, out ulong solePowerHeroAvatar)
+                && solePowerHeroAvatar != scoringOwner
+                && !IsForeignAccountAvatarLocked(scoringOwner)
+                && wirePow == scoringOwner
+                && (wireUlt == 0 || wireUlt == scoringOwner))
+            {
+                bool foldToPeer = _likelySelfOwnerId != 0 && solePowerHeroAvatar != _likelySelfOwnerId;
+                if (!foldToPeer
+                    || wireUlt == solePowerHeroAvatar
+                    || wireUlt == 0)
+                {
+                    scoringOwner = solePowerHeroAvatar;
+                }
+            }
+
             // ── 0. Hero resolution (runs FIRST, gates scoring) ──────────────────────────────
             // We resolve the event's ultimate-owner entity id to a hero display name BEFORE
             // updating the scoring window. The reason is correctness of self-owner election:
@@ -3263,6 +3290,32 @@ public sealed class DpsMeter : IDisposable
             else seenOther = true;
         }
         return seenSelf && !seenOther;
+    }
+
+    /// <summary>Among entities in <see cref="_heroNameByOwnerId"/> whose value equals
+    /// <paramref name="powerHero"/> (case-insensitive), returns true when exactly one key is
+    /// player-bound (<see cref="_dbIdByAvatarId"/> non-zero). Summons/minions are not in that
+    /// map, so crogg's avatar can be the sole "Ultron" row while his drones are not counted.
+    /// Caller MUST hold <c>_sync</c>.</summary>
+    private bool TryGetSolePlayerHeroAvatarForPowerHeroLocked(string powerHero, out ulong avatarEntityId)
+    {
+        avatarEntityId = 0;
+        if (string.IsNullOrEmpty(powerHero))
+            return false;
+        foreach (var kv in _heroNameByOwnerId)
+        {
+            if (!string.Equals(kv.Value, powerHero, StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (!_dbIdByAvatarId.TryGetValue(kv.Key, out ulong db) || db == 0)
+                continue;
+            if (avatarEntityId != 0 && avatarEntityId != kv.Key)
+            {
+                avatarEntityId = 0;
+                return false;
+            }
+            avatarEntityId = kv.Key;
+        }
+        return avatarEntityId != 0;
     }
 
     /// <summary>
