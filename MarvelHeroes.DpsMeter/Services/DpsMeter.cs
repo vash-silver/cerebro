@@ -1502,11 +1502,22 @@ public sealed class DpsMeter : IDisposable
                 scoringOwner = _likelySelfOwnerId;
 
             // ── Pet/summon chain-root tracking + fold (peer summons too, not just self) ─────
-            // The server gives us (rawOwner = X, wireUlt = Y) for every PowerResult.  When
-            // X is a summon/pet/proxy and Y is its parent, we want the summon's damage to
-            // credit the chain-root player avatar — so a peer Magik with three demons shows
-            // ONE row in the leaderboard ("Jiujitsu  4.7M") instead of four ("Jiujitsu 4.7M
-            // / #F8B0 366k / #F8B1 291k / #F8B2 247k").
+            // The server gives us (PowerOwnerEntityId = wirePow, UltimateOwnerEntityId =
+            // wireUlt) for every PowerResult.  When wirePow is a summon/pet/proxy and
+            // wireUlt is its parent, we want the summon's damage to credit the chain-root
+            // player avatar — so a peer Magik with three demons shows ONE row in the
+            // leaderboard ("Jiujitsu  4.7M") instead of four ("Jiujitsu 4.7M / #F8B0 366k
+            // / #F8B1 291k / #F8B2 247k").
+            //
+            // CRITICAL — DO NOT compare wireUlt against rawOwner:
+            //   Line ~1406 already collapsed `rawOwner = wireUlt != 0 ? wireUlt : wirePow`,
+            //   so when wireUlt is set (the only case we'd want to fold) `rawOwner == wireUlt`
+            //   ALWAYS.  An earlier version of this block had `if (wireUlt != 0 && wireUlt
+            //   != rawOwner)` which was therefore dead code — every "peer-pet fold" log line
+            //   was missing because the branch never ran (verified empirically: a 22 MB
+            //   dps-meter.log spanning multiple multi-Beast / multi-Magik fights had ZERO
+            //   `peer-pet fold` entries).  The correct comparison is wireUlt vs wirePow,
+            //   the actual sub-entity id BEFORE the collapse.
             //
             // Three-way edge classification, in priority order:
             //   1. wireUlt itself is a confirmed player avatar (in _heroNameByOwnerId or
@@ -1521,9 +1532,8 @@ public sealed class DpsMeter : IDisposable
             //      _likelySelfOwnerId.
             //
             // We DON'T fold:
-            //   • when wireUlt == 0 (no ult info; rawOwner already collapsed via the
-            //     `wireUlt != 0 ? wireUlt : wirePow` line ~1153).
-            //   • when wireUlt == rawOwner (self-credited power; not an indirection).
+            //   • when wireUlt == 0 (no ult info; rawOwner already collapsed to wirePow).
+            //   • when wireUlt == wirePow (self-credited power; not an indirection).
             //   • when neither rule above resolves a root (wireUlt is unknown — likely a
             //     mob spawner, system entity, or a peer whose avatar we haven't seen yet).
             //     The pet's damage stays under its own entity id; the player gate at the
@@ -1531,12 +1541,20 @@ public sealed class DpsMeter : IDisposable
             //     LATER becomes a known player, subsequent edges from this pet will fold
             //     correctly and the render-time coalesce pass migrates the stale row.
             //
+            // NOTE on multi-tier summon depth limit (Beast / Magik / Doctor Strange etc.):
+            //   even with this fold working correctly, the wire only carries proxy → pet —
+            //   never pet → player.  For a 2-tier chain (player → pet → proxy) we record
+            //   `proxy → pet` here but the pet itself never gets a `pet → player` edge from
+            //   any PowerResult.  That residual gap is closed at render time by
+            //   CoalesceAnonymousRowsByHeroName, which merges anonymous Beast/Magik rows
+            //   into the unique named row playing that hero on the current leaderboard.
+            //
             // The fold is a no-op for self-pets that already get redirected via the existing
             // Section-2 power-proto matchers (line ~1303 / ~1319 / ~1333) — both paths
             // produce scoringOwner = _likelySelfOwnerId.  Running this BEFORE those matchers
             // means peer-pet attribution never depends on power-proto coverage in
             // HeroPowers.Names, which is incomplete for custom-server hero kits.
-            if (wireUlt != 0 && wireUlt != rawOwner)
+            if (wireUlt != 0 && wirePow != 0 && wireUlt != wirePow)
             {
                 ulong effectiveUlt = wireUlt;
                 if (_localPlayerEntityId != 0 && wireUlt == _localPlayerEntityId && _likelySelfOwnerId != 0)
@@ -1548,17 +1566,21 @@ public sealed class DpsMeter : IDisposable
                 else if (_petRootOwnerByEntity.TryGetValue(effectiveUlt, out ulong cachedRoot))
                     root = cachedRoot;
 
-                if (root != 0 && root != rawOwner)
+                if (root != 0 && root != wirePow)
                 {
-                    if (!_petRootOwnerByEntity.TryGetValue(rawOwner, out ulong existingRoot) || existingRoot != root)
+                    if (!_petRootOwnerByEntity.TryGetValue(wirePow, out ulong existingRoot) || existingRoot != root)
                     {
-                        _petRootOwnerByEntity[rawOwner] = root;
-                        if (_loggedPeerPetFolds.Add(rawOwner))
-                            Diagnostic?.Invoke($"DpsMeter: peer-pet fold — pet/summon entity {rawOwner} → chain-root avatar {root} (wireUlt={wireUlt}). All future hits from this pet credit the avatar.");
+                        _petRootOwnerByEntity[wirePow] = root;
+                        if (_loggedPeerPetFolds.Add(wirePow))
+                            Diagnostic?.Invoke($"DpsMeter: peer-pet fold — pet/summon entity {wirePow} → chain-root avatar {root} (wireUlt={wireUlt}). All future hits from this pet credit the avatar.");
                     }
                 }
             }
 
+            // Apply the fold cache to scoringOwner.  Note rawOwner == wireUlt (post-collapse),
+            // so this hits when the wireUlt has an entry (multi-tier case).  For the proxy
+            // case (rawOwner already == wirePow because wireUlt was 0) the cache lookup is
+            // also relevant.
             if (_petRootOwnerByEntity.TryGetValue(rawOwner, out ulong petChainRoot)
                 && petChainRoot != 0
                 && petChainRoot != scoringOwner)
@@ -2642,6 +2664,13 @@ public sealed class DpsMeter : IDisposable
             // See CoalesceRowsByPlayerName for the full rationale (the "Rasmis ×4" bug).
             rows = CoalesceRowsByPlayerName(rows, totalEncounterDamage);
 
+            // Final fold: 2-tier-summon anon rows (player → pet → proxy chains where the
+            // pet → player edge never appears on the wire) get attributed to the unique
+            // named row playing the same hero.  See CoalesceAnonymousRowsByHeroName for
+            // the heuristic.  Must run BEFORE the #XXXX synthesis below or the pass
+            // never sees an empty PlayerName.
+            rows = CoalesceAnonymousRowsByHeroName(rows, totalEncounterDamage);
+
             rows.Sort((a, b) =>
             {
                 int c = b.Total60s.CompareTo(a.Total60s);
@@ -2751,6 +2780,13 @@ public sealed class DpsMeter : IDisposable
             // sorting + truncating so the max cap reflects unique players, not entity ids.
             // See CoalesceRowsByPlayerName for the full rationale (the "Rasmis ×4" bug).
             rows = CoalesceRowsByPlayerName(rows, totalHeroDamage);
+
+            // Final fold: 2-tier-summon anon rows (player → pet → proxy chains where the
+            // pet → player edge never appears on the wire) get attributed to the unique
+            // named row playing the same hero.  See CoalesceAnonymousRowsByHeroName for
+            // the heuristic.  Must run BEFORE the #XXXX synthesis below or the pass
+            // never sees an empty PlayerName.
+            rows = CoalesceAnonymousRowsByHeroName(rows, totalHeroDamage);
 
             // Largest total first; ties broken by name for stable UI ordering across ticks.
             rows.Sort((a, b) =>
@@ -2943,6 +2979,159 @@ public sealed class DpsMeter : IDisposable
                 indexByMergeKey[mergeKey] = coalesced.Count;
                 coalesced.Add(r);
             }
+        }
+
+        return anyMerged ? coalesced : rows;
+    }
+
+    /// <summary>Final-stage fold for anonymous summon rows that survived both
+    /// <see cref="CoalesceRowsByPetChainRoot"/> and <see cref="CoalesceRowsByPlayerName"/>.
+    ///
+    /// <para>The earlier two passes can only act on edges that exist in
+    /// <c>_petRootOwnerByEntity</c> or on rows that already share a resolved
+    /// <see cref="HeroShareEntry.PlayerName"/>.  But the wire only ever carries
+    /// proxy → pet via <c>UltimateOwnerEntityId</c> — never pet → player.  For 2-tier
+    /// summons (player → pet → proxy, e.g. Beast clones, Magik demons, Doctor Strange
+    /// astral copies) we record <c>proxy → pet</c> in <c>_petRootOwnerByEntity</c> but
+    /// the pet itself never gets a <c>pet → player</c> edge from any PowerResult, so it
+    /// stays an anonymous row with the pet's hero name set (because each summon entity
+    /// has its own EntityCreate that resolves to the parent hero's prototype) but with
+    /// an empty <c>PlayerName</c> (no dbId binding for a non-avatar entity).</para>
+    ///
+    /// <para>Render-time heuristic: when an anonymous row's <see cref="HeroShareEntry.Name"/>
+    /// matches EXACTLY ONE non-anonymous row's <c>Name</c> on the same leaderboard, the
+    /// only sensible attribution is "this anon is that named player's pet".  Two named
+    /// rows on the same hero would be ambiguous (we couldn't tell which one the pet
+    /// belongs to) — leave those alone.  Same hero, no named rows at all is also
+    /// passed through (we'd just be merging anons into anons; the user-visible
+    /// `#XXXX` count goes down by N-1 but nothing else improves and we lose per-summon
+    /// granularity for the rare debugging case).</para>
+    ///
+    /// <para>The pass MUST run AFTER the player-name pass (so the "exactly one named
+    /// row per hero" check is well-defined) and BEFORE the sort + truncate (so merged
+    /// totals get the correct rank when the leader changes).  It MUST also run BEFORE
+    /// the <c>#XXXX</c> tag synthesis at the bottom of <c>GetTopHeroes…</c> — once the
+    /// anon row has a synthesized tag its <c>PlayerName</c> is no longer empty, which
+    /// would prevent the merge.</para>
+    ///
+    /// <para>Identity tie-breaking when an anon merges into a named row:
+    /// <list type="bullet">
+    ///   <item><c>Name</c>: kept (already identical).</item>
+    ///   <item>Total / Percent: SUM of both rows' totals.</item>
+    ///   <item><c>PlayerName</c>: kept from the named row (entire point of the merge).</item>
+    ///   <item><c>OwnerId</c>: kept from the named row (the player avatar id, not the
+    ///         pet — keeps state-dump diagnostics correlatable across ticks).</item>
+    ///   <item><c>IsSelf</c>: OR'd; pet-of-self folds set IsSelf=true on the merged row
+    ///         even if the named row was a peer (defensive — should never happen
+    ///         because pet-of-self has its own scoring-time fold via
+    ///         _localPlayerEntityId / power-proto matchers, but covers the case
+    ///         where a custom-server hero ships before HeroPowers.cs is regenerated).</item>
+    /// </list></para>
+    ///
+    /// <para>One-shot diagnostic per (hero, anonOwnerId) pair so post-hoc log analysis
+    /// can grep <c>anon-by-hero fold</c> to see exactly which summon entities got
+    /// rescued by this pass and verify the heuristic isn't over-folding.</para></summary>
+    private List<HeroShareEntry> CoalesceAnonymousRowsByHeroName(List<HeroShareEntry> rows, long denominator)
+    {
+        if (rows.Count <= 1 || denominator <= 0)
+            return rows;
+
+        // Index: hero name → list of (rowIndex, hasName).  Two passes — first build the
+        // index, then walk anons looking for exactly-one named match.
+        var byHero = new Dictionary<string, (int namedIdx, int namedCount, int anonCount)>(rows.Count, StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < rows.Count; i++)
+        {
+            var r = rows[i];
+            if (string.IsNullOrEmpty(r.Name)) continue;
+            byHero.TryGetValue(r.Name, out var st);
+            if (!string.IsNullOrEmpty(r.PlayerName))
+            {
+                st.namedIdx = (st.namedCount == 0) ? i : st.namedIdx; // keep first named idx
+                st.namedCount++;
+            }
+            else
+            {
+                st.anonCount++;
+            }
+            byHero[r.Name] = st;
+        }
+
+        // Quick-out when no anon-into-named opportunity exists at all.
+        bool anyOpportunity = false;
+        foreach (var kv in byHero)
+        {
+            if (kv.Value.namedCount == 1 && kv.Value.anonCount > 0)
+            {
+                anyOpportunity = true;
+                break;
+            }
+        }
+        if (!anyOpportunity) return rows;
+
+        // Build the merged output.  Anons with exactly-one-named-target get folded into
+        // the target's slot; everything else passes through unchanged.
+        var coalesced = new List<HeroShareEntry>(rows.Count);
+        var addedNamedIdx = new Dictionary<int, int>(); // original index → coalesced index
+        bool anyMerged = false;
+
+        for (int i = 0; i < rows.Count; i++)
+        {
+            var r = rows[i];
+
+            // Anon row eligible for fold?
+            if (string.IsNullOrEmpty(r.PlayerName)
+                && !string.IsNullOrEmpty(r.Name)
+                && byHero.TryGetValue(r.Name, out var st)
+                && st.namedCount == 1)
+            {
+                // Make sure the named row is in the coalesced list — emit it on the spot
+                // if we haven't yet.  Then merge ourselves into it.
+                if (!addedNamedIdx.TryGetValue(st.namedIdx, out int targetIdx))
+                {
+                    targetIdx = coalesced.Count;
+                    coalesced.Add(rows[st.namedIdx]);
+                    addedNamedIdx[st.namedIdx] = targetIdx;
+                }
+
+                var existing = coalesced[targetIdx];
+                long sumTotal = existing.Total60s + r.Total60s;
+                coalesced[targetIdx] = new HeroShareEntry
+                {
+                    Name       = existing.Name,
+                    Total60s   = sumTotal,
+                    Percent    = sumTotal * 100.0 / denominator,
+                    IsSelf     = existing.IsSelf || r.IsSelf,
+                    PlayerName = existing.PlayerName,
+                    OwnerId    = existing.OwnerId,
+                };
+                anyMerged = true;
+                Diagnostic?.Invoke($"DpsMeter: anon-by-hero fold — anon owner={r.OwnerId} (hero='{r.Name}', total={r.Total60s}) → named row owner={existing.OwnerId} player='{existing.PlayerName}'");
+                continue;
+            }
+
+            // Named row that's the target of one or more anon merges?  Already added
+            // above as part of folding the first anon — skip the duplicate insertion.
+            if (!string.IsNullOrEmpty(r.PlayerName)
+                && !string.IsNullOrEmpty(r.Name)
+                && byHero.TryGetValue(r.Name, out var st2)
+                && st2.namedCount == 1
+                && st2.anonCount > 0
+                && st2.namedIdx == i)
+            {
+                if (addedNamedIdx.TryGetValue(i, out int existingIdx))
+                {
+                    // Already pre-added by an earlier anon fold — leave the merged value alone.
+                    continue;
+                }
+                // No anon has been folded yet (will happen later in the loop).  Add the row
+                // now and remember the slot so future anons fold into it.
+                addedNamedIdx[i] = coalesced.Count;
+                coalesced.Add(r);
+                continue;
+            }
+
+            // Default: pass through.
+            coalesced.Add(r);
         }
 
         return anyMerged ? coalesced : rows;
