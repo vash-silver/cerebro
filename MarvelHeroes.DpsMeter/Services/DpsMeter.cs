@@ -1645,8 +1645,15 @@ public sealed class DpsMeter : IDisposable
             // matches the hero we've already pinned on the real avatar — fold into the avatar so
             // the main window + 60s window stay coherent (runs after hero resolution so pinHero
             // may have been filled by a prior hit on the avatar itself).
+            //
+            // CRITICAL — duplicate-hero AOI (Apr 2026): every Blade shares the same power enums in
+            // HeroPowers. A *peer* Blade's hits also satisfy proxyHero==pinHero; without the
+            // foreign-account guard we'd credit their entire boss encounter onto the local pin
+            // (observed: self row "Blade" at 22M with Fight total matching only self while
+            // loonypath's Blade stayed at 1.6M — the missing ~20M was the peer folded away).
             if (_likelySelfOwnerId != 0
                 && scoringOwner != _likelySelfOwnerId
+                && !IsForeignAccountAvatarLocked(scoringOwner)
                 && e.PowerPrototypeEnumIndex != 0
                 && HeroPowers.TryGetHero(e.PowerPrototypeEnumIndex, out string proxyHero)
                 && _heroNameByOwnerId.TryGetValue(_likelySelfOwnerId, out string? pinHero)
@@ -1663,6 +1670,7 @@ public sealed class DpsMeter : IDisposable
             // different entity, roll credit up to the pinned local avatar and seed hero name.
             if (_likelySelfOwnerId != 0
                 && scoringOwner != _likelySelfOwnerId
+                && !IsForeignAccountAvatarLocked(scoringOwner)
                 && _localAvatarEntityIds.Count > 0
                 && _localAvatarEntityIds.Contains(_likelySelfOwnerId)
                 && !_localAvatarEntityIds.Contains(scoringOwner)
@@ -3201,6 +3209,22 @@ public sealed class DpsMeter : IDisposable
         }
 
         return anyMerged ? coalesced : rows;
+    }
+
+    /// <summary>Returns true when <paramref name="ownerEntityId"/> is bound (via
+    /// <see cref="OnEntityCreated"/>) to a non-zero account dbId that differs from
+    /// <see cref="_selfDbId"/>. Caller MUST hold <c>_sync</c>.</summary>
+    /// <remarks>When <c>_selfDbId == 0</c> (never captured to <c>dps-self.json</c> and no
+    /// container EntityCreate this session), this always returns false — the same-hero power
+    /// merge paths cannot disambiguate two Blades and may still mis-credit until self dbId
+    /// is known.</remarks>
+    private bool IsForeignAccountAvatarLocked(ulong ownerEntityId)
+    {
+        if (_selfDbId == 0)
+            return false;
+        return _dbIdByAvatarId.TryGetValue(ownerEntityId, out ulong db)
+            && db != 0
+            && db != _selfDbId;
     }
 
     /// <summary>
