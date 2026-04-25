@@ -352,6 +352,13 @@ public sealed class MhMissionSniffer : IDisposable
     /// <summary>TCP port the game uses for the frontend / mux channel (default 4306).</summary>
     public int Port { get; set; } = 4306;
 
+    /// <summary>
+    /// Optional extra TCP ports merged into the capture BPF as <c>tcp port P or tcp port Q</c>.
+    /// Use when the client opens a second socket (e.g. separate game-instance port). Loaded from
+    /// <see cref="DpsOverlaySettingsFile.AdditionalTcpPorts"/>.
+    /// </summary>
+    public int[]? AdditionalCapturePorts { get; set; }
+
     /// <summary>If set, only adapters whose name or description contains this substring are opened.</summary>
     public string? AdapterFilter { get; set; }
 
@@ -369,7 +376,7 @@ public sealed class MhMissionSniffer : IDisposable
 
     // Live counters — incremented from the capture thread, read freely from anywhere (long is atomic on x64,
     // and these are diagnostics-only so a torn read on x86 isn't a correctness issue).
-    /// <summary>TCP packets the BPF filter let through (i.e. <c>tcp port {Port}</c> matches).</summary>
+    /// <summary>TCP packets the BPF filter let through (primary <see cref="Port"/> plus any <see cref="AdditionalCapturePorts"/>).</summary>
     public long PacketsReceived;
     /// <summary>Mux frames successfully reassembled out of the TCP streams.</summary>
     public long MuxFramesParsed;
@@ -453,7 +460,7 @@ public sealed class MhMissionSniffer : IDisposable
 
         _reassembler = new TcpReassembler(OnMuxFrame);
 
-        string bpf = $"tcp port {Port}";
+        string bpf = DpsOverlaySettingsFile.BuildTcpPortBpf(Port, AdditionalCapturePorts);
         int opened = 0;
         foreach (var dev in devices)
         {
@@ -497,7 +504,7 @@ public sealed class MhMissionSniffer : IDisposable
 
         IsRunning = true;
         OpenedDeviceCount = opened;
-        Diagnostic?.Invoke($"MhMissionSniffer listening on {opened} device(s), tcp port {Port}.");
+        Diagnostic?.Invoke($"MhMissionSniffer listening on {opened} device(s), BPF: {bpf}");
         return true;
     }
 

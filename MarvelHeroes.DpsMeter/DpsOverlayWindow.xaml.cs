@@ -1,8 +1,7 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
-using System.Text.Json;
 using System.Windows;
+using MarvelHeroesComporator.NetworkSniffer;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
@@ -29,24 +28,24 @@ namespace MarvelHeroes.DpsMeter;
 /// </summary>
 public partial class DpsOverlayWindow : Window
 {
-    /// <summary>Path of the persistence file. Local-AppData keeps it per-user without roaming.</summary>
-    private static string SettingsPath { get; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "MarvelHeroesComporator", "dps-overlay.json");
+    /// <summary>Full disk snapshot (window + sniffer-related keys). Sniffer fields are not edited in UI — users set them in JSON; saves preserve them.</summary>
+    private readonly DpsOverlaySettingsFile _persistedSettings;
 
-    private sealed class PersistedPosition
-    {
-        public double Left { get; set; } = 40;   // sensible default: upper-left corner with a bit of inset
-        public double Top { get; set; } = 40;
-    }
+    /// <summary>Boss-only flag loaded from <c>dps-overlay.json</c> before the presenter wires <see cref="DpsMeter"/>.</summary>
+    public bool InitialBossOnlyPreference { get; }
 
     public DpsOverlayWindow()
     {
         InitializeComponent();
 
-        var p = LoadPosition();
-        Left = p.Left;
-        Top = p.Top;
+        _persistedSettings = DpsOverlaySettingsFile.Load();
+        Left = _persistedSettings.Left;
+        Top = _persistedSettings.Top;
+        InitialBossOnlyPreference = _persistedSettings.BossDpsOnly;
+        _bossOnlyMode = _persistedSettings.BossDpsOnly;
+        _suppressBossOnlyMenuEvents = true;
+        try { BossOnlyMenuItem.IsChecked = _persistedSettings.BossDpsOnly; }
+        finally { _suppressBossOnlyMenuEvents = false; }
 
         SourceInitialized += OnSourceInitialized;
         LocationChanged += OnLocationChanged;
@@ -59,51 +58,138 @@ public partial class DpsOverlayWindow : Window
     /// label like "Blade" / "Iron Man" sourced from either <see cref="HeroPrototypes.Names"/>
     /// (via EntityCreate) or <see cref="HeroPowers.Names"/> (via a power hit — fallback for when
     /// EntityCreate was missed).</param>
-    /// <param name="topHeroes">Up to 5 rows of nearby heroes sorted by 60s damage (descending),
-    /// each with <see cref="DpsMeterClass.HeroShareEntry.Percent"/> and <see cref="DpsMeterClass.HeroShareEntry.IsSelf"/>.
-    /// Pass <c>null</c> or an empty list to blank the leaderboard (used during region transitions).</param>
+    /// <param name="bossOnlyMode">Must match <see cref="DpsMeterClass.BossOnlyMode"/> — drives the
+    /// title prefix and keeps the context menu checkmark in sync every tick (single source of truth).</param>
+    /// <param name="totalDamage60s">ALWAYS the 60s sliding-window total for the local self owner.
+    /// Drives the big-number fallback (live 5s → 60s avg → "—") regardless of mode — that
+    /// behavior must stay invariant or the user perceives the meter as "broken / changed."</param>
+    /// <param name="topHeroes">Up to 5 rows of nearby heroes ranked by total damage (descending).
+    /// Source depends on mode: encounter accumulator in boss mode (totals from first hit until
+    /// last engaged boss dies), 60s sliding window in normal mode.  Pass <c>null</c> or an empty
+    /// list to blank the leaderboard (used during region transitions).</param>
+    /// <param name="encounter">Encounter snapshot from <see cref="DpsMeterClass.GetEncounterSnapshot"/>.
+    /// In boss mode drives the detail line's "Fight: X" / "fight ended · Fight: X" label;
+    /// the BIG NUMBER never reads from this — encounter data is only ever shown on the
+    /// detail line.  Ignored in normal mode (encounter has no meaning when trash damage is
+    /// included).</param>
     public void UpdateDps(
         double dps,
         long totalDamage60s,
         ulong ownerEntityId,
         uint maxSingleHit,
         string heroDisplayName,
-        IReadOnlyList<DpsMeterClass.HeroShareEntry>? topHeroes)
+        bool bossOnlyMode,
+        IReadOnlyList<DpsMeterClass.HeroShareEntry>? topHeroes,
+        DpsMeterClass.EncounterSnapshot encounter)
     {
         if (!Dispatcher.CheckAccess())
         {
             // Use BeginInvoke instead of Invoke so the capture-thread event handler doesn't block
             // on UI rendering — if the UI thread is busy we just drop the visual update (next
             // event will catch up), which is preferable to stalling packet processing.
-            Dispatcher.BeginInvoke(new Action(() => UpdateDps(dps, totalDamage60s, ownerEntityId, maxSingleHit, heroDisplayName, topHeroes)));
+            Dispatcher.BeginInvoke(new Action(() => UpdateDps(dps, totalDamage60s, ownerEntityId, maxSingleHit, heroDisplayName, bossOnlyMode, topHeroes, encounter)));
             return;
+        }
+
+        // Mirror meter state so title / menu cannot drift from the filter actually applied in DpsMeter.
+        _bossOnlyMode = bossOnlyMode;
+        if (BossOnlyMenuItem.IsChecked != bossOnlyMode)
+        {
+            _suppressBossOnlyMenuEvents = true;
+            try { BossOnlyMenuItem.IsChecked = bossOnlyMode; }
+            finally { _suppressBossOnlyMenuEvents = false; }
         }
 
         // Title: "DPS" until we've identified the avatar, then "DPS - Blade".  Boss-only mode
         // swaps the prefix to "BOSS DPS" as a persistent reminder that trash hits are being
         // filtered out — otherwise a user who toggled the filter and then forgot about it would
         // read a suspiciously-low number and assume the meter broke.
-        string titlePrefix = _bossOnlyMode ? "BOSS DPS" : "DPS";
-        HeroTitleText.Text = string.IsNullOrEmpty(heroDisplayName)
+        //
+        // Fallback: if the hero name couldn't be resolved (mid-session attach + the user's
+        // powers aren't in the HeroPowers index), pull the player nickname from the self row
+        // in topHeroes so the title says "DPS - Bandit" instead of just "DPS".  An anonymous
+        // bare "DPS" title was the cue that made users assume "the meter doesn't know I exist"
+        // even when the 60s number underneath was correct.
+        string titlePrefix = bossOnlyMode ? "BOSS DPS" : "DPS";
+        string titleSuffix = heroDisplayName ?? string.Empty;
+        if (string.IsNullOrEmpty(titleSuffix) && topHeroes != null)
+        {
+            for (int i = 0; i < topHeroes.Count; i++)
+            {
+                var r = topHeroes[i];
+                if (r.IsSelf && !string.IsNullOrEmpty(r.PlayerName))
+                {
+                    titleSuffix = r.PlayerName;
+                    break;
+                }
+            }
+        }
+        HeroTitleText.Text = string.IsNullOrEmpty(titleSuffix)
             ? titlePrefix
-            : $"{titlePrefix} - {heroDisplayName}";
+            : $"{titlePrefix} - {titleSuffix}";
 
-        // "—" when there is no live data yet so the user knows the meter is alive but idle, vs a
-        // stale "0" that could mean either "no DPS right now" or "the sniffer crashed silently".
-        DpsText.Text = dps <= 0.1
-            ? "—"
-            : FormatDps(dps);
+        // Primary big number — what the user reads as "my DPS right now".  Behavior must
+        // stay identical to the pre-encounter version (this is the most-glanced element on
+        // the overlay and any change reads as "the meter is broken"):
+        //   • Live 5s instant DPS while combat is active (responds within ~1s of new hits).
+        //   • Falls back to 60s rolling-average DPS when the 5s window has drained but the
+        //     60s window still has data.
+        //   • "—" only when truly idle (entire 60s window empty).
+        //
+        // The encounter accumulator is INTENTIONALLY not consulted here — it drives only
+        // the bar list and the "Fight: …" label on the detail line.  Keeping the big
+        // number on the same time-windowed math means the user always reads it as a rate
+        // ("DPS right now"), not as a fight average ("DPS for this fight"), which would
+        // confuse the relationship with Max hit and the bar percentages.
+        bool liveActive = dps > 0.1;
+        double displayDps = liveActive
+            ? dps
+            : (totalDamage60s > 0 ? totalDamage60s / 60.0 : 0.0);
+        DpsText.Text = displayDps <= 0.1 ? "—" : FormatDps(displayDps);
 
-        // Peak-hit badge: empty until at least one hit lands in this region, then sticks as a
-        // personal-best until the next RegionChange reset. Formatted the same way as the 60s
-        // total for visual consistency.
         MaxHitText.Text = maxSingleHit == 0
             ? ""
             : $"Max hit: {FormatTotal(maxSingleHit)}";
 
-        DetailText.Text = ownerEntityId == 0
-            ? "locating you…"
-            : $"60s: {FormatTotal(totalDamage60s)}";
+        // Detail line carries two roles:
+        //   • a small mode hint so the big number above can never be misread — "live"
+        //     while the 5s window is feeding it, "<window> avg" while we're showing the
+        //     decaying rolling average, "idle" when both windows are empty, AND
+        //   • a context number — `60s: …` in normal mode (the rolling-window total that
+        //     drives the big-number fallback), or `Fight: …` in boss mode (the cumulative
+        //     encounter total).  The "Fight" number is read from the encounter snapshot,
+        //     NOT from totalDamage60s — they're independent quantities (totalDamage60s is
+        //     bounded at 60 s of decay, encounter.SelfTotal grows for the whole fight).
+        string modeTag;
+        if (ownerEntityId == 0)
+        {
+            modeTag = "locating you…";
+        }
+        else if (bossOnlyMode)
+        {
+            // Boss mode: lead with the fight summary so the user always sees the
+            // encounter total they care about; secondary tag describes whether the
+            // big number above is live or rolling-avg.
+            if (encounter.IsEnded)
+                modeTag = $"fight ended · Fight: {FormatTotal(encounter.SelfTotal)}";
+            else if (encounter.IsActive)
+                modeTag = liveActive
+                    ? $"live · Fight: {FormatTotal(encounter.SelfTotal)}"
+                    : $"60s avg · Fight: {FormatTotal(encounter.SelfTotal)}";
+            else if (liveActive)
+                modeTag = $"live · 60s: {FormatTotal(totalDamage60s)}";
+            else if (totalDamage60s > 0)
+                modeTag = $"60s avg · 60s: {FormatTotal(totalDamage60s)}";
+            else
+                modeTag = "waiting for boss…";
+        }
+        else if (liveActive)
+            modeTag = $"live · 60s: {FormatTotal(totalDamage60s)}";
+        else if (totalDamage60s > 0)
+            modeTag = $"60s avg · 60s: {FormatTotal(totalDamage60s)}";
+        else
+            modeTag = "idle · waiting for damage";
+        DetailText.Text = modeTag;
 
         RenderTopHeroes(topHeroes);
     }
@@ -111,8 +197,9 @@ public partial class DpsOverlayWindow : Window
     // Cached row references so we can iterate without reflection and keep the fast path
     // allocation-free during the 4 Hz decay tick.  Arrays are index-aligned — the i-th slot is
     // _topHeroBars[i] (fill), _topHeroImages[i] (portrait), _topHeroRows[i] (name / left text),
-    // _topHeroPct[i] (percent, right-aligned column).
+    // _topHeroTotals[i] (compact damage total), _topHeroPct[i] (percent, right-aligned column).
     private TextBlock[]? _topHeroRows;
+    private TextBlock[]? _topHeroTotals;
     private TextBlock[]? _topHeroPct;
     private Image[]?     _topHeroImages;
     private Rectangle[]? _topHeroBars;
@@ -120,11 +207,12 @@ public partial class DpsOverlayWindow : Window
     // Pixel width of the bar track — matches the row Grid's Width in XAML.  Kept here rather
     // than read from ActualWidth so we get the correct value on the first render tick before
     // layout has measured anything (ActualWidth is 0 until the window is visible).
-    private const double BarTrackWidthPx = 200.0;
+    private const double BarTrackWidthPx = 250.0;
 
     private void RenderTopHeroes(IReadOnlyList<DpsMeterClass.HeroShareEntry>? rows)
     {
         _topHeroRows   ??= new[] { Top1Text,  Top2Text,  Top3Text,  Top4Text,  Top5Text };
+        _topHeroTotals ??= new[] { Top1Total, Top2Total, Top3Total, Top4Total, Top5Total };
         _topHeroPct    ??= new[] { Top1Pct,   Top2Pct,   Top3Pct,   Top4Pct,   Top5Pct   };
         _topHeroImages ??= new[] { Top1Image, Top2Image, Top3Image, Top4Image, Top5Image };
         _topHeroBars   ??= new[] { Top1Bar,   Top2Bar,   Top3Bar,   Top4Bar,   Top5Bar   };
@@ -159,6 +247,7 @@ public partial class DpsOverlayWindow : Window
         for (int i = 0; i < _topHeroRows.Length; i++)
         {
             var tb  = _topHeroRows[i];
+            var tot = _topHeroTotals[i];
             var pct = _topHeroPct[i];
             var img = _topHeroImages[i];
             var bar = _topHeroBars[i];
@@ -177,26 +266,49 @@ public partial class DpsOverlayWindow : Window
                 img.Visibility = hasPortrait ? Visibility.Visible : Visibility.Collapsed;
 
                 // Middle column: name only (no colon).  Right column: "NN%" always flush right.
+                //
+                // Three signals to combine — portrait (hero glyph), hero name (text), and
+                // nickname (player handle).  The self row may arrive with an EMPTY hero name
+                // (mid-session attach where Channel-A entity-create was missed AND the user's
+                // hero powers aren't in the static HeroPowers index — common for custom-server
+                // heroes).  In that case the nickname is the only identifier we have, and
+                // collapsing to "" would hide the user from their own leaderboard.
                 bool hasNick = !string.IsNullOrEmpty(row.PlayerName);
+                bool hasHero = !string.IsNullOrEmpty(row.Name);
                 string nameText;
                 if (hasPortrait)
                 {
-                    nameText = hasNick ? Truncate(row.PlayerName, 12) : "";
+                    nameText = hasNick ? Truncate(row.PlayerName, 12)
+                             : hasHero ? Truncate(row.Name, 12)
+                             : (row.IsSelf ? "you" : "");
                 }
                 else
                 {
-                    string heroCap = Truncate(row.Name, hasNick ? 10 : 14);
-                    nameText = hasNick
-                        ? $"{heroCap} {Truncate(row.PlayerName, 10)}"
-                        : heroCap;
+                    if (hasHero && hasNick)
+                        nameText = $"{Truncate(row.Name, 10)} {Truncate(row.PlayerName, 10)}";
+                    else if (hasHero)
+                        nameText = Truncate(row.Name, 14);
+                    else if (hasNick)
+                        nameText = Truncate(row.PlayerName, 14);
+                    else
+                        nameText = row.IsSelf ? "you" : "?";
                 }
 
                 tb.Text = nameText;
+                // Compact per-row total wrapped in parens ("(11.0M)" / "(234.5k)" / "(812)") so
+                // the visual hierarchy reads "name → percent" first with the absolute damage as
+                // a secondary qualifier next to the percent.  Field name on the entry is
+                // `Total60s` for historical reasons but actually carries the encounter total
+                // when the row came from `GetTopHeroesByEncounterShare` — same units, different
+                // window, so a single formatter handles both code paths.
+                tot.Text = "(" + FormatRowTotalCompact(row.Total60s) + ")";
                 pct.Text = $"{row.Percent:0}%";
                 var fg = row.IsSelf ? selfBrush : peerBrush;
                 var fw = row.IsSelf ? FontWeights.SemiBold : FontWeights.Normal;
                 tb.Foreground = fg;
                 tb.FontWeight = fw;
+                tot.Foreground = fg;
+                tot.FontWeight = fw;
                 pct.Foreground = fg;
                 pct.FontWeight = fw;
 
@@ -213,9 +325,12 @@ public partial class DpsOverlayWindow : Window
             {
                 // Keep the slot laid out (fixed overlay size) but visually inert.
                 tb.Text = "";
+                tot.Text = "";
                 pct.Text = "";
                 tb.Foreground = peerBrush;
                 tb.FontWeight = FontWeights.Normal;
+                tot.Foreground = peerBrush;
+                tot.FontWeight = FontWeights.Normal;
                 pct.Foreground = peerBrush;
                 pct.FontWeight = FontWeights.Normal;
                 img.Source = null;
@@ -319,29 +434,27 @@ public partial class DpsOverlayWindow : Window
         return total.ToString("N0");
     }
 
-    private static PersistedPosition LoadPosition()
+    /// <summary>Compact 1-decimal damage formatter for the leaderboard's per-row total column
+    /// ("11.0M", "234.5k", "812").  Distinct from <see cref="FormatTotal"/> which uses 2 decimals
+    /// in the megabyte tier — that's appropriate for the headline detail line where a single
+    /// number gets the user's full attention, but in the leaderboard column the row needs to
+    /// align cleanly next to the percent and 2 decimals would push past the 50 px MinWidth on
+    /// 9-figure numbers ("123.45M" is 7 chars vs "123.4M" at 6).  Lowercase suffixes were the
+    /// example the user gave ("11.0m") but staying uppercase keeps the leaderboard visually
+    /// consistent with `60s:` / `Fight:` in the detail line above.</summary>
+    private static string FormatRowTotalCompact(long total)
     {
-        try
-        {
-            if (File.Exists(SettingsPath))
-            {
-                var json = File.ReadAllText(SettingsPath);
-                return JsonSerializer.Deserialize<PersistedPosition>(json) ?? new PersistedPosition();
-            }
-        }
-        catch { /* corrupted file → fall through to defaults */ }
-        return new PersistedPosition();
+        if (total >= 1_000_000) return (total / 1_000_000.0).ToString("0.0") + "M";
+        if (total >= 1_000)     return (total / 1_000.0).ToString("0.0") + "k";
+        return total.ToString("N0");
     }
 
     private void TrySavePosition()
     {
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
-            var json = JsonSerializer.Serialize(new PersistedPosition { Left = Left, Top = Top });
-            File.WriteAllText(SettingsPath, json);
-        }
-        catch { /* transient I/O (locked file, no perms); next move will retry */ }
+        _persistedSettings.Left = Left;
+        _persistedSettings.Top = Top;
+        _persistedSettings.BossDpsOnly = _bossOnlyMode;
+        DpsOverlaySettingsFile.Save(_persistedSettings);
     }
 
     /// <summary>Show without stealing focus from the game (ShowActivated=false + Show).</summary>
@@ -369,6 +482,11 @@ public partial class DpsOverlayWindow : Window
     /// (e.g. restoring persisted state on startup via <see cref="SetBossOnlyMode"/>).</summary>
     private bool _bossOnlyMode;
 
+    /// <summary>When true, <see cref="BossOnlyMenuItem"/> IsChecked is being set from
+    /// <see cref="UpdateDps"/> / <see cref="SetBossOnlyMode"/> — ignore Checked/Unchecked so we
+    /// do not re-enter <see cref="BossOnlyToggled"/>.</summary>
+    private bool _suppressBossOnlyMenuEvents;
+
     /// <summary>Presenter hook to sync the UI when the meter's mode is changed from elsewhere
     /// (e.g. loaded from settings). Refreshes the checkbox state AND the title-prefix mirror so
     /// the next <see cref="UpdateDps"/> repaint picks up the new label.</summary>
@@ -380,16 +498,25 @@ public partial class DpsOverlayWindow : Window
             return;
         }
         _bossOnlyMode = enabled;
-        BossOnlyMenuItem.IsChecked = enabled;
+        _suppressBossOnlyMenuEvents = true;
+        try { BossOnlyMenuItem.IsChecked = enabled; }
+        finally { _suppressBossOnlyMenuEvents = false; }
     }
 
-    private void BossOnlyMenuItem_OnClick(object sender, RoutedEventArgs e)
+    private void BossOnlyMenuItem_OnChecked(object sender, RoutedEventArgs e)
     {
-        // IsCheckable toggles the state *before* Click fires, so the current IsChecked already
-        // reflects what the user just asked for.  Mirror into the local flag and notify the
-        // presenter; meter-side state changes happen in its handler so the window stays dumb.
-        _bossOnlyMode = BossOnlyMenuItem.IsChecked;
-        BossOnlyToggled?.Invoke(_bossOnlyMode);
+        if (_suppressBossOnlyMenuEvents) return;
+        _bossOnlyMode = true;
+        BossOnlyToggled?.Invoke(true);
+        TrySavePosition();
+    }
+
+    private void BossOnlyMenuItem_OnUnchecked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressBossOnlyMenuEvents) return;
+        _bossOnlyMode = false;
+        BossOnlyToggled?.Invoke(false);
+        TrySavePosition();
     }
 
     /// <summary>

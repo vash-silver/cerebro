@@ -1,3 +1,4 @@
+using System;
 using System.Runtime.InteropServices;
 
 namespace MarvelHeroes.DpsMeter.Interop;
@@ -39,4 +40,19 @@ internal static class User32
 
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
     public static extern nint SetWindowLongPtr(IntPtr hWnd, int nIndex, nint dwNewLong);
+
+    /// <summary>Handle of the window currently in the foreground (the one receiving keyboard
+    /// input).  Used by the foreground watcher to auto-hide the overlay while Marvel Heroes
+    /// isn't the active window.  Returns <c>IntPtr.Zero</c> during transient states (e.g. an
+    /// app is in the middle of activating) — callers should treat zero as "indeterminate" and
+    /// keep the previous decision rather than flipping visibility on a glitch.</summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr GetForegroundWindow();
+
+    /// <summary>Maps an HWND to the OS process id of its owning thread.  Combined with
+    /// <see cref="System.Diagnostics.Process.GetProcessById"/> this gives us the process name,
+    /// which is how the foreground watcher decides whether the active window is the game,
+    /// our own overlay (right-click menu open), or something else entirely.</summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 }

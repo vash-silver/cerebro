@@ -40,12 +40,10 @@ public sealed class DpsOverlayPresenter : IDisposable
     private DispatcherTimer? _decayTimer;
     private bool _lastVisibilityDecision = true;
 
-    // Heartbeat state for the 5-second PowerResult stats line.  Compared against the snapshot
-    // produced by MhMissionSniffer.PowerResultStats so we only log when the numbers move
-    // — avoids drowning the log file in "Total=0, NoSubscriber=0" repeats when the user is
-    // standing in a town with no active combat on screen.
+    // Heartbeat: log PowerResult counters every 5s so "Total frozen" vs "Total climbing" is
+    // obvious even when the numeric snapshot doesn't change (previous version only logged on
+    // delta, which hid "sniffer alive but idle" sessions).
     private DateTime _lastStatsLogUtc = DateTime.MinValue;
-    private (int Total, int NoSubscriber, int ParseFailures) _lastStatsSnapshot;
 
     public DpsOverlayPresenter(MhMissionSniffer sniffer, Dispatcher uiDispatcher)
     {
@@ -87,11 +85,13 @@ public sealed class DpsOverlayPresenter : IDisposable
                 : msg => { prior(msg); AppendLog(msg); };
         }
 
+        bool initialBossOnly = false;
         // Window creation has to happen on the UI thread. We Invoke (not BeginInvoke) so that
         // callers can assume the overlay is visible on return — simpler invariant for tests.
         _uiDispatcher.Invoke(() =>
         {
             _window = new DpsOverlayWindow();
+            initialBossOnly = _window.InitialBossOnlyPreference;
             // Wire the right-click "Boss DPS only" toggle: window fires the event with the new
             // checkbox state, we forward it to the meter.  The setter on DpsMeter.BossOnlyMode
             // already clears the sliding windows + emits a diagnostic log line, so this side
@@ -113,6 +113,8 @@ public sealed class DpsOverlayPresenter : IDisposable
                 _uiDispatcher);
             _decayTimer.Start();
         });
+
+        _meter.BossOnlyMode = initialBossOnly;
 
         AppendLog($"DpsOverlayPresenter started (sniffer running={_sniffer.IsRunning})");
     }
@@ -147,13 +149,22 @@ public sealed class DpsOverlayPresenter : IDisposable
         // Snapshot meter values here (on capture thread) so the UI update reflects a consistent
         // view even if more events fire before the dispatcher runs the lambda.
         double dps = _meter.CurrentDps;
-        long total = _meter.CurrentOwnerTotal60s;
+        long total60s = _meter.CurrentOwnerTotal60s; // ALWAYS the 60s rolling total — the big
+                                                     // DPS number's fallback math depends on it.
         ulong owner = _meter.LikelySelfOwnerId;
         uint maxHit = _meter.MaxSingleHit;
         string heroName = _meter.CurrentHeroDisplayName;
-        var top5 = _meter.GetTopHeroesBy60sShare(5);
+        bool bossOnly = _meter.BossOnlyMode;
+        var encounter = _meter.GetEncounterSnapshot();
 
-        _window?.UpdateDps(dps, total, owner, maxHit, heroName, top5);
+        // Only the BAR LIST source is mode-swapped; the big DPS number always reads as live 5s
+        // (with 60s rolling-avg fallback) regardless of mode — that's the user's primary
+        // "what am I doing right now" signal and it must not change semantics underfoot.
+        var top5 = bossOnly && (encounter.IsActive || encounter.IsEnded)
+            ? _meter.GetTopHeroesByEncounterShare(5)
+            : _meter.GetTopHeroesBy60sShare(5);
+
+        _window?.UpdateDps(dps, total60s, owner, maxHit, heroName, bossOnly, top5, encounter);
     }
 
     private void OnDecayTick(object? sender, EventArgs e)
@@ -171,13 +182,25 @@ public sealed class DpsOverlayPresenter : IDisposable
         // isn't set; when it is, this is our backstop in case the OnCommunityMemberUpdated /
         // OnEntityCreated call paths were skipped due to the debounce window.
         _meter.FlushPlayerIndexIfDirty();
+
+        // Same source selection as OnDpsChanged — only the BAR LIST is mode-swapped; the big
+        // number always reads from CurrentOwnerTotal60s so its fallback math is identical
+        // to the pre-encounter behavior.  Keep both call sites in lockstep.
+        bool bossOnly = _meter.BossOnlyMode;
+        var encounter = _meter.GetEncounterSnapshot();
+        var top5 = bossOnly && (encounter.IsActive || encounter.IsEnded)
+            ? _meter.GetTopHeroesByEncounterShare(5)
+            : _meter.GetTopHeroesBy60sShare(5);
+
         _window.UpdateDps(
             _meter.CurrentDps,
             _meter.CurrentOwnerTotal60s,
             _meter.LikelySelfOwnerId,
             _meter.MaxSingleHit,
             _meter.CurrentHeroDisplayName,
-            _meter.GetTopHeroesBy60sShare(5));
+            bossOnly,
+            top5,
+            encounter);
 
         // ── Visibility gating (e.g. hide while game is not in foreground) ──────────────────
         // Polled here instead of hooking Win32 WinEvents because:
@@ -193,6 +216,14 @@ public sealed class DpsOverlayPresenter : IDisposable
         {
             _lastVisibilityDecision = shouldShow;
             _window.Visibility = shouldShow ? Visibility.Visible : Visibility.Collapsed;
+            // Surface the foreground process name on the transition so log readers can answer
+            // "why did the overlay just hide?" without re-running the watcher.  The watcher
+            // exposes its last-cached process name on `LastForegroundProcessName`; on a hide
+            // it tells the user which app stole focus, on a show it tells them what came back.
+            string fg = GameForegroundWatcher.LastForegroundProcessName;
+            AppendLog(shouldShow
+                ? $"DpsOverlayPresenter: overlay shown — foreground='{fg}' (game or self)"
+                : $"DpsOverlayPresenter: overlay hidden — foreground='{fg}' (not game, not self)");
         }
 
         // Every ~5s, surface the sniffer's PowerResult counters so the log shows whether
@@ -207,16 +238,20 @@ public sealed class DpsOverlayPresenter : IDisposable
         {
             _lastStatsLogUtc = nowUtc;
             var snap = _sniffer.PowerResultStats;
-            if (snap != _lastStatsSnapshot)
-            {
-                _lastStatsSnapshot = snap;
-                AppendLog($"PowerResultStats: Total={snap.Total} NoSubscriber={snap.NoSubscriber} ParseFailures={snap.ParseFailures}");
-            }
+            AppendLog($"PowerResultStats: Total={snap.Total} NoSubscriber={snap.NoSubscriber} ParseFailures={snap.ParseFailures}");
         }
     }
 
+    /// <summary>Per-event diagnostic sink shared by the meter and the sniffer. Gated by
+    /// <see cref="DpsOverlaySettingsFile.IsLoggingEnabled"/> — when the user sets
+    /// <c>"LoggingEnabled": false</c> in <c>dps-overlay.json</c> this becomes a no-op,
+    /// suppressing the per-event triage stream (PowerResultStats heartbeat, encounter
+    /// lifecycle, peer-pet folds, hero-resolution misses, etc.) so the log file stops
+    /// growing.  Hot path — the gate check is a single static field read so the cost of
+    /// having logging disabled is effectively zero per call.</summary>
     private static void AppendLog(string line)
     {
+        if (!DpsOverlaySettingsFile.IsLoggingEnabled) return;
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(DiagnosticLogPath)!);

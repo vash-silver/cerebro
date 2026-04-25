@@ -59,6 +59,63 @@ public sealed class DpsMeter : IDisposable
     // intended behavior (you're farming, not killing discrete bosses).
     private static readonly TimeSpan BossFightIdleReset = TimeSpan.FromSeconds(20);
 
+    /// <summary>How long the encounter accumulator can sit without a single damage event from
+    /// ANY player before <see cref="Tick"/> declares the fight effectively over and ends it.
+    /// Backstop for situations where the natural EntityKilled / EntityDestroyed path doesn't
+    /// fire — boss despawns, the user moves out of AOI mid-fight, party wipes, the killer is
+    /// off-screen and the kill packet was never broadcast to us, etc.  Without this the
+    /// encounter would stay "active" indefinitely with stale totals on screen.
+    ///
+    /// <para>Why 30 s and not 20 s (the <see cref="BossFightIdleReset"/> safety net): boss
+    /// fights routinely have brief untargetability phases (mechanic transitions, immunity
+    /// windows, off-screen movement to the next platform) where 5–15 s of total silence is
+    /// normal.  20 s would false-positive on those.  30 s of zero damage from EVERY player
+    /// in AOI means the fight is genuinely dead — no peer is engaging either.</para>
+    ///
+    /// <para>Distinct from <see cref="BossFightIdleReset"/>: that one watches SELF only and
+    /// wipes the 60 s sliding window; this one watches the encounter accumulator (all owners)
+    /// and emits a proper "encounter ended" with the standard freeze / peer-only-clear branch.</para></summary>
+    private static readonly TimeSpan EncounterStallTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>How long an individual engaged boss can go without a single damage event hitting
+    /// it before <see cref="Tick"/> evicts it from <see cref="_engagedBossEntityIds"/> as
+    /// "presumed dead".  When eviction drops the engaged set to empty, the encounter ends
+    /// through the same freeze / auto-clear branch that natural kill events trigger.
+    ///
+    /// <para>Why this exists alongside the 30 s stall watchdog: in busy public areas (Avengers
+    /// Tower, BUE, Holo-Sim) the user routinely chains bosses with &lt; 30 s between fights.
+    /// Without per-boss eviction, a missed kill event leaves boss A in the engaged set forever;
+    /// the user then hits boss B, B's id joins A in the engaged set, damage piles onto A's
+    /// totals, and the leaderboard shows ever-growing numbers across what the user perceives
+    /// as separate fights — exactly the "counters do not reset" complaint this addresses.
+    /// The 30 s stall watchdog only triggers when EVERYONE goes silent for 30 s, which never
+    /// happens during a back-to-back boss chain.</para>
+    ///
+    /// <para>Why 15 s: fits comfortably between typical mechanic-phase untargetability windows
+    /// (≤ 10 s in MH content) and the average inter-boss travel time (15–60 s).  Boss going
+    /// silent for 15 s is a strong "this fight ended" signal; bumping to 20–30 s would let
+    /// the missed-kill case continue to leak into subsequent fights.  If a real boss with a
+    /// &gt; 15 s untargetable phase ever shipped, raise this — but the corresponding kill
+    /// event would also resolve the issue naturally.</para></summary>
+    private static readonly TimeSpan EngagedBossIdleEviction = TimeSpan.FromSeconds(15);
+
+    // Note (Apr 2026, second iteration of "numbers reducing after fight ended" fix):
+    // the previous EncounterFrozenFastClearGrace (5 s grace before a non-engaged-target
+    // hit would discard the freeze) was REMOVED along with FastClearFrozenIfStale.  Even
+    // with the grace, in practice a single hit on a loot crate / medallion / mini-boss /
+    // patrol mob 5–10 s after the kill — i.e. exactly when the user is reading the
+    // breakdown — would wipe it and drop the UI back to the 60 s sliding window (which
+    // decays).  The freeze now persists indefinitely until one of these explicit
+    // "user moved on" events fires:
+    //   • hit on a real boss-classified target → encounter cleared in OnDamageDealt
+    //   • OnRegionChanged                       → full reset
+    //   • boss-only mode toggle                 → full reset
+    //   • Reset() / external state wipe
+    // The first two cover every realistic "user finished reading and moved on" case;
+    // the cost is that fighting a long sequence of unmapped mobs after a real boss
+    // kill leaves the breakdown on screen — the user can dismiss it by toggling boss
+    // mode or zoning, but most of the time they WANT to keep reading it.
+
     private readonly MhMissionSniffer _sniffer;
     private readonly object _sync = new();
 
@@ -86,6 +143,41 @@ public sealed class DpsMeter : IDisposable
     /// spaces don't overlap (they live in different enum tables) and the union is small.</summary>
     private readonly HashSet<uint> _loggedUnknownHeroes = new();
 
+    /// <summary>Pet/summon entity → chain-root player avatar entity. Built lazily from
+    /// <c>PowerResult</c> events: every <c>(rawOwner = X, wireUlt = Y)</c> pair where Y
+    /// resolves to a confirmed player avatar (directly via <c>_heroNameByOwnerId</c> or
+    /// <c>_localAvatarEntityIds</c>, or transitively through an existing entry in this
+    /// dict) records <c>X → root</c>. Used by <see cref="OnDamageDealt"/> to redirect the
+    /// pet's damage onto the summoner's leaderboard row, and by the render-time coalesce
+    /// pass in <see cref="GetTopHeroesByEncounterShare"/> / <see cref="GetTopHeroesBy60sShare"/>
+    /// as a safety net for the first few sub-second hits that fire BEFORE the chain edge
+    /// has been established (the pet's pre-fold damage stays under its own entity id and
+    /// gets merged into the root row at render time).
+    ///
+    /// <para>Why "chain-root" and not just "wireUlt": Magik-style multi-tier summons
+    /// (Magik avatar → demon → demon's sub-pet) have <c>wireUlt</c> pointing at the
+    /// IMMEDIATE parent, not the avatar. Walking the dict transitively at edge-record
+    /// time collapses the chain to the root once, so per-hit fold is O(1) instead of
+    /// O(chain depth). The trade-off is that an edge can only be recorded once we've
+    /// observed the parent's own edge (or the parent IS a confirmed player avatar) —
+    /// in practice this just means the very first hits from a deeply-nested sub-pet may
+    /// fall through to the render-time coalesce pass instead of being folded at scoring
+    /// time, which is fine.</para>
+    ///
+    /// <para>Reset on region change: pet entity ids don't survive region transitions
+    /// (server destroys all summons on zone) and re-using stale mappings against a
+    /// re-allocated entity id in the new region would mis-attribute damage. Cleared by
+    /// <see cref="OnRegionChanged"/> alongside the other entity-keyed maps that ARE
+    /// per-region (<c>_prototypeByEntityId</c>, <c>_localAvatarEntityIds</c>, etc.).</para></summary>
+    private readonly Dictionary<ulong, ulong> _petRootOwnerByEntity = new();
+
+    /// <summary>One-shot diagnostic dedup for the peer-pet fold path in
+    /// <see cref="OnDamageDealt"/>. Keyed by the pet/summon entity id so the log gets
+    /// exactly one line per distinct summon entity per session — useful for verifying
+    /// which pet ids were folded into which avatars without spamming the log on every
+    /// pet hit. Cleared on region change because pet entity ids restart per region.</summary>
+    private readonly HashSet<ulong> _loggedPeerPetFolds = new();
+
     /// <summary>One-shot dedup for the "target prototype isn't a boss" diagnostic path. Keyed by
     /// target <c>prototypeEnumIndex</c> so we log each distinct mob type exactly once per session
     /// (or until region change, which clears it). Without this a sustained AOE on trash packs
@@ -96,6 +188,14 @@ public sealed class DpsMeter : IDisposable
     /// (missed EntityCreate) branch. Keyed by entity id — each spawned target gets exactly one
     /// diagnostic line, so a long fight against an un-observed boss doesn't flood the log.</summary>
     private readonly HashSet<ulong> _loggedUnknownBossTargets = new();
+
+    /// <summary>Sibling of <see cref="_loggedNonBossTargets"/> for the "boss admit only succeeded
+    /// because of the dumper off-by-one fallback" branch (see <see cref="BossPrototypes.IsBoss"/>
+    /// remarks for the underlying bug).  Keyed by the live <c>prototypeEnumIndex</c> so we surface
+    /// every distinct off-by-one prototype exactly once per session — that lets users grep the
+    /// diagnostic log to find which entries to add when manually patching the boss list, and
+    /// makes it visible when the workaround is what's keeping a fight working.</summary>
+    private readonly HashSet<uint> _loggedOffByOneBossAdmits = new();
 
     /// <summary>Per-hero all-time max single-hit, keyed by the hero's display name
     /// (e.g. "Iron Man", "Blade").  Keying by display name rather than an enum index means the
@@ -338,10 +438,12 @@ public sealed class DpsMeter : IDisposable
     public Action<string>? Diagnostic { get; set; }
 
     /// <summary>When <c>true</c>, <see cref="OnDamageDealt"/> silently drops hits whose
-    /// <c>TargetEntityId</c> doesn't resolve to a prototype in
-    /// <see cref="BossPrototypes.Indices"/> (Boss / GroupBoss / MiniBoss). Trash packs, summons,
-    /// world-destructibles etc. no longer contribute to the sliding windows, so the overlay's
-    /// numbers reflect encounter-only throughput.
+    /// <c>TargetEntityId</c> doesn't resolve to a prototype admitted by
+    /// <see cref="BossPrototypes.IsBoss"/> (Boss + GroupBoss only — <see cref="BossPrototypes.MiniBossIndices"/>
+    /// is excluded by design, see field doc on that set).  Trash packs, summons, world-destructibles
+    /// AND named mini-bosses (patrol named mobs, terminal "elite" enemies, chapter-trash gates) no
+    /// longer contribute to the sliding windows, so the overlay's numbers reflect real encounter-only
+    /// throughput.
     ///
     /// <para>Corner cases:</para>
     /// <list type="bullet">
@@ -376,9 +478,19 @@ public sealed class DpsMeter : IDisposable
                 CurrentDps = 0;
                 CurrentOwnerTotal60s = 0;
                 // Re-arm the boss-fight idle detector so the very next hit doesn't get
-                // mis-classified as "post-idle" (the previous _lastBossAdmittedUtc is now
+                // mis-classified as "post-idle" (the previous _lastSelfBossHitUtc is now
                 // meaningless given we just wiped the windows).
-                _lastBossAdmittedUtc = DateTime.MinValue;
+                _lastSelfBossHitUtc = DateTime.MinValue;
+
+                // Wipe the encounter accumulator — totals only make sense in boss mode,
+                // and the previous fight's totals are necessarily stale by the time the
+                // user toggles modes (mode flip is a manual UI act, not a kill event).
+                _encounterTotalsPerOwner.Clear();
+                _engagedBossEntityIds.Clear();
+                _lastHitPerEngagedBoss.Clear();
+                _encounterStartUtc = DateTime.MinValue;
+                _encounterEndedUtc = DateTime.MinValue;
+                _lastEncounterDamageUtc = DateTime.MinValue;
             }
             Diagnostic?.Invoke($"DpsMeter: BossOnlyMode = {value} (scoring windows cleared)");
             DpsChanged?.Invoke(this, EventArgs.Empty);
@@ -387,12 +499,100 @@ public sealed class DpsMeter : IDisposable
 
     private bool _bossOnlyMode;
 
-    /// <summary>UTC timestamp of the most recent boss-admitted hit (i.e. a hit that survived the
-    /// <see cref="BossOnlyMode"/> filter and was scored).  Used to detect the
-    /// "between bosses" idle gap so we can wipe stale leaderboard rows when a new fight starts —
-    /// see <see cref="BossFightIdleReset"/>.  <c>DateTime.MinValue</c> means we've never admitted
-    /// a hit in the current session (or the meter was just cleared).  Lock <see cref="_sync"/>.</summary>
-    private DateTime _lastBossAdmittedUtc = DateTime.MinValue;
+    /// <summary>UTC timestamp of the most recent boss-admitted hit whose scoring owner was
+    /// <em>self</em> (the local avatar / pinned self-owner, not a peer).  Used to detect the
+    /// "between bosses" idle gap so we can wipe stale leaderboard rows when WE start a new
+    /// fight — see <see cref="BossFightIdleReset"/>.
+    ///
+    /// <para>Self-only is critical: in busy public areas (Avengers Tower, BUE, Holo-Sim,
+    /// shared waypoints) peer avatars constantly hit bosses every few hundred ms, so a
+    /// timer that any boss-admitted hit refreshes never opens a 20-second gap and the
+    /// reset effectively never fires.  Gating on self means peer activity keeps the
+    /// leaderboard alive (good UX — you can still see what teammates are doing) while
+    /// YOUR own return to combat after 20s of personal idle starts a clean window.</para>
+    ///
+    /// <c>DateTime.MinValue</c> means we've never landed a self boss hit this session (or
+    /// the meter was just cleared by a region change / mode flip).  Lock <see cref="_sync"/>.</summary>
+    private DateTime _lastSelfBossHitUtc = DateTime.MinValue;
+
+    // ── Encounter accumulator (boss-only mode) ────────────────────────────────────────
+    // Fight-scoped per-owner totals: persists from the FIRST boss hit until ALL engaged
+    // bosses die (then "freezes" until the next boss hit clears it).  Replaces the 60s
+    // sliding window for the leaderboard / title number while in boss mode — that window
+    // produced the recurring "stale data" complaint where a peer who one-shot a boss for
+    // 20M kept ranking #1 for the next ~minute as their slice decayed linearly.
+    //
+    // Why both _totalsPerOwner (60s) AND _encounterTotalsPerOwner (fight-scoped) coexist:
+    //   • Normal (non-boss) mode has no natural encounter boundary — trash combat is a
+    //     continuum, the 60s window is the right summarisation there.
+    //   • Boss-only mode IS bounded by EntityKilled / EntityDestroyed of the engaged
+    //     bosses; for that mode we want a Recount/Skada-style "this fight" breakdown.
+    //   • Self-owner election (section 3 in OnDamageDealt) still uses the 60s window in
+    //     the heuristic-fallback path — ripping that out would destabilise mid-session
+    //     attaches.  Cheaper to feed both windows than to refactor the election logic.
+    //
+    /// <summary>Sum of admitted boss damage per scoring-owner since the encounter started.
+    /// Includes ALL participants (self + peers) so the leaderboard percent reflects actual
+    /// fight breakdown, not "your share of the last 60 s".  Cleared on encounter clear
+    /// (next boss hit after a frozen fight, region change, boss-only toggle).
+    /// Lock <see cref="_sync"/>.</summary>
+    private readonly Dictionary<ulong, long> _encounterTotalsPerOwner = new();
+
+    /// <summary>Set of boss <c>TargetEntityId</c>s that have been hit at least once during
+    /// the current encounter and have NOT yet emitted an EntityKilled / EntityDestroyed.
+    /// Encounter is considered "ended" the moment this drops to empty after having held at
+    /// least one entry (i.e. last engaged boss died — naturally via kill events, OR via
+    /// <see cref="EngagedBossIdleEviction"/> sweep in <see cref="Tick"/>).
+    /// Lock <see cref="_sync"/>.</summary>
+    private readonly HashSet<ulong> _engagedBossEntityIds = new();
+
+    /// <summary>Last-hit UTC timestamp per engaged boss target.  Mirrors
+    /// <see cref="_engagedBossEntityIds"/> in size — every entry in the HashSet has a
+    /// corresponding entry here, refreshed on each <see cref="OnDamageDealt"/> hit whose
+    /// <c>TargetEntityId</c> is the boss.  <see cref="Tick"/> sweeps this dict each ~250 ms
+    /// and evicts entries older than <see cref="EngagedBossIdleEviction"/>; if the eviction
+    /// drops <see cref="_engagedBossEntityIds"/> to empty AND the encounter is still active,
+    /// it ends through the standard freeze / auto-clear branch.
+    ///
+    /// <para>Why a separate dict instead of changing the HashSet to a Dictionary: the
+    /// HashSet check is on the OnDamageDealt hot path (every accumulator add touches it).
+    /// Keeping it a HashSet preserves O(1) Add / Contains with the cheapest possible per-call
+    /// cost; the per-target timestamp update is the second op on the hot path but a
+    /// Dictionary indexer assignment is the same cost as a HashSet.Add anyway, so the split
+    /// is purely organizational (timestamp logic stays out of the HashSet's invariant).</para>
+    ///
+    /// <para>Lock <see cref="_sync"/>.</para></summary>
+    private readonly Dictionary<ulong, DateTime> _lastHitPerEngagedBoss = new();
+
+    /// <summary>UTC time of the first boss hit of the current encounter, or MinValue when
+    /// no encounter is active.  Used for the encounter-duration diagnostic and to gate the
+    /// "previously frozen" check (so a region-change-triggered clear doesn't also fire the
+    /// "encounter ended" diagnostic).  Lock <see cref="_sync"/>.</summary>
+    private DateTime _encounterStartUtc = DateTime.MinValue;
+
+    /// <summary>UTC time the last engaged boss died, or MinValue while the encounter is
+    /// still active (or never started).  Non-MinValue means the leaderboard is FROZEN
+    /// (final breakdown on screen, awaiting the next boss hit to clear and start fresh).
+    /// Lock <see cref="_sync"/>.</summary>
+    private DateTime _encounterEndedUtc = DateTime.MinValue;
+
+    /// <summary>UTC time of the last damage event (any owner — self OR peer) that flowed into
+    /// <see cref="_encounterTotalsPerOwner"/>.  Updated on every accumulator add in
+    /// <see cref="OnDamageDealt"/>; consulted by <see cref="Tick"/> to detect the
+    /// <see cref="EncounterStallTimeout"/> stall condition.
+    ///
+    /// <para>MinValue means "no encounter is active" (no one has dealt boss damage yet, or the
+    /// encounter was cleared).  Reset alongside <see cref="_encounterStartUtc"/> /
+    /// <see cref="_encounterEndedUtc"/> at every encounter-state-clear site.</para>
+    ///
+    /// <para>Why ANY owner and not self-only: the user phrased this as "if total damage for
+    /// all players is not changed" — this watchdog measures whether the fight is collectively
+    /// alive, not whether SELF is contributing.  A peer soloing the last 5 % of a boss while
+    /// you're picking up loot still means the fight is in progress and the leaderboard
+    /// shouldn't be torn down.</para>
+    ///
+    /// <para>Lock <see cref="_sync"/>.</para></summary>
+    private DateTime _lastEncounterDamageUtc = DateTime.MinValue;
 
     public DpsMeter(MhMissionSniffer sniffer)
     {
@@ -404,6 +604,13 @@ public sealed class DpsMeter : IDisposable
         _sniffer.InventoryMoved += OnInventoryMoved;
         _sniffer.LocalAvatarObserved += OnLocalAvatarObserved;
         _sniffer.CommunityMemberUpdated += OnCommunityMemberUpdated;
+        // Encounter end detection — both events fire for boss death:
+        //   • EntityKilled: explicit kill notification (most bosses, has killer id)
+        //   • EntityDestroyed: catch-all entity removal (despawn / world cleanup, fires
+        //     even when the kill message was missed or the boss vanished without one)
+        // Subscribing to both avoids missing encounter-ends when only one path fires.
+        _sniffer.EntityKilled += OnEntityKilled;
+        _sniffer.EntityDestroyed += OnEntityDestroyed;
 
         LoadMaxHits();
         LoadPlayerIndex();
@@ -1008,10 +1215,43 @@ public sealed class DpsMeter : IDisposable
                     Diagnostic?.Invoke($"DpsMeter: boss-filter admit (unknown prototype) — target entityId={e.TargetEntityId} (EntityCreate missed; counting optimistically)");
                 // fall through to the normal scoring path
             }
-            else if (!BossPrototypes.IsBoss(targetProtoIdx))
+            else if (BossPrototypes.TryClassifyBoss(targetProtoIdx, out bool admittedViaShift))
+            {
+                // Boss admitted — fall through to scoring.  If the only reason the lookup
+                // matched was the dumper off-by-one workaround (see BossPrototypes.IsBoss
+                // remarks), surface that fact in the log exactly once per distinct prototype
+                // so users can grep "off-by-one" admits and know which entries to add to the
+                // canonical list when the dumper is eventually fixed and regenerated.
+                if (admittedViaShift && _loggedOffByOneBossAdmits.Add(targetProtoIdx))
+                    Diagnostic?.Invoke($"DpsMeter: boss-filter admit (off-by-one fallback) — target protoIdx={targetProtoIdx} matched as protoIdx={targetProtoIdx - 1u} via dumper-bug compensation; treat the literal value as canonical when regenerating BossPrototypes");
+            }
+            else
             {
                 if (_loggedNonBossTargets.Add(targetProtoIdx))
-                    Diagnostic?.Invoke($"DpsMeter: boss-filter drop — target protoIdx={targetProtoIdx} is not in BossPrototypes set (Boss+GroupBoss+MiniBoss). Add it if you expected it to count.");
+                {
+                    // Differentiate "rank=MiniBoss (excluded by design)" from "not in any boss set".
+                    // The MiniBoss path is the common one in patrol zones (Hand Ninja named mobs,
+                    // terminal elites) and is intentional — the diagnostic spells that out so users
+                    // don't think their hit was lost to a bug.
+                    if (BossPrototypes.IsMiniBoss(targetProtoIdx))
+                        Diagnostic?.Invoke($"DpsMeter: boss-filter drop — target protoIdx={targetProtoIdx} is rank=MiniBoss (excluded from boss-only mode by design; see BossPrototypes.MiniBossIndices)");
+                    else
+                        Diagnostic?.Invoke($"DpsMeter: boss-filter drop — target protoIdx={targetProtoIdx} is not in BossPrototypes set (Boss+GroupBoss). Add it if you expected it to count.");
+                }
+                // Drop the hit and exit.  We deliberately do NOT touch the frozen
+                // leaderboard here.  The fast-clear path that used to fire on the first
+                // dropped hit ≥ 5 s after the freeze was removed (Apr 2026, second fix
+                // for "numbers reducing after fight ended"): in practice it discarded the
+                // breakdown the user was actively reading, because the post-kill window
+                // is FULL of incidental hits on loot crates, mini-bosses, medallions,
+                // patrol mobs, etc. — every one of which counted as "user resumed combat"
+                // and wiped the freeze, dropping the UI back to the 60 s sliding window
+                // (which decays).  The freeze now persists until ONE of:
+                //   • a hit on a real boss-classified target → encounter cleared (line ~1465)
+                //   • OnRegionChanged                       → full reset
+                //   • boss-only mode toggle                 → full reset
+                //   • Reset() / external state wipe
+                // i.e. only events that unambiguously mean "user moved on to a new fight".
                 return;
             }
         }
@@ -1026,32 +1266,10 @@ public sealed class DpsMeter : IDisposable
         {
             DateTime now = e.UtcTime;
 
-            // ── Boss-fight auto-reset (boss-only mode) ──────────────────────────────────────
-            // We've already passed the boss-filter above — this hit IS going to count.  If
-            // the previous boss-admitted hit was more than BossFightIdleReset ago, treat
-            // this as the start of a NEW boss fight: wipe the sliding windows so the
-            // leaderboard doesn't blend stale data from the *previous* boss into the
-            // current encounter.  See field comment on BossFightIdleReset for rationale.
-            //
-            // Two guards prevent unwanted resets:
-            //   • _bossOnlyMode — in all-damage mode continuous decay is the right behavior.
-            //   • _lastBossAdmittedUtc != MinValue — first hit of session shouldn't trigger
-            //     a "reset" diagnostic; just initialise the timestamp normally below.
-            if (_bossOnlyMode
-                && _lastBossAdmittedUtc != DateTime.MinValue
-                && now - _lastBossAdmittedUtc >= BossFightIdleReset
-                && (_scoring.Count > 0 || _totalsPerOwner.Count > 0))
-            {
-                TimeSpan gap = now - _lastBossAdmittedUtc;
-                int rowsCleared = _totalsPerOwner.Count;
-                _scoring.Clear();
-                _instant.Clear();
-                _totalsPerOwner.Clear();
-                CurrentDps = 0;
-                CurrentOwnerTotal60s = 0;
-                Diagnostic?.Invoke($"DpsMeter: boss-fight auto-reset (idle {gap.TotalSeconds:F1}s ≥ {BossFightIdleReset.TotalSeconds:F0}s, cleared {rowsCleared} rows) — starting fresh fight");
-            }
-            _lastBossAdmittedUtc = now;
+            // Boss-fight auto-reset is deferred until AFTER scoringOwner is finalized and
+            // we know whether this hit belongs to *self* (vs. a peer).  Refreshing the
+            // idle timer on peer hits would defeat the whole purpose in busy public
+            // areas — see the block below the pet/summon fold.
 
             // Canonical entity id used for hero resolution + sliding windows.  Start from the
             // wire owner, then:
@@ -1064,6 +1282,71 @@ public sealed class DpsMeter : IDisposable
             ulong scoringOwner = rawOwner;
             if (_localPlayerEntityId != 0 && rawOwner == _localPlayerEntityId && _likelySelfOwnerId != 0)
                 scoringOwner = _likelySelfOwnerId;
+
+            // ── Pet/summon chain-root tracking + fold (peer summons too, not just self) ─────
+            // The server gives us (rawOwner = X, wireUlt = Y) for every PowerResult.  When
+            // X is a summon/pet/proxy and Y is its parent, we want the summon's damage to
+            // credit the chain-root player avatar — so a peer Magik with three demons shows
+            // ONE row in the leaderboard ("Jiujitsu  4.7M") instead of four ("Jiujitsu 4.7M
+            // / #F8B0 366k / #F8B1 291k / #F8B2 247k").
+            //
+            // Three-way edge classification, in priority order:
+            //   1. wireUlt itself is a confirmed player avatar (in _heroNameByOwnerId or
+            //      _localAvatarEntityIds) → root = wireUlt.  Covers single-tier summons
+            //      (most pets in the game).
+            //   2. wireUlt has an existing entry in _petRootOwnerByEntity → root = THAT
+            //      entry's value.  Covers multi-tier summons (e.g. avatar → demon →
+            //      demon's sub-pet) by walking the dict transitively at edge-record time
+            //      so per-hit fold stays O(1).
+            //   3. wireUlt is the local Player CONTAINER (rare — same mirror case the
+            //      _localPlayerEntityId branch above handles for rawOwner) → root =
+            //      _likelySelfOwnerId.
+            //
+            // We DON'T fold:
+            //   • when wireUlt == 0 (no ult info; rawOwner already collapsed via the
+            //     `wireUlt != 0 ? wireUlt : wirePow` line ~1153).
+            //   • when wireUlt == rawOwner (self-credited power; not an indirection).
+            //   • when neither rule above resolves a root (wireUlt is unknown — likely a
+            //     mob spawner, system entity, or a peer whose avatar we haven't seen yet).
+            //     The pet's damage stays under its own entity id; the player gate at the
+            //     bottom of this method will drop it as non-player noise.  If the parent
+            //     LATER becomes a known player, subsequent edges from this pet will fold
+            //     correctly and the render-time coalesce pass migrates the stale row.
+            //
+            // The fold is a no-op for self-pets that already get redirected via the existing
+            // Section-2 power-proto matchers (line ~1303 / ~1319 / ~1333) — both paths
+            // produce scoringOwner = _likelySelfOwnerId.  Running this BEFORE those matchers
+            // means peer-pet attribution never depends on power-proto coverage in
+            // HeroPowers.Names, which is incomplete for custom-server hero kits.
+            if (wireUlt != 0 && wireUlt != rawOwner)
+            {
+                ulong effectiveUlt = wireUlt;
+                if (_localPlayerEntityId != 0 && wireUlt == _localPlayerEntityId && _likelySelfOwnerId != 0)
+                    effectiveUlt = _likelySelfOwnerId;
+
+                ulong root = 0;
+                if (_heroNameByOwnerId.ContainsKey(effectiveUlt) || _localAvatarEntityIds.Contains(effectiveUlt))
+                    root = effectiveUlt;
+                else if (_petRootOwnerByEntity.TryGetValue(effectiveUlt, out ulong cachedRoot))
+                    root = cachedRoot;
+
+                if (root != 0 && root != rawOwner)
+                {
+                    if (!_petRootOwnerByEntity.TryGetValue(rawOwner, out ulong existingRoot) || existingRoot != root)
+                    {
+                        _petRootOwnerByEntity[rawOwner] = root;
+                        if (_loggedPeerPetFolds.Add(rawOwner))
+                            Diagnostic?.Invoke($"DpsMeter: peer-pet fold — pet/summon entity {rawOwner} → chain-root avatar {root} (wireUlt={wireUlt}). All future hits from this pet credit the avatar.");
+                    }
+                }
+            }
+
+            if (_petRootOwnerByEntity.TryGetValue(rawOwner, out ulong petChainRoot)
+                && petChainRoot != 0
+                && petChainRoot != scoringOwner)
+            {
+                scoringOwner = petChainRoot;
+            }
 
             // ── 0. Hero resolution (runs FIRST, gates scoring) ──────────────────────────────
             // We resolve the event's ultimate-owner entity id to a hero display name BEFORE
@@ -1127,6 +1410,83 @@ public sealed class DpsMeter : IDisposable
                 scoringOwner = _likelySelfOwnerId;
             }
 
+            // Pets / summons / proxies: when the server omits ultimate owner, rawOwner is a minion
+            // entity id that is never listed in _localAvatarEntityIds.  The fold above requires
+            // pinHero to exist first — on a cold start after restart the first dozen hits all fail
+            // the Section-1 gate and the meter looks "dead".  In authoritative mode, if the power
+            // enum is unmistakably a player power and ultimate owner (if present) is not a
+            // different entity, roll credit up to the pinned local avatar and seed hero name.
+            if (_likelySelfOwnerId != 0
+                && scoringOwner != _likelySelfOwnerId
+                && _localAvatarEntityIds.Count > 0
+                && _localAvatarEntityIds.Contains(_likelySelfOwnerId)
+                && !_localAvatarEntityIds.Contains(scoringOwner)
+                && e.PowerPrototypeEnumIndex != 0
+                && HeroPowers.TryGetHero(e.PowerPrototypeEnumIndex, out string petProxyHero))
+            {
+                bool ultCreditsSomeoneElse = wireUlt != 0 && wireUlt != _likelySelfOwnerId;
+                if (!ultCreditsSomeoneElse)
+                {
+                    bool havePinName = _heroNameByOwnerId.TryGetValue(_likelySelfOwnerId, out string? pinName);
+                    if (!havePinName || string.Equals(pinName, petProxyHero, StringComparison.Ordinal))
+                    {
+                        scoringOwner = _likelySelfOwnerId;
+                        if (!havePinName)
+                            _heroNameByOwnerId[_likelySelfOwnerId] = petProxyHero;
+                    }
+                }
+            }
+
+            // ── Self-hit predicate (computed early so the boss-fight auto-reset block below
+            // can gate on it before we touch the sliding windows).  Mirrors the gate in
+            // section 1 — keep both call sites in sync if you tweak the logic. ───────────────
+            //
+            //   • Authoritative path: scoringOwner is in our confirmed local-avatar set
+            //     (built from NetMessageLocalPlayer / InventoryMove / TryActivatePower).
+            //   • Pinned-self path: heuristic election already picked this owner as you.
+            //   • Container-id path: the server credited the local *Player* container
+            //     instead of an Avatar; rawOwner / wirePow match the local player entity id.
+            bool ownerIsSelf = _localAvatarEntityIds.Contains(scoringOwner)
+                || (_likelySelfOwnerId != 0 && scoringOwner == _likelySelfOwnerId)
+                || (_localPlayerEntityId != 0
+                    && (rawOwner == _localPlayerEntityId || wirePow == _localPlayerEntityId));
+
+            // ── Boss-fight auto-reset (boss-only mode, self-idle gate) ──────────────────────
+            // We've passed the boss-target filter; this hit is going to flow into hero
+            // resolution next.  If WE haven't landed a boss-admitted hit ourselves in
+            // BossFightIdleReset, treat this as the start of a brand-new fight: wipe the
+            // sliding windows so the leaderboard doesn't blend stale data from the
+            // *previous* encounter into the current one.
+            //
+            // CRITICAL — must gate on `ownerIsSelf`, not just "any boss hit":
+            //   In a public area (Avengers Tower, BUE, Holo-Sim, shared waypoints) peer
+            //   avatars hit bosses several times per second.  An unconditional "any boss
+            //   hit refreshes the timer" never opens a 20s gap, so the user's own old
+            //   burst from before a region change keeps decaying linearly through the
+            //   60s window — exactly the "i absorbe old information" symptom we observed
+            //   on Saturday's session log (region change → fresh boss fight → numbers
+            //   blended with pre-zone burst for ~50 s).
+            //
+            // Two guards prevent unwanted resets:
+            //   • _bossOnlyMode — in all-damage mode continuous decay is the right behavior.
+            //   • _lastSelfBossHitUtc != MinValue — first self hit of session shouldn't
+            //     trigger a "reset" diagnostic; just initialise the timestamp normally below.
+            if (_bossOnlyMode
+                && ownerIsSelf
+                && _lastSelfBossHitUtc != DateTime.MinValue
+                && now - _lastSelfBossHitUtc >= BossFightIdleReset
+                && (_scoring.Count > 0 || _totalsPerOwner.Count > 0))
+            {
+                TimeSpan gap = now - _lastSelfBossHitUtc;
+                int rowsCleared = _totalsPerOwner.Count;
+                _scoring.Clear();
+                _instant.Clear();
+                _totalsPerOwner.Clear();
+                CurrentDps = 0;
+                CurrentOwnerTotal60s = 0;
+                Diagnostic?.Invoke($"DpsMeter: boss-fight auto-reset (self idle {gap.TotalSeconds:F1}s ≥ {BossFightIdleReset.TotalSeconds:F0}s, cleared {rowsCleared} rows) — starting fresh fight");
+            }
+
             // Still advance the 60s window even for non-hero events, so totals for evicted
             // hero hits decay on schedule (otherwise a heal-only period with no self-hits
             // would keep the old totals alive indefinitely).
@@ -1161,9 +1521,6 @@ public sealed class DpsMeter : IDisposable
             // name will back-fill on the first Channel-B hit we get (or remain empty; the
             // overlay shows just "DPS" in that case, which is still useful).
             bool ownerIsPlayer = _heroNameByOwnerId.ContainsKey(scoringOwner);
-            bool ownerIsSelf = _localAvatarEntityIds.Contains(scoringOwner)
-                || (_localPlayerEntityId != 0
-                    && (rawOwner == _localPlayerEntityId || wirePow == _localPlayerEntityId));
             if (!ownerIsPlayer && !ownerIsSelf)
             {
                 // Recompute DPS from the (possibly purged) windows and fire if changed; this
@@ -1184,6 +1541,66 @@ public sealed class DpsMeter : IDisposable
             _scoring.Enqueue((now, scoringOwner, dmg));
             _totalsPerOwner.TryGetValue(scoringOwner, out long prev);
             _totalsPerOwner[scoringOwner] = prev + dmg;
+
+            // Refresh the self-idle timer ONLY when the hit we just scored is ours.  Peer
+            // hits intentionally don't refresh — keeping a peer-driven timer alive would
+            // suppress the auto-reset every time we zone into a populated public area.
+            if (_bossOnlyMode && ownerIsSelf)
+                _lastSelfBossHitUtc = now;
+
+            // ── 2a. Encounter accumulator (boss-only mode) ──────────────────────────────────
+            // Fight-scoped per-owner totals — see _encounterTotalsPerOwner field doc for the
+            // full rationale.  Three jobs in one block:
+            //
+            //   (i)   If the previous encounter was FROZEN (last engaged boss died, no new
+            //         hit since), this hit is the trigger to clear it and start fresh.  We
+            //         also clear when the existing accumulator is non-empty but there are
+            //         NO engaged bosses left — that catches the edge case where kill events
+            //         arrive after a region change cleared the engaged set but somehow left
+            //         totals behind (defensive; shouldn't normally happen).
+            //   (ii)  Engage the current target (it just took damage; whether it's a tracked
+            //         boss is decided by the boss filter at the top of OnDamageDealt — we
+            //         only reach here if that filter passed).
+            //   (iii) Add this hit's damage to the per-owner accumulator.  All admitted
+            //         scoring-owners count, peers included — that's the whole point of an
+            //         encounter leaderboard.
+            if (_bossOnlyMode)
+            {
+                if (_encounterEndedUtc != DateTime.MinValue)
+                {
+                    int frozenOwners = _encounterTotalsPerOwner.Count;
+                    _encounterTotalsPerOwner.Clear();
+                    _engagedBossEntityIds.Clear();
+                    _lastHitPerEngagedBoss.Clear();
+                    _encounterStartUtc = DateTime.MinValue;
+                    _encounterEndedUtc = DateTime.MinValue;
+                    _lastEncounterDamageUtc = DateTime.MinValue;
+                    Diagnostic?.Invoke($"DpsMeter: encounter cleared (new boss hit after frozen fight, {frozenOwners} owners discarded) — starting fresh");
+                }
+
+                if (_encounterStartUtc == DateTime.MinValue)
+                {
+                    _encounterStartUtc = now;
+                    Diagnostic?.Invoke($"DpsMeter: encounter started (firstTarget={e.TargetEntityId}, firstOwner={scoringOwner})");
+                }
+
+                if (e.TargetEntityId != 0)
+                {
+                    _engagedBossEntityIds.Add(e.TargetEntityId);
+                    // Per-target last-hit timestamp drives the EngagedBossIdleEviction sweep
+                    // in Tick — without this, missed kill events would let a long-dead boss
+                    // sit in the engaged set indefinitely and prevent the next-fight clear.
+                    _lastHitPerEngagedBoss[e.TargetEntityId] = now;
+                }
+
+                _encounterTotalsPerOwner.TryGetValue(scoringOwner, out long encPrev);
+                _encounterTotalsPerOwner[scoringOwner] = encPrev + dmg;
+                // Bump the stall watchdog — Tick uses this to declare the fight over if
+                // EVERY player goes silent for EncounterStallTimeout (boss despawn, AOI
+                // exit, kill-event lost in transit, etc.).  Any-owner timestamp on purpose;
+                // see _lastEncounterDamageUtc field doc.
+                _lastEncounterDamageUtc = now;
+            }
 
             // ── 3. Pick "you" ────────────────────────────────────────────────────────────────
             // Two modes:
@@ -1332,8 +1749,171 @@ public sealed class DpsMeter : IDisposable
         bool reelected = false;
         string? stateDump = null;
 
+        // Encounter-stall watchdog outputs (consumed AFTER the lock for the diagnostic /
+        // event raise — same pattern the kill-driven encounter-end uses).  Declared here
+        // so they stay in scope past the lock block.
+        bool stallEndedFrozen = false;
+        bool stallEndedAutoCleared = false;
+        TimeSpan stallSilence = TimeSpan.Zero;
+        TimeSpan stallDuration = TimeSpan.Zero;
+        long stallSelfTotal = 0;
+        int stallOwnerCount = 0;
+
+        // Engaged-boss eviction outputs (separate from stall outputs because they describe
+        // a different end-cause — per-target idle, not total-fight idle — and we want
+        // distinct log lines for triage).
+        bool evictEndedFrozen = false;
+        bool evictEndedAutoCleared = false;
+        int evictedCount = 0;
+        TimeSpan evictDuration = TimeSpan.Zero;
+        TimeSpan evictOldestSilence = TimeSpan.Zero;
+        long evictSelfTotal = 0;
+        int evictOwnerCount = 0;
+
         lock (_sync)
         {
+            // ── Engaged-boss idle eviction ──────────────────────────────────────────────────
+            // Sweep _lastHitPerEngagedBoss; evict any boss that hasn't been hit in
+            // EngagedBossIdleEviction (15 s).  Bosses presumed dead via missed kill / destroy
+            // packets get cleaned up here so the engaged set can drain, the encounter can
+            // freeze, and the next boss hit triggers the standard "frozen → fresh" clear
+            // instead of piling damage onto stale totals.
+            //
+            // Only runs while the encounter is ACTIVE (not already frozen) — frozen
+            // encounters intentionally retain their engaged set so a late-arriving kill
+            // event doesn't double-emit "encounter ended".
+            //
+            // Concrete bug this fixes: user finishes boss A in a public area; the kill
+            // packet for A is dropped (or A is a mob type whose death the sniffer can't
+            // observe).  User immediately moves to boss B, ~5 s later.  Without eviction:
+            // engaged set = {A, B}, encounter never freezes, B's damage adds to A's totals.
+            // With eviction: at t = A_lastHit + 15 s, A is evicted; if B isn't engaged yet
+            // (i.e. user is still in transit) the engaged set drops to empty and the
+            // encounter ends naturally.  When B is engaged afterwards, the standard
+            // "frozen → fresh" clear fires on the first hit, so B starts from 0.
+            if (_bossOnlyMode
+                && _encounterStartUtc != DateTime.MinValue
+                && _encounterEndedUtc == DateTime.MinValue
+                && _lastHitPerEngagedBoss.Count > 0)
+            {
+                DateTime evictCutoff = nowUtc - EngagedBossIdleEviction;
+                List<ulong>? toEvict = null;
+                DateTime oldestEvicted = DateTime.MaxValue;
+                foreach (var kv in _lastHitPerEngagedBoss)
+                {
+                    if (kv.Value < evictCutoff)
+                    {
+                        (toEvict ??= new List<ulong>(_lastHitPerEngagedBoss.Count)).Add(kv.Key);
+                        if (kv.Value < oldestEvicted) oldestEvicted = kv.Value;
+                    }
+                }
+
+                if (toEvict != null)
+                {
+                    foreach (ulong id in toEvict)
+                    {
+                        _lastHitPerEngagedBoss.Remove(id);
+                        _engagedBossEntityIds.Remove(id);
+                    }
+                    evictedCount = toEvict.Count;
+                    evictOldestSilence = nowUtc - oldestEvicted;
+
+                    // If the eviction emptied the engaged set, end the encounter exactly
+                    // like a natural kill-driven end — same freeze-vs-auto-clear branch on
+                    // selfTotal so the user sees identical UI behavior regardless of
+                    // whether the boss died via kill packet or via "presumed dead".
+                    if (_engagedBossEntityIds.Count == 0)
+                    {
+                        evictDuration = nowUtc - _encounterStartUtc;
+                        if (_likelySelfOwnerId != 0)
+                            _encounterTotalsPerOwner.TryGetValue(_likelySelfOwnerId, out evictSelfTotal);
+                        evictOwnerCount = _encounterTotalsPerOwner.Count;
+
+                        if (evictSelfTotal == 0)
+                        {
+                            _encounterTotalsPerOwner.Clear();
+                            _engagedBossEntityIds.Clear();
+                            _lastHitPerEngagedBoss.Clear();
+                            _encounterStartUtc = DateTime.MinValue;
+                            _encounterEndedUtc = DateTime.MinValue;
+                            _lastEncounterDamageUtc = DateTime.MinValue;
+                            evictEndedAutoCleared = true;
+                        }
+                        else
+                        {
+                            _encounterEndedUtc = nowUtc;
+                            evictEndedFrozen = true;
+                        }
+                    }
+                }
+            }
+
+            // ── Encounter-stall check ───────────────────────────────────────────────────────
+            // Runs BEFORE the sliding-window decay so the post-stall state (cleared encounter
+            // accumulator OR `_encounterEndedUtc` set) is reflected in this tick's `newDps`,
+            // `newOwnerTotal`, and the state dump.  Branch matches OnEngagedEntityRemoved:
+            //   • selfTotal > 0  → freeze (set _encounterEndedUtc; user reads the breakdown).
+            //   • selfTotal == 0 → auto-clear (peer-only fight, no value in freezing).
+            // Only fires when an encounter is genuinely active (start set, not already ended)
+            // AND we have a damage timestamp to compare against AND the silence exceeds the
+            // configured threshold.  Without the timestamp guard a tick fired BEFORE the very
+            // first hit of a new encounter would spuriously match (MinValue is "ages ago").
+            //
+            // Now mostly a backstop — per-target eviction above usually catches missed-kill
+            // scenarios first (15 s vs 30 s threshold).  Stall still matters for the case
+            // where the ENGAGED SET itself is stale (eviction logic broken / dictionaries
+            // out of sync) or when no engaged-set entry was ever recorded (shouldn't happen,
+            // but defensive).
+            if (_bossOnlyMode
+                && _encounterStartUtc != DateTime.MinValue
+                && _encounterEndedUtc == DateTime.MinValue
+                && _lastEncounterDamageUtc != DateTime.MinValue
+                && nowUtc - _lastEncounterDamageUtc >= EncounterStallTimeout)
+            {
+                stallSilence = nowUtc - _lastEncounterDamageUtc;
+                stallDuration = nowUtc - _encounterStartUtc;
+                if (_likelySelfOwnerId != 0)
+                    _encounterTotalsPerOwner.TryGetValue(_likelySelfOwnerId, out stallSelfTotal);
+                stallOwnerCount = _encounterTotalsPerOwner.Count;
+
+                if (stallSelfTotal == 0)
+                {
+                    _encounterTotalsPerOwner.Clear();
+                    _engagedBossEntityIds.Clear();
+                    _lastHitPerEngagedBoss.Clear();
+                    _encounterStartUtc = DateTime.MinValue;
+                    _encounterEndedUtc = DateTime.MinValue;
+                    _lastEncounterDamageUtc = DateTime.MinValue;
+                    stallEndedAutoCleared = true;
+                }
+                else
+                {
+                    // Freeze in place — engaged-boss set is intentionally retained so a
+                    // late-arriving kill event won't double-emit "encounter ended".  The
+                    // user reads the final breakdown until their next boss hit clears it.
+                    _encounterEndedUtc = nowUtc;
+                    stallEndedFrozen = true;
+                }
+            }
+
+            // ── Frozen-state retirement ─────────────────────────────────────────────────────
+            // No automatic / time-based retirement happens here.  TWO previous attempts at
+            // an automatic discard were both removed because they wiped the breakdown the
+            // user was actively reading:
+            //   • EncounterFrozenMaxAge (20 s wall-clock) — removed Apr 2026 (first iter).
+            //   • FastClearFrozenIfStale (non-engaged target hit ≥ 5 s after freeze) —
+            //     removed Apr 2026 (second iter).  The post-kill window is FULL of
+            //     incidental hits on loot crates / medallions / mini-bosses / patrol mobs,
+            //     and the fast-clear was firing on those, instantly dropping the UI back
+            //     to GetTopHeroesBy60sShare (whose totals visibly drain as the 60 s window
+            //     slides) — exactly the "numbers reducing after fight ended" symptom.
+            // The freeze now persists indefinitely until one of these explicit "user moved
+            // on" events fires:
+            //   • hit on a real boss-classified target → encounter cleared (OnDamageDealt)
+            //   • OnRegionChanged                       → full reset
+            //   • boss-only mode toggle                 → full reset
+            //   • Reset() / external state wipe
+
             DateTime scoringCutoff = nowUtc - OwnerScoringWindow;
             while (_scoring.Count > 0 && _scoring.Peek().Ts < scoringCutoff)
             {
@@ -1444,11 +2024,29 @@ public sealed class DpsMeter : IDisposable
                 var sb = new System.Text.StringBuilder();
                 sb.Append("DpsMeter.State: self=").Append(_likelySelfOwnerId)
                   .Append(" hero='").Append(CurrentHeroDisplayName).Append("'")
+                  .Append(" bossOnly=").Append(_bossOnlyMode)
                   .Append(" 60s=").Append(CurrentOwnerTotal60s)
                   .Append(" dps=").Append((long)CurrentDps)
                   .Append(" rows=").Append(_totalsPerOwner.Count)
                   .Append(" localAvatars=[").Append(string.Join(",", _localAvatarEntityIds))
                   .Append("] localPlayer=").Append(_localPlayerEntityId);
+                // Encounter dump (only meaningful in boss mode; suppress otherwise to keep the
+                // line short).  fightState ∈ {none, active, ended} maps directly onto the
+                // boss-mode UI badge so post-hoc log triage can correlate user complaints
+                // ("the meter froze on the old fight") with the actual stored state.
+                if (_bossOnlyMode)
+                {
+                    string fightState = _encounterStartUtc == DateTime.MinValue
+                        ? "none"
+                        : (_encounterEndedUtc == DateTime.MinValue ? "active" : "ended");
+                    long fightSelf = 0;
+                    if (_likelySelfOwnerId != 0)
+                        _encounterTotalsPerOwner.TryGetValue(_likelySelfOwnerId, out fightSelf);
+                    sb.Append(" fight=").Append(fightState)
+                      .Append(" fightSelf=").Append(fightSelf)
+                      .Append(" fightOwners=").Append(_encounterTotalsPerOwner.Count)
+                      .Append(" engagedBosses=").Append(_engagedBossEntityIds.Count);
+                }
                 if (_totalsPerOwner.Count > 0)
                 {
                     sb.Append(" top:");
@@ -1479,9 +2077,25 @@ public sealed class DpsMeter : IDisposable
 
         if (reelected)
             Diagnostic?.Invoke($"DpsMeter.Tick: self-owner re-elected {ownerBefore} (60s={reelectOldTotal}) -> {ownerAfter} (60s={reelectNewTotal})");
+        if (evictEndedFrozen)
+            Diagnostic?.Invoke($"DpsMeter: encounter ended (engaged-boss eviction — {evictedCount} boss(es) idle for ≥ {EngagedBossIdleEviction.TotalSeconds:F0}s, oldest={evictOldestSilence.TotalSeconds:F1}s, duration={evictDuration.TotalSeconds:F1}s, selfTotal={evictSelfTotal:N0}, owners={evictOwnerCount}) — leaderboard frozen until next boss hit");
+        else if (evictEndedAutoCleared)
+            Diagnostic?.Invoke($"DpsMeter: encounter ended (engaged-boss eviction — {evictedCount} boss(es) idle for ≥ {EngagedBossIdleEviction.TotalSeconds:F0}s, oldest={evictOldestSilence.TotalSeconds:F1}s, duration={evictDuration.TotalSeconds:F1}s, selfTotal=0, owners={evictOwnerCount}) — peer-only fight, auto-cleared (no freeze)");
+        else if (evictedCount > 0)
+            Diagnostic?.Invoke($"DpsMeter: engaged-boss eviction ({evictedCount} idle ≥ {EngagedBossIdleEviction.TotalSeconds:F0}s, oldest={evictOldestSilence.TotalSeconds:F1}s) — encounter still active, {_engagedBossEntityIds.Count} engaged remaining");
+        if (stallEndedFrozen)
+            Diagnostic?.Invoke($"DpsMeter: encounter ended (stalled — no damage for {stallSilence.TotalSeconds:F1}s ≥ {EncounterStallTimeout.TotalSeconds:F0}s, duration={stallDuration.TotalSeconds:F1}s, selfTotal={stallSelfTotal:N0}, owners={stallOwnerCount}) — leaderboard frozen until next boss hit");
+        if (stallEndedAutoCleared)
+            Diagnostic?.Invoke($"DpsMeter: encounter ended (stalled — no damage for {stallSilence.TotalSeconds:F1}s ≥ {EncounterStallTimeout.TotalSeconds:F0}s, duration={stallDuration.TotalSeconds:F1}s, selfTotal=0, owners={stallOwnerCount}) — peer-only fight, auto-cleared (no freeze)");
         if (stateDump != null)
             Diagnostic?.Invoke(stateDump);
-        if (changed) DpsChanged?.Invoke(this, EventArgs.Empty);
+        // Stall-end / eviction-end always counts as a state change for UI repaint purposes —
+        // the encounter badge / leaderboard source flips even when the 60s window numbers
+        // haven't moved.  Note we deliberately do NOT raise on a partial eviction (engaged
+        // set non-empty afterwards): the encounter is still active, totals haven't changed,
+        // and the user shouldn't see the overlay flicker just because we cleaned house.
+        if (changed || stallEndedFrozen || stallEndedAutoCleared || evictEndedFrozen || evictEndedAutoCleared)
+            DpsChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private DateTime _lastStateDumpUtc = DateTime.MinValue;
@@ -1515,6 +2129,14 @@ public sealed class DpsMeter : IDisposable
             _loggedUnknownHeroes.Clear();
             _loggedNonBossTargets.Clear();
             _loggedUnknownBossTargets.Clear();
+            // Pet → chain-root edges are entity-id-keyed and entity ids restart per region
+            // (server destroys all summons on zone), so carrying these forward would mis-
+            // attribute damage if a re-allocated pet entity id collided with a stale entry.
+            // Clear together with _localAvatarEntityIds + _prototypeByEntityId for the same
+            // reason — all three are per-region by definition.
+            _petRootOwnerByEntity.Clear();
+            _loggedPeerPetFolds.Clear();
+            _loggedOffByOneBossAdmits.Clear();
 
             // ── Entity-id-keyed maps are DELIBERATELY KEPT across region changes ─────────────
             // In MHServer the entity-id namespace is server-global and stable for the lifetime
@@ -1551,7 +2173,21 @@ public sealed class DpsMeter : IDisposable
             // anyway, so the previous timestamp is meaningless and would either spuriously
             // fire (if the user zoned mid-fight) or suppress a legitimate reset (if a
             // fresh boss spawns within the gap window in the new region).
-            _lastBossAdmittedUtc = DateTime.MinValue;
+            _lastSelfBossHitUtc = DateTime.MinValue;
+
+            // Wipe the encounter accumulator — engaged-boss entity ids are per-region and
+            // their EntityKilled / EntityDestroyed events may never arrive if we left the
+            // region mid-fight (server stops streaming AOI updates for the abandoned
+            // entities the moment we zone).  Carrying state forward would either freeze
+            // the leaderboard forever (kill events never come) or splice the previous
+            // region's totals into the new fight (next boss hit accumulates on top of
+            // stale totals).  Cleanest semantic: zoning ends the encounter unconditionally.
+            _encounterTotalsPerOwner.Clear();
+            _engagedBossEntityIds.Clear();
+            _lastHitPerEngagedBoss.Clear();
+            _encounterStartUtc = DateTime.MinValue;
+            _encounterEndedUtc = DateTime.MinValue;
+            _lastEncounterDamageUtc = DateTime.MinValue;
 
             // Nearby-AOI set rotates wholesale when we zone — every peer left our AOI and
             // we'll get fresh "nearby" broadcasts for whoever is in the new region within a
@@ -1566,6 +2202,256 @@ public sealed class DpsMeter : IDisposable
         _prototypeByEntityId.Clear();
         DpsChanged?.Invoke(this, EventArgs.Empty);
         Diagnostic?.Invoke($"DpsMeter: region changed (regionProtoId={e.RegionPrototypeId}) — meter reset");
+    }
+
+    private void OnEntityKilled(object? sender, EntityKillEvent e)
+        => OnEngagedEntityRemoved(e.EntityId, e.UtcTime, sourceTag: "killed");
+
+    private void OnEntityDestroyed(object? sender, EntityDestroyEvent e)
+        => OnEngagedEntityRemoved(e.EntityId, e.UtcTime, sourceTag: "destroyed");
+
+    // Note (Apr 2026, second iteration of "numbers reducing after fight ended" fix):
+    // FastClearFrozenIfStale was REMOVED.  See the comment at the EncounterFrozenFastClearGrace
+    // declaration site for the full rationale — TL;DR: the post-kill window is full of
+    // incidental hits on loot crates / medallions / mini-bosses / patrol mobs, and any of
+    // those firing the fast-clear discarded the breakdown the user was reading.  The freeze
+    // now persists indefinitely and is only retired by explicit "user moved on" events:
+    // new boss hit (encounter cleared in OnDamageDealt), region change, mode toggle, Reset().
+
+    /// <summary>Common path for boss-death detection — both <see cref="MhMissionSniffer.EntityKilled"/>
+    /// (explicit kill notification) and <see cref="MhMissionSniffer.EntityDestroyed"/> (catch-all
+    /// removal) funnel here.  We process the union because empirically some boss types only emit
+    /// one or the other (server quirk; better to dedupe here than to miss encounter-ends).
+    ///
+    /// Cheap fast path: if the entity isn't in <see cref="_engagedBossEntityIds"/> we exit
+    /// without touching anything else — most kill / destroy events in a session are irrelevant
+    /// (trash mobs, props, projectiles) and we don't want to take the lock + fire DpsChanged
+    /// for those.</summary>
+    private void OnEngagedEntityRemoved(ulong entityId, DateTime utcTime, string sourceTag)
+    {
+        if (entityId == 0) return;
+
+        bool encounterJustEnded = false;
+        bool autoClearedNoSelf = false;
+        TimeSpan duration = TimeSpan.Zero;
+        long selfTotal = 0;
+        int ownerCount = 0;
+
+        lock (_sync)
+        {
+            // Cheap miss check first — vast majority of removals are non-boss entities and
+            // the HashSet.Remove already does a bucket lookup, so duplicating with Contains
+            // would cost more than it saves.
+            if (!_engagedBossEntityIds.Remove(entityId))
+                return;
+            // Keep _lastHitPerEngagedBoss in lockstep with the engaged HashSet — without
+            // this, a stale per-target timestamp would linger and the eviction sweep in
+            // Tick could spuriously "evict" an already-killed entity.
+            _lastHitPerEngagedBoss.Remove(entityId);
+
+            // Last engaged boss just died.  Two outcomes depending on whether SELF actually
+            // participated in this fight:
+            //
+            //   • selfTotal > 0  → freeze the encounter so the user can read the final
+            //     breakdown of a fight they were part of.  Cleared on the next boss hit.
+            //
+            //   • selfTotal == 0 → auto-clear immediately, NO freeze.  This is the case
+            //     where a peer engaged and killed a boss while the user was positioning,
+            //     loading, in a menu, or just hadn't entered melee range yet.  Without
+            //     auto-clear the overlay would sit on "fight ended · Fight: 0" with a
+            //     single peer at 100% for as long as it takes the user to land their
+            //     own first boss hit (observed in production: 78 seconds in busy public
+            //     areas like Avengers Tower BUE, with a peer killing every boss before
+            //     the user could engage).  That state reads as "the meter is broken /
+            //     stuck / lost connection" because there is literally nothing useful on
+            //     screen — the leaderboard is a stranger's contribution to a fight the
+            //     user didn't participate in, and the personal number is 0.  Far better
+            //     to fall back to the live "waiting for boss…" / 60s rolling state.
+            if (_engagedBossEntityIds.Count == 0
+                && _encounterStartUtc != DateTime.MinValue
+                && _encounterEndedUtc == DateTime.MinValue)
+            {
+                duration = utcTime - _encounterStartUtc;
+                if (_likelySelfOwnerId != 0)
+                    _encounterTotalsPerOwner.TryGetValue(_likelySelfOwnerId, out selfTotal);
+                ownerCount = _encounterTotalsPerOwner.Count;
+
+                if (selfTotal == 0)
+                {
+                    _encounterTotalsPerOwner.Clear();
+                    _engagedBossEntityIds.Clear();
+                    _lastHitPerEngagedBoss.Clear();
+                    _encounterStartUtc = DateTime.MinValue;
+                    _encounterEndedUtc = DateTime.MinValue;
+                    _lastEncounterDamageUtc = DateTime.MinValue;
+                    autoClearedNoSelf = true;
+                }
+                else
+                {
+                    _encounterEndedUtc = utcTime;
+                    encounterJustEnded = true;
+                }
+            }
+        }
+
+        if (encounterJustEnded)
+        {
+            Diagnostic?.Invoke($"DpsMeter: encounter ended ({sourceTag} entity={entityId}, duration={duration.TotalSeconds:F1}s, selfTotal={selfTotal:N0}, owners={ownerCount}) — leaderboard frozen until next boss hit");
+            // Notify listeners so the overlay repaints with the "ended" indicator on the
+            // current detail line — without this it'd take up to 250ms (next decay tick)
+            // before the user sees the final breakdown freeze.
+            DpsChanged?.Invoke(this, EventArgs.Empty);
+        }
+        else if (autoClearedNoSelf)
+        {
+            Diagnostic?.Invoke($"DpsMeter: encounter ended ({sourceTag} entity={entityId}, duration={duration.TotalSeconds:F1}s, selfTotal=0, owners={ownerCount}) — peer-only fight, auto-cleared (no freeze)");
+            DpsChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    /// <summary>Snapshot of the current encounter for UI consumption.  Returned by value so the
+    /// overlay can read all fields without holding the meter lock.  All fields are MinValue / 0
+    /// when no encounter has ever started this session (or the last one was cleared by region
+    /// change / mode toggle).</summary>
+    /// <param name="IsActive"><c>true</c> when at least one engaged boss is still alive
+    /// (accumulator is open and accepting hits).</param>
+    /// <param name="IsEnded"><c>true</c> when all engaged bosses have died and the leaderboard
+    /// is frozen, awaiting the next boss hit to clear and start a new encounter.  The detail
+    /// line should annotate the "fight" total with "(ended)" or similar so the user understands
+    /// they're looking at a final breakdown, not a live one.</param>
+    /// <param name="SelfTotal">Damage credited to <see cref="LikelySelfOwnerId"/> in this
+    /// encounter; 0 if self isn't pinned or has done nothing yet.  Replaces the title's
+    /// "60s:" number while in boss mode.</param>
+    /// <param name="StartUtc">Time of the first boss hit of this encounter.</param>
+    /// <param name="EndUtc">Time the last engaged boss died, or MinValue while active.</param>
+    /// <param name="EngagedBossCount">Bosses still alive (0 once frozen).</param>
+    public readonly record struct EncounterSnapshot(
+        bool IsActive,
+        bool IsEnded,
+        long SelfTotal,
+        DateTime StartUtc,
+        DateTime EndUtc,
+        int EngagedBossCount);
+
+    /// <summary>Atomic snapshot of the encounter accumulator state for the UI / presenter.
+    /// Returns an empty / MinValue snapshot when boss-only mode is OFF — the encounter
+    /// concept only applies in boss mode.</summary>
+    public EncounterSnapshot GetEncounterSnapshot()
+    {
+        lock (_sync)
+        {
+            if (!_bossOnlyMode)
+                return new EncounterSnapshot(false, false, 0, DateTime.MinValue, DateTime.MinValue, 0);
+
+            bool isActive = _encounterStartUtc != DateTime.MinValue && _encounterEndedUtc == DateTime.MinValue;
+            bool isEnded  = _encounterEndedUtc != DateTime.MinValue;
+            long selfTotal = 0;
+            if (_likelySelfOwnerId != 0)
+                _encounterTotalsPerOwner.TryGetValue(_likelySelfOwnerId, out selfTotal);
+            return new EncounterSnapshot(
+                IsActive: isActive,
+                IsEnded: isEnded,
+                SelfTotal: selfTotal,
+                StartUtc: _encounterStartUtc,
+                EndUtc: _encounterEndedUtc,
+                EngagedBossCount: _engagedBossEntityIds.Count);
+        }
+    }
+
+    /// <summary>Top-N rows by encounter total (boss-only mode), ranked by absolute damage with
+    /// percent computed against the sum of admitted owners in the current encounter.  Same
+    /// row shape as <see cref="GetTopHeroesBy60sShare"/> so the overlay can render either
+    /// without conditional layout — only the source totals differ.
+    ///
+    /// <para>Returns an empty list when boss-only mode is OFF or when the encounter has no
+    /// data yet.  Self row is force-emitted (same rationale as the 60s variant) so the user
+    /// is never invisible from their own leaderboard even if hero resolution fails.</para></summary>
+    public IReadOnlyList<HeroShareEntry> GetTopHeroesByEncounterShare(int max)
+    {
+        if (max <= 0) return Array.Empty<HeroShareEntry>();
+
+        lock (_sync)
+        {
+            if (!_bossOnlyMode || _encounterTotalsPerOwner.Count == 0)
+                return Array.Empty<HeroShareEntry>();
+
+            // Sum candidate damage with the same self-inclusion rule as the 60s variant —
+            // the user must always see their own contribution, hero name resolved or not.
+            long totalEncounterDamage = 0;
+            foreach (var kv in _encounterTotalsPerOwner)
+            {
+                if (_heroNameByOwnerId.ContainsKey(kv.Key)
+                    || (_likelySelfOwnerId != 0 && kv.Key == _likelySelfOwnerId))
+                    totalEncounterDamage += kv.Value;
+            }
+            if (totalEncounterDamage <= 0)
+                return Array.Empty<HeroShareEntry>();
+
+            var boundDbIds = new HashSet<ulong>(_dbIdByAvatarId.Values);
+            foreach (var cv in _dbIdByPlayerEntityId.Values) boundDbIds.Add(cv);
+
+            var rows = new List<HeroShareEntry>(_encounterTotalsPerOwner.Count);
+            foreach (var kv in _encounterTotalsPerOwner)
+            {
+                bool isSelf = _likelySelfOwnerId != 0 && kv.Key == _likelySelfOwnerId;
+                _heroNameByOwnerId.TryGetValue(kv.Key, out string? name);
+                if (string.IsNullOrEmpty(name) && !isSelf)
+                    continue;
+
+                string nickname = ResolveNicknameForOwnerLocked(kv.Key, name, boundDbIds);
+                rows.Add(new HeroShareEntry
+                {
+                    Name       = name ?? string.Empty,
+                    Total60s   = kv.Value, // field name is historical — actual value here is encounter total
+                    Percent    = kv.Value * 100.0 / totalEncounterDamage,
+                    IsSelf     = isSelf,
+                    PlayerName = nickname,
+                    OwnerId    = kv.Key,
+                });
+            }
+
+            // First: fold pet/summon rows into their chain-root player avatar row using the
+            // edge map populated in OnDamageDealt.  This catches the rows that
+            // CoalesceRowsByPlayerName CAN'T handle — anonymous summons (e.g. peer Magik's
+            // demons) whose PlayerName is empty so name-based merging is impossible.  Must
+            // run BEFORE the name-based pass so a successful pet-fold copies the root's
+            // PlayerName into the merged row, giving the name-based pass something to work
+            // with on the very rare case a third source (hero-swap proxy) also matches.
+            rows = CoalesceRowsByPetChainRoot(rows, totalEncounterDamage);
+
+            // Coalesce same-player rows (peer summons / hero-swap / proxy entities) BEFORE
+            // sorting + truncating so the max cap reflects unique players, not entity ids.
+            // See CoalesceRowsByPlayerName for the full rationale (the "Rasmis ×4" bug).
+            rows = CoalesceRowsByPlayerName(rows, totalEncounterDamage);
+
+            rows.Sort((a, b) =>
+            {
+                int c = b.Total60s.CompareTo(a.Total60s);
+                return c != 0 ? c : string.CompareOrdinal(a.Name, b.Name);
+            });
+            if (rows.Count > max) rows.RemoveRange(max, rows.Count - max);
+
+            // Same anonymous-tag pass as the 60s variant — peers without resolved nicknames
+            // get a stable per-owner #XXXX hash so the user can distinguish unnamed players.
+            for (int i = 0; i < rows.Count; i++)
+            {
+                var r = rows[i];
+                if (r.IsSelf) continue;
+                if (!string.IsNullOrEmpty(r.PlayerName)) continue;
+
+                string tag = "#" + (r.OwnerId & 0xFFFF).ToString("X4");
+                rows[i] = new HeroShareEntry
+                {
+                    Name       = r.Name,
+                    Percent    = r.Percent,
+                    Total60s   = r.Total60s,
+                    IsSelf     = r.IsSelf,
+                    OwnerId    = r.OwnerId,
+                    PlayerName = tag,
+                };
+            }
+            return rows;
+        }
     }
 
     /// <summary>Top-N heroes in AOI sorted by 60s damage, each with their share of the total
@@ -1584,13 +2470,19 @@ public sealed class DpsMeter : IDisposable
 
         lock (_sync)
         {
-            // Two-pass: first sum hero-only totals (excluding any non-hero leftovers that may
-            // still be in _totalsPerOwner — shouldn't happen after the Section 1 gate in
-            // OnDamageDealt, but we guard just in case). Then project to %.
+            // Sum candidate damage.  We include rows that EITHER have a resolved hero name
+            // OR are credited to the current local-self avatar — without the second clause
+            // the user's own row is dropped from the leaderboard whenever hero resolution
+            // fails (cold-start mid-session + a power-enum that isn't in HeroPowers.Names —
+            // commonly a custom-server hero that ships before the dump is regenerated).
+            // Symptom: the user is dealing 70 % of total damage, sees "peer 100 %" in the
+            // bar list, and concludes the meter is broken.  See the regression note in
+            // .cursor/rules/dps-meter-diagnostics.mdc → "self row missing from leaderboard".
             long totalHeroDamage = 0;
             foreach (var kv in _totalsPerOwner)
             {
-                if (_heroNameByOwnerId.ContainsKey(kv.Key))
+                if (_heroNameByOwnerId.ContainsKey(kv.Key)
+                    || (_likelySelfOwnerId != 0 && kv.Key == _likelySelfOwnerId))
                     totalHeroDamage += kv.Value;
             }
             if (totalHeroDamage <= 0)
@@ -1608,21 +2500,40 @@ public sealed class DpsMeter : IDisposable
             var rows = new List<HeroShareEntry>(_totalsPerOwner.Count);
             foreach (var kv in _totalsPerOwner)
             {
-                if (!_heroNameByOwnerId.TryGetValue(kv.Key, out string? name))
+                bool isSelf = _likelySelfOwnerId != 0 && kv.Key == _likelySelfOwnerId;
+                _heroNameByOwnerId.TryGetValue(kv.Key, out string? name);
+
+                // Same gate as the totalHeroDamage sum: peers without a hero name are still
+                // skipped (mob / proxy noise), but the self row is always emitted so the
+                // user can see their own contribution and the title can fall back to their
+                // account nickname instead of an anonymous "DPS".
+                if (string.IsNullOrEmpty(name) && !isSelf)
                     continue;
 
                 string nickname = ResolveNicknameForOwnerLocked(kv.Key, name, boundDbIds);
 
                 rows.Add(new HeroShareEntry
                 {
-                    Name       = name,
+                    Name       = name ?? string.Empty,
                     Total60s   = kv.Value,
                     Percent    = kv.Value * 100.0 / totalHeroDamage,
-                    IsSelf     = kv.Key == _likelySelfOwnerId,
+                    IsSelf     = isSelf,
                     PlayerName = nickname,
                     OwnerId    = kv.Key,
                 });
             }
+            // First: fold pet/summon rows into their chain-root player avatar row using the
+            // edge map populated in OnDamageDealt.  Same rationale as the encounter variant —
+            // anonymous summon rows whose PlayerName is empty would otherwise survive
+            // CoalesceRowsByPlayerName and pollute the leaderboard with #F8B0/#F8B1/#F8B2
+            // duplicates of one peer's pets.
+            rows = CoalesceRowsByPetChainRoot(rows, totalHeroDamage);
+
+            // Coalesce same-player rows (peer summons / hero-swap / proxy entities) BEFORE
+            // sorting + truncating so the max cap reflects unique players, not entity ids.
+            // See CoalesceRowsByPlayerName for the full rationale (the "Rasmis ×4" bug).
+            rows = CoalesceRowsByPlayerName(rows, totalHeroDamage);
+
             // Largest total first; ties broken by name for stable UI ordering across ticks.
             rows.Sort((a, b) =>
             {
@@ -1667,6 +2578,201 @@ public sealed class DpsMeter : IDisposable
             }
             return rows;
         }
+    }
+
+    /// <summary>Coalesce leaderboard rows that share the same resolved <see cref="HeroShareEntry.PlayerName"/>
+    /// (case-insensitive) into a single row per player.  Anonymous rows (empty
+    /// <c>PlayerName</c>) pass through untouched — without a stable identity we can't
+    /// safely claim two unnamed peers are the same person.
+    ///
+    /// <para>Why this is needed: a single peer routinely produces several scoring-owner
+    /// entity ids in one encounter, all bearing the same hero icon and resolving to the
+    /// same nickname:
+    /// <list type="bullet">
+    ///   <item>Summons / pets / clones (Storm wind elementals, Squirrel Girl squirrels,
+    ///         Astral Form clones).  Each minion has its own ultimateOwnerEntityId, and
+    ///         the OnDamageDealt pet-fold path only redirects SELF pets — peer pets stay
+    ///         on their summon entity ids by design (we don't have authoritative peer-pet
+    ///         ownership data and would risk mis-attributing trash hits).</item>
+    ///   <item>Mid-encounter hero swap.  Switching to the same hero again creates a fresh
+    ///         avatar entity id; the previous avatar's totals stay in the accumulator
+    ///         until the encounter clears.</item>
+    ///   <item>Multiple controller / weapon entities for heroes whose powers spawn
+    ///         transient damage proxies (visible in production as "Rasmis ×4" with
+    ///         splits like 154.9k / 40.4k / 12.2k / 3.9k).</item>
+    /// </list>
+    /// All of these read as a meter bug to the user — the leaderboard appears to be
+    /// "tracking ghosts" — when in fact every row's underlying damage IS correctly attributed,
+    /// just spread across entity ids belonging to one player.  Merging at render time is the
+    /// least invasive fix: per-event scoring stays exact for owner-pin / re-election
+    /// purposes, the user just sees one row per player.</para>
+    ///
+    /// <para>Identity tie-breaking (when merging two rows of the same player):</para>
+    /// <list type="bullet">
+    ///   <item><c>Total60s</c> sums.  The merged percent is recomputed against
+    ///         <paramref name="denominator"/> so it stays consistent with the rest of the
+    ///         board (no FP drift from summing per-row percents).</item>
+    ///   <item><c>Name</c> / <c>OwnerId</c> are inherited from whichever source row had the
+    ///         higher individual <c>Total60s</c> — that's the player's "primary" entity for
+    ///         this fight, the one whose hero icon and entity id the user is most likely to
+    ///         associate with them.</item>
+    ///   <item><c>IsSelf</c> is OR'd.  If ANY source row was self (e.g. user's own avatar
+    ///         got pinned but their summon's separate row also resolved to the user's
+    ///         account name), the merged row is self — we never want to hide the user's
+    ///         own contribution behind an apparent peer collision.</item>
+    /// </list>
+    ///
+    /// <para>Trade-off: two players who actually share a nickname would be merged.  In
+    /// MHServer nicknames are unique per server so this should never happen organically;
+    /// even if it did, the user is far better served by one combined row than by four
+    /// confusingly-split ones.</para></summary>
+    /// <param name="rows">Pre-built row list (will be returned unchanged when nothing
+    /// merges).  Caller is responsible for sorting / truncating AFTER this call so the
+    /// max-row cap reflects unique players, not raw owner ids.</param>
+    /// <param name="denominator">The total-damage figure used to compute the original
+    /// per-row percents (60 s total or encounter total).  Required for percent re-computation
+    /// after merging.  Must be &gt; 0 — caller has already validated this before constructing
+    /// any rows.</param>
+    /// <returns>A new list when at least one merge happened, otherwise the input list.
+    /// Order is preserved among un-merged rows; merged rows occupy the position of their
+    /// first appearance in the input.</returns>
+    /// <summary>Coalesce leaderboard rows whose <see cref="HeroShareEntry.OwnerId"/> is a
+    /// pet/summon entity into the row of its chain-root player avatar (per the
+    /// <see cref="_petRootOwnerByEntity"/> map populated in <see cref="OnDamageDealt"/>).
+    ///
+    /// <para>This is the render-time complement to the scoring-time fold in OnDamageDealt:
+    /// the scoring-time fold redirects NEW pet hits onto the root once the chain edge is
+    /// known, but the FIRST few sub-second pet hits typically fire before <c>wireUlt</c>
+    /// reveals the chain (the parent hasn't fired its own power yet, or its hero hasn't
+    /// resolved into <c>_heroNameByOwnerId</c>).  Those early hits accumulate under the
+    /// pet's own entity id, producing a separate row.  Once the chain root is discovered,
+    /// the pet row is "stranded" with stale damage that will never grow further (all new
+    /// hits go to the root via the scoring-time fold) — but it stays visible on the
+    /// leaderboard until either the 60 s window drains it (60s variant) or the encounter
+    /// ends (encounter variant).  This pass migrates that stranded damage to the root row
+    /// at render time so the user always sees ONE row per player, regardless of when in
+    /// the fight the chain was discovered.</para>
+    ///
+    /// <para>Identity tie-breaking when a pet row merges into a real avatar row that's
+    /// also present (the common case: root has its own damage AND its pets have damage):
+    /// <list type="bullet">
+    ///   <item>Total: SUM of both rows' <c>Total60s</c> values.</item>
+    ///   <item><c>Name</c> / <c>OwnerId</c>: from whichever side has the higher individual
+    ///         total — that's the player's "primary" row this fight.</item>
+    ///   <item><c>PlayerName</c>: prefer non-empty over empty (the anon row is exactly
+    ///         what we're trying to collapse).</item>
+    ///   <item><c>IsSelf</c>: OR'd, same rationale as <see cref="CoalesceRowsByPlayerName"/>.</item>
+    /// </list></para>
+    ///
+    /// <para>Edge case — pet row exists but root row does NOT exist in the input list (the
+    /// avatar never directly damaged a tracked target this fight, all its damage came from
+    /// pets): the first pet row encountered carries the merge slot for that root, and any
+    /// subsequent pet rows for the same root merge into it.  Result is one combined row
+    /// with one of the pets' identities — still anonymous (it'll get a #XXXX tag in the
+    /// downstream anonymous-tag pass) but at least it's ONE row instead of N.</para></summary>
+    /// <param name="rows">Pre-built row list.  Caller is responsible for sorting / truncating
+    /// AFTER this call so the max-row cap reflects unique players, not raw owner ids.</param>
+    /// <param name="denominator">The total-damage figure used to compute per-row percents
+    /// (60 s total or encounter total).  Required for percent re-computation after merging.
+    /// Must be &gt; 0 — caller has already validated this before constructing any rows.</param>
+    /// <returns>A new list when at least one merge happened, otherwise the input list.
+    /// Order is preserved among un-merged rows; merged rows occupy the position of the
+    /// first input row that mapped to a given chain root.</returns>
+    private List<HeroShareEntry> CoalesceRowsByPetChainRoot(List<HeroShareEntry> rows, long denominator)
+    {
+        if (rows.Count <= 1 || denominator <= 0 || _petRootOwnerByEntity.Count == 0)
+            return rows;
+
+        // Group rows by their effective merge key:
+        //   • for pet rows: chain-root player avatar entity id
+        //   • for everyone else: own owner id (no-op)
+        var indexByMergeKey = new Dictionary<ulong, int>(rows.Count);
+        var coalesced = new List<HeroShareEntry>(rows.Count);
+        bool anyMerged = false;
+
+        foreach (var r in rows)
+        {
+            ulong mergeKey = r.OwnerId;
+            if (_petRootOwnerByEntity.TryGetValue(r.OwnerId, out ulong root)
+                && root != 0
+                && root != r.OwnerId)
+            {
+                mergeKey = root;
+            }
+
+            if (indexByMergeKey.TryGetValue(mergeKey, out int idx))
+            {
+                var existing = coalesced[idx];
+                bool existingWins = existing.Total60s >= r.Total60s;
+                long sumTotal = existing.Total60s + r.Total60s;
+                coalesced[idx] = new HeroShareEntry
+                {
+                    Name       = existingWins ? existing.Name : r.Name,
+                    Total60s   = sumTotal,
+                    Percent    = sumTotal * 100.0 / denominator,
+                    IsSelf     = existing.IsSelf || r.IsSelf,
+                    // Prefer ANY non-empty PlayerName over the anon empty one — collapsing
+                    // an anon pet into a named root is the whole point of this pass.
+                    PlayerName = !string.IsNullOrEmpty(existing.PlayerName) ? existing.PlayerName
+                               : !string.IsNullOrEmpty(r.PlayerName)        ? r.PlayerName
+                               : existing.PlayerName,
+                    OwnerId    = existingWins ? existing.OwnerId : r.OwnerId,
+                };
+                anyMerged = true;
+            }
+            else
+            {
+                indexByMergeKey[mergeKey] = coalesced.Count;
+                coalesced.Add(r);
+            }
+        }
+
+        return anyMerged ? coalesced : rows;
+    }
+
+    private static List<HeroShareEntry> CoalesceRowsByPlayerName(List<HeroShareEntry> rows, long denominator)
+    {
+        if (rows.Count <= 1 || denominator <= 0)
+            return rows;
+
+        var indexByName = new Dictionary<string, int>(rows.Count, StringComparer.OrdinalIgnoreCase);
+        var coalesced = new List<HeroShareEntry>(rows.Count);
+        bool anyMerged = false;
+
+        foreach (var r in rows)
+        {
+            // Anonymous rows can't be safely merged — pass through with stable order so the
+            // anonymous-tag pass downstream still hands out per-owner #XXXX hashes.
+            if (string.IsNullOrEmpty(r.PlayerName))
+            {
+                coalesced.Add(r);
+                continue;
+            }
+
+            if (indexByName.TryGetValue(r.PlayerName, out int idx))
+            {
+                var existing = coalesced[idx];
+                bool existingWins = existing.Total60s >= r.Total60s;
+                long sumTotal = existing.Total60s + r.Total60s;
+                coalesced[idx] = new HeroShareEntry
+                {
+                    Name       = existingWins ? existing.Name : r.Name,
+                    Total60s   = sumTotal,
+                    Percent    = sumTotal * 100.0 / denominator,
+                    IsSelf     = existing.IsSelf || r.IsSelf,
+                    PlayerName = existing.PlayerName,
+                    OwnerId    = existingWins ? existing.OwnerId : r.OwnerId,
+                };
+                anyMerged = true;
+            }
+            else
+            {
+                indexByName[r.PlayerName] = coalesced.Count;
+                coalesced.Add(r);
+            }
+        }
+
+        return anyMerged ? coalesced : rows;
     }
 
     /// <summary>
@@ -1776,6 +2882,8 @@ public sealed class DpsMeter : IDisposable
         _sniffer.InventoryMoved -= OnInventoryMoved;
         _sniffer.LocalAvatarObserved -= OnLocalAvatarObserved;
         _sniffer.CommunityMemberUpdated -= OnCommunityMemberUpdated;
+        _sniffer.EntityKilled -= OnEntityKilled;
+        _sniffer.EntityDestroyed -= OnEntityDestroyed;
         // Final flush on shutdown — picks up any record set since the last write that didn't
         // trigger an intra-session save (belt-and-braces; the in-flight saves already cover it).
         SaveMaxHits();
