@@ -1651,15 +1651,26 @@ public sealed class DpsMeter : IDisposable
             // foreign-account guard we'd credit their entire boss encounter onto the local pin
             // (observed: self row "Blade" at 22M with Fight total matching only self while
             // loonypath's Blade stayed at 1.6M — the missing ~20M was the peer folded away).
+            //
+            // Summon kits (Apr 2026): some heroes spawn pets whose powers live under a different
+            // HeroPowers bucket (Blade → Ultron drones → "Ultron"). proxyHero==pinHero never
+            // fires; credit to self only when we're the sole avatar on that hero name AND ult
+            // is missing or already points at us — avoids stealing a peer Blade's Ultron row
+            // when two Blades are present (both map to "Blade", IsOnlyThisAvatarPlayingHeroLocked
+            // is false).
             if (_likelySelfOwnerId != 0
                 && scoringOwner != _likelySelfOwnerId
                 && !IsForeignAccountAvatarLocked(scoringOwner)
                 && e.PowerPrototypeEnumIndex != 0
                 && HeroPowers.TryGetHero(e.PowerPrototypeEnumIndex, out string proxyHero)
-                && _heroNameByOwnerId.TryGetValue(_likelySelfOwnerId, out string? pinHero)
-                && string.Equals(proxyHero, pinHero, StringComparison.Ordinal))
+                && _heroNameByOwnerId.TryGetValue(_likelySelfOwnerId, out string? pinHero))
             {
-                scoringOwner = _likelySelfOwnerId;
+                bool powerMatchesPin = string.Equals(proxyHero, pinHero, StringComparison.Ordinal);
+                bool kitMismatchSummon = !powerMatchesPin
+                    && IsOnlyThisAvatarPlayingHeroLocked(pinHero)
+                    && (wireUlt == _likelySelfOwnerId || wireUlt == 0);
+                if (powerMatchesPin || kitMismatchSummon)
+                    scoringOwner = _likelySelfOwnerId;
             }
 
             // Pets / summons / proxies: when the server omits ultimate owner, rawOwner is a minion
@@ -1681,7 +1692,13 @@ public sealed class DpsMeter : IDisposable
                 if (!ultCreditsSomeoneElse)
                 {
                     bool havePinName = _heroNameByOwnerId.TryGetValue(_likelySelfOwnerId, out string? pinName);
-                    if (!havePinName || string.Equals(pinName, petProxyHero, StringComparison.Ordinal))
+                    bool powerMatchesPin = !havePinName
+                        || string.Equals(pinName, petProxyHero, StringComparison.Ordinal);
+                    bool kitMismatchSummon = havePinName
+                        && !string.Equals(pinName, petProxyHero, StringComparison.Ordinal)
+                        && IsOnlyThisAvatarPlayingHeroLocked(pinName)
+                        && (wireUlt == _likelySelfOwnerId || wireUlt == 0);
+                    if (powerMatchesPin || kitMismatchSummon)
                     {
                         scoringOwner = _likelySelfOwnerId;
                         if (!havePinName)
@@ -3225,6 +3242,27 @@ public sealed class DpsMeter : IDisposable
         return _dbIdByAvatarId.TryGetValue(ownerEntityId, out ulong db)
             && db != 0
             && db != _selfDbId;
+    }
+
+    /// <summary>True when <paramref name="heroName"/> appears in <see cref="_heroNameByOwnerId"/>
+    /// for <see cref="_likelySelfOwnerId"/> and for no other entity id. Used to allow
+    /// summon/pet powers whose <see cref="HeroPowers"/> bucket differs from the parent hero
+    /// (e.g. Blade's Ultron drones use <c>Powers/Player/Ultron/*</c> → hero string "Ultron"
+    /// while the avatar row is "Blade") without re-introducing duplicate-hero mis-credit: if
+    /// two Blades are in AOI, both map to "Blade" and this returns false.</summary>
+    private bool IsOnlyThisAvatarPlayingHeroLocked(string heroName)
+    {
+        if (_likelySelfOwnerId == 0 || string.IsNullOrEmpty(heroName))
+            return false;
+        bool seenSelf = false, seenOther = false;
+        foreach (var kv in _heroNameByOwnerId)
+        {
+            if (!string.Equals(kv.Value, heroName, StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (kv.Key == _likelySelfOwnerId) seenSelf = true;
+            else seenOther = true;
+        }
+        return seenSelf && !seenOther;
     }
 
     /// <summary>
