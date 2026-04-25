@@ -1571,7 +1571,14 @@ public sealed class DpsMeter : IDisposable
                 else if (_petRootOwnerByEntity.TryGetValue(effectiveUlt, out ulong cachedRoot))
                     root = cachedRoot;
 
-                if (root != 0 && root != wirePow)
+                // Never record wirePow → root when wirePow is a known local-player avatar id.
+                // Some archives credit wirePow=<your avatar> with wireUlt=<peer>; treating the
+                // avatar as a "pet" of the peer poisons render-time pet-chain coalesce and
+                // anon-by-hero (stale encounter rows under the old entity id fold into the
+                // peer's nickname — title still says your hero from the live pin).
+                if (root != 0 && root != wirePow
+                    && wirePow != _likelySelfOwnerId
+                    && !_localAvatarEntityIds.Contains(wirePow))
                 {
                     if (!_petRootOwnerByEntity.TryGetValue(wirePow, out ulong existingRoot) || existingRoot != root)
                     {
@@ -3007,7 +3014,8 @@ public sealed class DpsMeter : IDisposable
             ulong mergeKey = r.OwnerId;
             if (_petRootOwnerByEntity.TryGetValue(r.OwnerId, out ulong root)
                 && root != 0
-                && root != r.OwnerId)
+                && root != r.OwnerId
+                && !IsRenderTimeProtectedSelfRowLocked(r.OwnerId))
             {
                 mergeKey = root;
             }
@@ -3119,8 +3127,10 @@ public sealed class DpsMeter : IDisposable
             else
             {
                 // Pet-map rows + orphan summons (wire never registered _petRootOwnerByEntity).
-                // Self / player avatars: excluded via IsSelf and IsOrphanSummonRowForAnonHeroFoldLocked.
+                // Self / player avatars: excluded via IsSelf, IsRenderTimeProtectedSelfRowLocked,
+                // and IsOrphanSummonRowForAnonHeroFoldLocked.
                 if (!r.IsSelf
+                    && !IsRenderTimeProtectedSelfRowLocked(r.OwnerId)
                     && (_petRootOwnerByEntity.ContainsKey(r.OwnerId)
                         || IsOrphanSummonRowForAnonHeroFoldLocked(r.OwnerId)))
                     st.anonCount++;
@@ -3150,8 +3160,10 @@ public sealed class DpsMeter : IDisposable
         {
             var r = rows[i];
 
-            // Pet-map or orphan-summon row eligible for fold?  (Never the local avatar — IsSelf.)
+            // Pet-map or orphan-summon row eligible for fold?  (Never the local avatar — IsSelf
+            // + IsRenderTimeProtectedSelfRowLocked cover pin drift / stale encounter keys.)
             if (!r.IsSelf
+                && !IsRenderTimeProtectedSelfRowLocked(r.OwnerId)
                 && string.IsNullOrEmpty(r.PlayerName)
                 && !string.IsNullOrEmpty(r.Name)
                 && (_petRootOwnerByEntity.ContainsKey(r.OwnerId)
@@ -3322,6 +3334,20 @@ public sealed class DpsMeter : IDisposable
             avatarEntityId = kv.Key;
         }
         return avatarEntityId != 0;
+    }
+
+    /// <summary>True when <paramref name="ownerId"/> must never be treated as an anonymous
+    /// summon row in <see cref="CoalesceAnonymousRowsByHeroName"/> — current self pin, or any
+    /// avatar entity id still bound to <see cref="_selfDbId"/> (stale encounter totals after a
+    /// same-region avatar / team-up entity swap).</summary>
+    private bool IsRenderTimeProtectedSelfRowLocked(ulong ownerId)
+    {
+        if (ownerId == 0) return false;
+        if (_likelySelfOwnerId != 0 && ownerId == _likelySelfOwnerId) return true;
+        return _selfDbId != 0
+            && _dbIdByAvatarId.TryGetValue(ownerId, out ulong db)
+            && db != 0
+            && db == _selfDbId;
     }
 
     /// <summary>True when <paramref name="ownerId"/> is safe to fold in
