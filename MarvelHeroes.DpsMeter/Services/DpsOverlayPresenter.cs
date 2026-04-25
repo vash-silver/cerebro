@@ -160,9 +160,11 @@ public sealed class DpsOverlayPresenter : IDisposable
         // Only the BAR LIST source is mode-swapped; the big DPS number always reads as live 5s
         // (with 60s rolling-avg fallback) regardless of mode — that's the user's primary
         // "what am I doing right now" signal and it must not change semantics underfoot.
-        var top5 = bossOnly && (encounter.IsActive || encounter.IsEnded)
-            ? _meter.GetTopHeroesByEncounterShare(5)
-            : _meter.GetTopHeroesBy60sShare(5);
+        //
+        // Boss mode + no encounter (waiting for boss…): do NOT feed GetTopHeroesBy60sShare —
+        // that window includes everyone in AOI, so idle users still see peers' trash/hub damage
+        // drifting the bars. Encounter view only when a fight is active or frozen ended.
+        var top5 = SelectTopHeroesForBossOverlay(_meter, bossOnly, encounter);
 
         _window?.UpdateDps(dps, total60s, owner, maxHit, heroName, bossOnly, top5, encounter);
     }
@@ -188,9 +190,7 @@ public sealed class DpsOverlayPresenter : IDisposable
         // to the pre-encounter behavior.  Keep both call sites in lockstep.
         bool bossOnly = _meter.BossOnlyMode;
         var encounter = _meter.GetEncounterSnapshot();
-        var top5 = bossOnly && (encounter.IsActive || encounter.IsEnded)
-            ? _meter.GetTopHeroesByEncounterShare(5)
-            : _meter.GetTopHeroesBy60sShare(5);
+        var top5 = SelectTopHeroesForBossOverlay(_meter, bossOnly, encounter);
 
         _window.UpdateDps(
             _meter.CurrentDps,
@@ -240,6 +240,22 @@ public sealed class DpsOverlayPresenter : IDisposable
             var snap = _sniffer.PowerResultStats;
             AppendLog($"PowerResultStats: Total={snap.Total} NoSubscriber={snap.NoSubscriber} ParseFailures={snap.ParseFailures}");
         }
+    }
+
+    /// <summary>Boss-only overlay: show encounter leaderboard only while a fight is active or
+    /// the ended snapshot is frozen. Otherwise return an empty list — never the global 60s
+    /// AOI leaderboard, which would keep moving from other players while the detail line reads
+    /// <c>waiting for boss…</c>.</summary>
+    private static IReadOnlyList<DpsMeter.HeroShareEntry> SelectTopHeroesForBossOverlay(
+        DpsMeter meter,
+        bool bossOnly,
+        DpsMeter.EncounterSnapshot encounter)
+    {
+        if (!bossOnly)
+            return meter.GetTopHeroesBy60sShare(5);
+        if (encounter.IsActive || encounter.IsEnded)
+            return meter.GetTopHeroesByEncounterShare(5);
+        return Array.Empty<DpsMeter.HeroShareEntry>();
     }
 
     /// <summary>Per-event diagnostic sink shared by the meter and the sniffer. Gated by
