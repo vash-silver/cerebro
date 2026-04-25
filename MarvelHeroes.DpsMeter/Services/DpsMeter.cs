@@ -337,6 +337,38 @@ public sealed class DpsMeter : IDisposable
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "MarvelHeroesComporator", "player-index.json");
 
+    /// <summary>Tiny sidecar file holding ONLY our own account dbId. Sole purpose: survive
+    /// "DPS meter restarted mid-region" — when the user closes &amp; relaunches the meter without
+    /// zoning, the server does NOT replay <see cref="EntityCreatedEvent"/> for the local Player
+    /// container or local avatar, so the in-memory <see cref="_dbIdByPlayerEntityId"/> /
+    /// <see cref="_dbIdByAvatarId"/> bindings stay empty and <see cref="ResolveNicknameForOwnerLocked"/>
+    /// falls through to the two-pass disambiguator. With multiple peers playing the same hero in
+    /// the same AOI (two Blades, two Storms, …) the disambiguator can — and observably does —
+    /// pick the wrong peer's nickname for the self row, merging your damage with theirs.
+    ///
+    /// Persisting the self-dbId once and reapplying the binding on the next power-activation
+    /// after restart fixes this end-to-end without depending on the server resending the
+    /// EntityCreate (which it never does until the next region transition).</summary>
+    private static readonly string SelfIdentityPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "MarvelHeroesComporator", "dps-self.json");
+
+    /// <summary>Account dbId of the local player, persisted across sessions via
+    /// <see cref="SelfIdentityPath"/>. Set by any of the three "this binding belongs to us"
+    /// signal sources (local Player container EntityCreate, LocalPlayerIdentified follow-up,
+    /// LocalAvatarObserved follow-up) and read by the restart-without-zone restore path in
+    /// <see cref="OnLocalAvatarObserved"/> and the "self never falls through to disambiguator"
+    /// short-circuit in <see cref="ResolveNicknameForOwnerLocked"/>. Lock <see cref="_sync"/>
+    /// for writes; reads from the resolver are already on the same lock.</summary>
+    private ulong _selfDbId;
+
+    private sealed class SelfIdentityFile
+    {
+        public string? DbId { get; set; }
+        public string? Nick { get; set; }
+        public DateTime LastUpdatedUtc { get; set; }
+    }
+
     /// <summary>In-memory guard so we don't hammer the disk on every CommunityMember broadcast.
     /// Flipped on any mutation to <see cref="_playerNameByDbId"/> / <see cref="_currentHeroNameByDbId"/>;
     /// a background tick consumes it and writes the file at most every
@@ -614,6 +646,7 @@ public sealed class DpsMeter : IDisposable
 
         LoadMaxHits();
         LoadPlayerIndex();
+        LoadSelfIdentity();
     }
 
     private void OnCommunityMemberUpdated(object? sender, CommunityMemberUpdatedEvent e)
@@ -743,6 +776,9 @@ public sealed class DpsMeter : IDisposable
         bool added;
         bool pinFlipped = false;
         ulong prevPin = 0;
+        bool selfDbCaptured = false;
+        bool selfDbRestored = false;
+        ulong selfDbForLog = 0;
 
         lock (_sync)
         {
@@ -771,12 +807,59 @@ public sealed class DpsMeter : IDisposable
             {
                 _heroNameByOwnerId[e.LocalAvatarEntityId] = heroName;
             }
+
+            // ── Self-dbId capture & restart-without-zone restore ────────────────────────
+            // Two cases here, in priority order:
+            //   1. Capture: the avatar's EntityCreate already arrived this session and bound
+            //      its dbId in _dbIdByAvatarId — promote that to _selfDbId so future restarts
+            //      can restore it from disk. Also covers Player-container path:
+            //      _playerEntityIdByAvatarId → _dbIdByPlayerEntityId.
+            //   2. Restore: this is a restart-without-zone scenario — the avatar's EntityCreate
+            //      was NOT replayed by the server post-restart, so _dbIdByAvatarId is empty for
+            //      this avatar. If we have a persisted _selfDbId from the last clean session,
+            //      reapply it: _dbIdByAvatarId[localAvatarId] = _selfDbId. After this assignment
+            //      the resolver's direct lookup at line ~2825 succeeds and the self row gets
+            //      its real nickname instead of falling through to the disambiguator (which
+            //      would mis-match a peer playing the same hero — see the "Blade misattribution"
+            //      writeup in dps-meter-diagnostics.mdc).
+            ulong knownDb = 0;
+            if (_dbIdByAvatarId.TryGetValue(e.LocalAvatarEntityId, out knownDb) && knownDb != 0)
+            {
+                if (TryCaptureSelfDbIdLocked(knownDb))
+                {
+                    selfDbCaptured = true;
+                    selfDbForLog = knownDb;
+                }
+            }
+            else if (_playerEntityIdByAvatarId.TryGetValue(e.LocalAvatarEntityId, out ulong containerId)
+                     && _dbIdByPlayerEntityId.TryGetValue(containerId, out knownDb)
+                     && knownDb != 0)
+            {
+                if (TryCaptureSelfDbIdLocked(knownDb))
+                {
+                    selfDbCaptured = true;
+                    selfDbForLog = knownDb;
+                }
+            }
+            else if (_selfDbId != 0)
+            {
+                _dbIdByAvatarId[e.LocalAvatarEntityId] = _selfDbId;
+                selfDbRestored = true;
+                selfDbForLog = _selfDbId;
+            }
         }
 
         if (added)
             Diagnostic?.Invoke($"DpsMeter: local avatar registered via power activation (id={e.LocalAvatarEntityId}) — authoritative mode ON");
         if (pinFlipped)
             Diagnostic?.Invoke($"DpsMeter: self-owner pinned {prevPin} -> {e.LocalAvatarEntityId} (from client power-activation)");
+        if (selfDbCaptured)
+        {
+            Diagnostic?.Invoke($"DpsMeter: self-dbId captured 0x{selfDbForLog:X16} (avatar {e.LocalAvatarEntityId}) — persisting for cross-restart binding restore");
+            SaveSelfIdentity();
+        }
+        if (selfDbRestored)
+            Diagnostic?.Invoke($"DpsMeter: self-dbId 0x{selfDbForLog:X16} restored from disk to avatar {e.LocalAvatarEntityId} — restart-without-zone binding repaired (no peer mis-attribution this session)");
 
         // Immediately refresh UI-visible fields from the new pin so a hero-swap is reflected
         // without waiting for the next damage event to arrive.
@@ -812,6 +895,10 @@ public sealed class DpsMeter : IDisposable
 
     private void OnLocalPlayerIdentified(object? sender, LocalPlayerIdentifiedEvent e)
     {
+        bool selfDbCaptured = false;
+        bool selfDbRestored = false;
+        ulong selfDbForLog = 0;
+
         lock (_sync)
         {
             if (_localPlayerEntityId == e.LocalPlayerEntityId) return;
@@ -824,8 +911,40 @@ public sealed class DpsMeter : IDisposable
             // ownerIsSelf false for every self hit until the user pressed another key.
             if (prevPlayerId != 0)
                 _localAvatarEntityIds.Clear();
+
+            // Self-dbId capture/restore via the Player-container path (mirror of the avatar
+            // path in OnLocalAvatarObserved — see the comment block there for the full
+            // motivation). NetMessageLocalPlayer fires once per session at sniffer attach,
+            // and crucially does NOT re-fire on a meter restart-without-zone (the server only
+            // sends LocalPlayer on the initial connect), so this branch handles the "fresh
+            // session, container EntityCreate already arrived" capture case. The restore
+            // branch is here for symmetry — in practice OnLocalAvatarObserved restores first
+            // because power-activation arrives on the very next combat input, while
+            // LocalPlayer only re-fires on a hard reconnect.
+            if (_dbIdByPlayerEntityId.TryGetValue(e.LocalPlayerEntityId, out ulong knownDb)
+                && knownDb != 0)
+            {
+                if (TryCaptureSelfDbIdLocked(knownDb))
+                {
+                    selfDbCaptured = true;
+                    selfDbForLog = knownDb;
+                }
+            }
+            else if (_selfDbId != 0)
+            {
+                _dbIdByPlayerEntityId[e.LocalPlayerEntityId] = _selfDbId;
+                selfDbRestored = true;
+                selfDbForLog = _selfDbId;
+            }
         }
         Diagnostic?.Invoke($"DpsMeter: local player identified (id={e.LocalPlayerEntityId}) — enabling authoritative self-owner pinning");
+        if (selfDbCaptured)
+        {
+            Diagnostic?.Invoke($"DpsMeter: self-dbId captured 0x{selfDbForLog:X16} (player container {e.LocalPlayerEntityId}) — persisting for cross-restart binding restore");
+            SaveSelfIdentity();
+        }
+        if (selfDbRestored)
+            Diagnostic?.Invoke($"DpsMeter: self-dbId 0x{selfDbForLog:X16} restored from disk to player container {e.LocalPlayerEntityId}");
     }
 
     private void OnInventoryMoved(object? sender, InventoryMovedEvent e)
@@ -900,12 +1019,30 @@ public sealed class DpsMeter : IDisposable
         bool enqueued = false;
         ulong pairedDbId = 0;
         bool directBind  = false;          // set when we resolved nick straight from the archive
+        bool selfDbCapturedFromContainer = false;
+        ulong selfDbForLog = 0;
         if (e.DatabaseUniqueId != 0 || e.IsAvatar)
         {
             lock (_sync)
             {
                 if (e.DatabaseUniqueId != 0)
+                {
                     _dbIdByPlayerEntityId[e.EntityId] = e.DatabaseUniqueId;
+                    // Container EntityCreate carries our own dbId (Player containers with
+                    // HasDbId are local — remote Player containers are never proximity-pushed).
+                    // Capture into _selfDbId either: (a) if OnLocalPlayerIdentified already ran
+                    // and matches this entity, or (b) speculatively as a first-write fallback —
+                    // the worst-case is overwriting an absent value with a slightly-stale one,
+                    // which the next OnLocalAvatarObserved corrects on contact.
+                    if (_localPlayerEntityId == 0 || _localPlayerEntityId == e.EntityId)
+                    {
+                        if (TryCaptureSelfDbIdLocked(e.DatabaseUniqueId))
+                        {
+                            selfDbCapturedFromContainer = true;
+                            selfDbForLog = e.DatabaseUniqueId;
+                        }
+                    }
+                }
 
                 // Fast path: the sniffer managed to extract the nickname + owner dbId
                 // directly from the Avatar's transient archive (see
@@ -985,6 +1122,11 @@ public sealed class DpsMeter : IDisposable
             string via = directBind ? "archive fast-path" : "reverse-order queue";
             Diagnostic?.Invoke($"DpsMeter: paired avatar entityId={e.EntityId} ('{heroName}') with dbId=0x{pairedDbId:X} (nickname='{nick ?? ""}') via {via}");
             SavePlayerIndex();
+        }
+        if (selfDbCapturedFromContainer)
+        {
+            Diagnostic?.Invoke($"DpsMeter: self-dbId captured 0x{selfDbForLog:X16} (player container EntityCreate {e.EntityId}) — persisting for cross-restart binding restore");
+            SaveSelfIdentity();
         }
     }
 
@@ -1174,6 +1316,82 @@ public sealed class DpsMeter : IDisposable
     /// <see cref="PlayerIndexSaveInterval"/> debounce so in-flight mutations don't get lost
     /// when the host app is closing within a few seconds of the last community broadcast.</summary>
     public void FlushPlayerIndexNow() => SavePlayerIndex(force: true);
+
+    /// <summary>Load the persisted self-dbId from <see cref="SelfIdentityPath"/>, if any.
+    /// Failures are silent — a missing or corrupt file is no different from "first run on this
+    /// box", which is a normal state on day one. The file is one-shot per session: we read it
+    /// at startup, then any new self-dbId observation overwrites it.</summary>
+    private void LoadSelfIdentity()
+    {
+        try
+        {
+            if (!File.Exists(SelfIdentityPath)) return;
+            var json = File.ReadAllText(SelfIdentityPath);
+            var loaded = JsonSerializer.Deserialize<SelfIdentityFile>(json);
+            if (loaded?.DbId is null) return;
+
+            string keyStr = loaded.DbId.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                ? loaded.DbId.Substring(2) : loaded.DbId;
+            if (!ulong.TryParse(keyStr, System.Globalization.NumberStyles.HexNumber,
+                    System.Globalization.CultureInfo.InvariantCulture, out ulong dbId)
+                && !ulong.TryParse(loaded.DbId, out dbId))
+                return;
+            if (dbId == 0) return;
+
+            lock (_sync) _selfDbId = dbId;
+            Diagnostic?.Invoke($"DpsMeter: loaded self-dbId 0x{dbId:X16} from {SelfIdentityPath} (nick='{loaded.Nick ?? string.Empty}', last updated {loaded.LastUpdatedUtc:O}) — restart-without-zone bindings will be restored on first self-pin");
+        }
+        catch (Exception ex)
+        {
+            Diagnostic?.Invoke($"DpsMeter: failed to load self-identity: {ex.Message}");
+        }
+    }
+
+    /// <summary>Persist <see cref="_selfDbId"/> + the currently-resolved self-nick to
+    /// <see cref="SelfIdentityPath"/>. Cheap (single-shot tiny JSON) so we don't bother
+    /// debouncing — every "we just learned the self-dbId" signal calls this directly.</summary>
+    private void SaveSelfIdentity()
+    {
+        try
+        {
+            ulong dbIdSnapshot;
+            string? nickSnapshot;
+            lock (_sync)
+            {
+                dbIdSnapshot = _selfDbId;
+                nickSnapshot = null;
+                if (dbIdSnapshot != 0)
+                    _playerNameByDbId.TryGetValue(dbIdSnapshot, out nickSnapshot);
+            }
+            if (dbIdSnapshot == 0) return;
+
+            Directory.CreateDirectory(Path.GetDirectoryName(SelfIdentityPath)!);
+            var snapshot = new SelfIdentityFile
+            {
+                DbId = $"0x{dbIdSnapshot:X16}",
+                Nick = nickSnapshot,
+                LastUpdatedUtc = DateTime.UtcNow,
+            };
+            File.WriteAllText(SelfIdentityPath,
+                JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch (Exception ex)
+        {
+            Diagnostic?.Invoke($"DpsMeter: failed to save self-identity: {ex.Message}");
+        }
+    }
+
+    /// <summary>Centralised "we just learned our own account dbId" capture point. Idempotent —
+    /// no-op if the value matches the existing <see cref="_selfDbId"/>. Returns true on first
+    /// capture or change so callers can emit a one-shot diagnostic + persist. MUST be called
+    /// under <c>_sync</c>.</summary>
+    private bool TryCaptureSelfDbIdLocked(ulong dbId)
+    {
+        if (dbId == 0) return false;
+        if (_selfDbId == dbId) return false;
+        _selfDbId = dbId;
+        return true;
+    }
 
     private void OnDamageDealt(object? sender, DamageDealtEvent e)
     {
@@ -2800,6 +3018,35 @@ public sealed class DpsMeter : IDisposable
         {
             _playerNameByDbId.TryGetValue(dbId, out string? nameByDb);
             nickname = nameByDb ?? string.Empty;
+        }
+
+        // ── Self-row short-circuit ──────────────────────────────────────────────────────────
+        // The two-pass disambiguator below works by scanning the ENTIRE _currentHeroNameByDbId
+        // cache for peers playing the same hero — that's structurally wrong for the self row.
+        // Reasons:
+        //   (a) The local player's own dbId is NEVER in _nearbyDbIds (the server doesn't
+        //       broadcast a CommunityMember "Nearby" event for us), so pass 1 (nearbyOnly=true)
+        //       can't pick our nickname even if we have one cached on disk — it's always going
+        //       to skip us.
+        //   (b) Pass 2 (wide) then walks the full dict and the FIRST peer whose hero matches
+        //       wins. With multiple peers playing the same hero (two Blades, two Storms, …)
+        //       this picks one of them, merging our damage row into theirs.
+        // The fix is to never run the disambiguator for ownerEntityId == _likelySelfOwnerId.
+        // We do try the persisted _selfDbId as a one-shot fallback first — that's the
+        // "restart-without-zone" case where the in-memory _dbIdByAvatarId binding is empty
+        // because the server didn't replay our EntityCreate, but the disk-persisted self-dbId
+        // still has our nick from a prior session. If even THAT is empty, we return empty so
+        // the caller falls back to the player nickname / "you" branch in DpsOverlayWindow's
+        // RenderTopHeroes (rather than picking up a peer's nickname).
+        if (ownerEntityId != 0 && ownerEntityId == _likelySelfOwnerId)
+        {
+            if (string.IsNullOrEmpty(nickname) && _selfDbId != 0
+                && _playerNameByDbId.TryGetValue(_selfDbId, out string? selfNameByDb)
+                && !string.IsNullOrEmpty(selfNameByDb))
+            {
+                nickname = selfNameByDb;
+            }
+            return nickname;
         }
 
         if (!string.IsNullOrEmpty(nickname) || string.IsNullOrEmpty(heroName))
