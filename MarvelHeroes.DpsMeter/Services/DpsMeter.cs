@@ -3067,10 +3067,12 @@ public sealed class DpsMeter : IDisposable
     /// rows — the local player's avatar often has an empty <c>PlayerName</c> when
     /// bindings=0, but it is NOT a summon; folding it into the only named peer playing
     /// the same hero (e.g. merge self Blade into "Mrbil") was a catastrophic regression.
-    /// (b) Require <c>_petRootOwnerByEntity.ContainsKey(OwnerId)</c> — without this, a
-    /// second real player on the same hero with a failed nick-resolve looks identical to
-    /// a summon (empty <c>PlayerName</c>, same hero string) and would be absorbed into
-    /// the first named peer.</para>
+    /// (b) Primary fold candidates must appear in <c>_petRootOwnerByEntity</c> after
+    /// scoring-time pet discovery. (c) **Orphan summon** (Apr 2026 take-3): if the wire
+    /// never produced a pet-map edge (e.g. some Doctor Strange projection entities) but
+    /// the row has no <c>_dbIdByAvatarId</c> binding, is not <c>_likelySelfOwnerId</c>,
+    /// and is not in <c>_localAvatarEntityIds</c>, treat it like a summon when exactly
+    /// one named row shares the hero — real peer avatars carry dbIds and stay separate.</para>
     ///
     /// <para>The pass MUST run AFTER the player-name pass (so the "exactly one named
     /// row per hero" check is well-defined) and BEFORE the sort + truncate (so merged
@@ -3116,11 +3118,11 @@ public sealed class DpsMeter : IDisposable
             }
             else
             {
-                // Only *pet/proxy* rows with failed nick-resolve count as fold candidates.
-                // Self rows and full avatars of peers also have empty PlayerName sometimes
-                // — they must NOT inflate anonCount or we re-introduce the "two Blades"
-                // bug (self merged into Mrbil).
-                if (!r.IsSelf && _petRootOwnerByEntity.ContainsKey(r.OwnerId))
+                // Pet-map rows + orphan summons (wire never registered _petRootOwnerByEntity).
+                // Self / player avatars: excluded via IsSelf and IsOrphanSummonRowForAnonHeroFoldLocked.
+                if (!r.IsSelf
+                    && (_petRootOwnerByEntity.ContainsKey(r.OwnerId)
+                        || IsOrphanSummonRowForAnonHeroFoldLocked(r.OwnerId)))
                     st.anonCount++;
             }
             byHero[r.Name] = st;
@@ -3148,11 +3150,12 @@ public sealed class DpsMeter : IDisposable
         {
             var r = rows[i];
 
-            // Pet/proxy row eligible for fold?  (Never the local avatar — IsSelf.)
+            // Pet-map or orphan-summon row eligible for fold?  (Never the local avatar — IsSelf.)
             if (!r.IsSelf
                 && string.IsNullOrEmpty(r.PlayerName)
                 && !string.IsNullOrEmpty(r.Name)
-                && _petRootOwnerByEntity.ContainsKey(r.OwnerId)
+                && (_petRootOwnerByEntity.ContainsKey(r.OwnerId)
+                    || IsOrphanSummonRowForAnonHeroFoldLocked(r.OwnerId))
                 && byHero.TryGetValue(r.Name, out var st)
                 && st.namedCount == 1)
             {
@@ -3178,7 +3181,10 @@ public sealed class DpsMeter : IDisposable
                 };
                 anyMerged = true;
                 if (_loggedAnonByHeroFolds.Add((r.OwnerId, existing.OwnerId)))
-                    Diagnostic?.Invoke($"DpsMeter: anon-by-hero fold — pet/proxy owner={r.OwnerId} (hero='{r.Name}', total={r.Total60s}) → named row owner={existing.OwnerId} player='{existing.PlayerName}'");
+                {
+                    string via = _petRootOwnerByEntity.ContainsKey(r.OwnerId) ? "pet-map" : "orphan summon (no pet-map edge)";
+                    Diagnostic?.Invoke($"DpsMeter: anon-by-hero fold ({via}) — owner={r.OwnerId} (hero='{r.Name}', total={r.Total60s}) → named row owner={existing.OwnerId} player='{existing.PlayerName}'");
+                }
                 continue;
             }
 
@@ -3316,6 +3322,26 @@ public sealed class DpsMeter : IDisposable
             avatarEntityId = kv.Key;
         }
         return avatarEntityId != 0;
+    }
+
+    /// <summary>True when <paramref name="ownerId"/> is safe to fold in
+    /// <see cref="CoalesceAnonymousRowsByHeroName"/> without a <c>_petRootOwnerByEntity</c>
+    /// entry: not the self pin, not a local avatar entity, not account-bound as avatar or
+    /// player container — excludes real players missing only a nickname when two humans
+    /// share a hero (both have dbIds; <c>namedCount</c> ≥ 2).</summary>
+    private bool IsOrphanSummonRowForAnonHeroFoldLocked(ulong ownerId)
+    {
+        if (ownerId == 0 || ownerId == _likelySelfOwnerId)
+            return false;
+        if (_petRootOwnerByEntity.ContainsKey(ownerId))
+            return false;
+        if (_localAvatarEntityIds.Contains(ownerId))
+            return false;
+        if (_dbIdByAvatarId.TryGetValue(ownerId, out ulong db) && db != 0)
+            return false;
+        if (_dbIdByPlayerEntityId.ContainsKey(ownerId))
+            return false;
+        return true;
     }
 
     /// <summary>
