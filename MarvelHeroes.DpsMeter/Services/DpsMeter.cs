@@ -3142,10 +3142,25 @@ public sealed class DpsMeter : IDisposable
         bool anyOpportunity = false;
         foreach (var kv in byHero)
         {
-            if (kv.Value.namedCount == 1 && kv.Value.anonCount > 0)
+            if (kv.Value.anonCount <= 0) continue;
+            if (kv.Value.namedCount == 1)
             {
                 anyOpportunity = true;
                 break;
+            }
+            // Two+ humans on the same hero: still fold when pet-map picks a unique named target.
+            for (int ai = 0; ai < rows.Count && !anyOpportunity; ai++)
+            {
+                var ar = rows[ai];
+                if (ar.IsSelf || IsRenderTimeProtectedSelfRowLocked(ar.OwnerId)) continue;
+                if (!string.IsNullOrEmpty(ar.PlayerName) || string.IsNullOrEmpty(ar.Name)) continue;
+                if (!string.Equals(ar.Name, kv.Key, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!_petRootOwnerByEntity.TryGetValue(ar.OwnerId, out ulong proot)
+                    || proot == 0
+                    || proot == ar.OwnerId)
+                    continue;
+                if (TryGetPetMapNamedMergeSourceIndexLocked(ar, rows, proot, out _))
+                    anyOpportunity = true;
             }
         }
         if (!anyOpportunity) return rows;
@@ -3169,16 +3184,9 @@ public sealed class DpsMeter : IDisposable
                 && (_petRootOwnerByEntity.ContainsKey(r.OwnerId)
                     || IsOrphanSummonRowForAnonHeroFoldLocked(r.OwnerId))
                 && byHero.TryGetValue(r.Name, out var st)
-                && st.namedCount == 1)
+                && TryResolveAnonByHeroFoldTargetLocked(r, rows, st, out int targetSrcIdx))
             {
-                // Make sure the named row is in the coalesced list — emit it on the spot
-                // if we haven't yet.  Then merge ourselves into it.
-                if (!addedNamedIdx.TryGetValue(st.namedIdx, out int targetIdx))
-                {
-                    targetIdx = coalesced.Count;
-                    coalesced.Add(rows[st.namedIdx]);
-                    addedNamedIdx[st.namedIdx] = targetIdx;
-                }
+                int targetIdx = EnsureCoalescedNamedTargetForAnonFold(rows, coalesced, addedNamedIdx, targetSrcIdx);
 
                 var existing = coalesced[targetIdx];
                 long sumTotal = existing.Total60s + r.Total60s;
@@ -3200,32 +3208,87 @@ public sealed class DpsMeter : IDisposable
                 continue;
             }
 
-            // Named row that's the target of one or more anon merges?  Already added
-            // above as part of folding the first anon — skip the duplicate insertion.
-            if (!string.IsNullOrEmpty(r.PlayerName)
-                && !string.IsNullOrEmpty(r.Name)
-                && byHero.TryGetValue(r.Name, out var st2)
-                && st2.namedCount == 1
-                && st2.anonCount > 0
-                && st2.namedIdx == i)
+            if (!string.IsNullOrEmpty(r.PlayerName))
             {
-                if (addedNamedIdx.TryGetValue(i, out int existingIdx))
+                bool dup = false;
+                for (int c = 0; c < coalesced.Count; c++)
                 {
-                    // Already pre-added by an earlier anon fold — leave the merged value alone.
-                    continue;
+                    if (coalesced[c].OwnerId != r.OwnerId) continue;
+                    dup = true;
+                    break;
                 }
-                // No anon has been folded yet (will happen later in the loop).  Add the row
-                // now and remember the slot so future anons fold into it.
-                addedNamedIdx[i] = coalesced.Count;
-                coalesced.Add(r);
-                continue;
+                if (dup) continue;
             }
 
-            // Default: pass through.
             coalesced.Add(r);
         }
 
         return anyMerged ? coalesced : rows;
+    }
+
+    private static bool TryGetPetMapNamedMergeSourceIndexLocked(
+        HeroShareEntry anonRow,
+        List<HeroShareEntry> rows,
+        ulong root,
+        out int namedSourceIndex)
+    {
+        namedSourceIndex = -1;
+        if (string.IsNullOrEmpty(anonRow.Name) || root == 0 || root == anonRow.OwnerId)
+            return false;
+        for (int j = 0; j < rows.Count; j++)
+        {
+            var x = rows[j];
+            if (string.IsNullOrEmpty(x.PlayerName)) continue;
+            if (!string.Equals(x.Name, anonRow.Name, StringComparison.OrdinalIgnoreCase)) continue;
+            if (x.OwnerId != root) continue;
+            if (namedSourceIndex >= 0)
+            {
+                namedSourceIndex = -1;
+                return false;
+            }
+            namedSourceIndex = j;
+        }
+        return namedSourceIndex >= 0;
+    }
+
+    private bool TryResolveAnonByHeroFoldTargetLocked(
+        HeroShareEntry r,
+        List<HeroShareEntry> rows,
+        (int namedIdx, int namedCount, int anonCount) st,
+        out int targetSourceIndex)
+    {
+        targetSourceIndex = -1;
+        if (st.namedCount == 1)
+        {
+            targetSourceIndex = st.namedIdx;
+            return true;
+        }
+        if (!_petRootOwnerByEntity.TryGetValue(r.OwnerId, out ulong root)
+            || root == 0
+            || root == r.OwnerId)
+            return false;
+        return TryGetPetMapNamedMergeSourceIndexLocked(r, rows, root, out targetSourceIndex);
+    }
+
+    private static int EnsureCoalescedNamedTargetForAnonFold(
+        List<HeroShareEntry> rows,
+        List<HeroShareEntry> coalesced,
+        Dictionary<int, int> addedNamedIdx,
+        int targetSourceIndex)
+    {
+        if (addedNamedIdx.TryGetValue(targetSourceIndex, out int targetIdx))
+            return targetIdx;
+        ulong wantOwner = rows[targetSourceIndex].OwnerId;
+        for (int c = 0; c < coalesced.Count; c++)
+        {
+            if (coalesced[c].OwnerId != wantOwner) continue;
+            addedNamedIdx[targetSourceIndex] = c;
+            return c;
+        }
+        targetIdx = coalesced.Count;
+        coalesced.Add(rows[targetSourceIndex]);
+        addedNamedIdx[targetSourceIndex] = targetIdx;
+        return targetIdx;
     }
 
     private static List<HeroShareEntry> CoalesceRowsByPlayerName(List<HeroShareEntry> rows, long denominator)
@@ -3340,10 +3403,19 @@ public sealed class DpsMeter : IDisposable
     /// summon row in <see cref="CoalesceAnonymousRowsByHeroName"/> — current self pin, or any
     /// avatar entity id still bound to <see cref="_selfDbId"/> (stale encounter totals after a
     /// same-region avatar / team-up entity swap).</summary>
+    /// <remarks>Peer summons (symbiote hooks, drones, etc.) sometimes inherit a bogus
+    /// <c>_dbIdByAvatarId</c> pairing to a nearby player's dbId. If we treat that as
+    /// "protected self", <see cref="CoalesceRowsByPetChainRoot"/> refuses to redirect
+    /// <c>mergeKey</c> to the chain root — the pet row stays split and anon-by-hero may also
+    /// refuse when two humans play the same hero. Keys in <see cref="_petRootOwnerByEntity"/>
+    /// are always pet/summon <c>wirePow</c> ids, never stale human avatars, so we exclude them
+    /// from dbId-only protection.</remarks>
     private bool IsRenderTimeProtectedSelfRowLocked(ulong ownerId)
     {
         if (ownerId == 0) return false;
         if (_likelySelfOwnerId != 0 && ownerId == _likelySelfOwnerId) return true;
+        if (_petRootOwnerByEntity.ContainsKey(ownerId))
+            return false;
         return _selfDbId != 0
             && _dbIdByAvatarId.TryGetValue(ownerId, out ulong db)
             && db != 0
