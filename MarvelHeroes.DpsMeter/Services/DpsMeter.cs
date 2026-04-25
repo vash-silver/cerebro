@@ -1026,6 +1026,22 @@ public sealed class DpsMeter : IDisposable
         bool directBind  = false;          // set when we resolved nick straight from the archive
         bool selfDbCapturedFromContainer = false;
         ulong selfDbForLog = 0;
+        // Self-dbId healing — set when an authoritative EntityCreate proves the persisted
+        // _selfDbId loaded from dps-self.json was poisoned by a peer Player container during
+        // a previous busy-hub session. Two healing channels:
+        //   (a) selfDbHealedFromLocalAvatar — local avatar's OwnerPlayerDbId disagrees with
+        //       _selfDbId. Local avatar's OwnerPlayerDbId is server-authoritative, so it
+        //       wins. Used post-zone (avatar EntityCreate replays after region change).
+        //   (b) selfDbPoisonDetected — peer's avatar OwnerPlayerDbId == _selfDbId, proving
+        //       _selfDbId actually belongs to the peer (we restored a poisoned value last
+        //       session). _selfDbId is wiped and the on-disk dps-self.json is deleted; any
+        //       local-avatar bindings to the poisoned value are also cleared so the resolver
+        //       falls back to its disambiguator instead of returning the peer's nickname.
+        bool selfDbHealedFromLocalAvatar = false;
+        ulong selfDbHealedOldValue = 0;
+        bool selfDbPoisonDetected = false;
+        ulong selfDbPoisonValue = 0;
+        ulong selfDbPoisonPeerEntityId = 0;
         if (e.DatabaseUniqueId != 0 || e.IsAvatar)
         {
             lock (_sync)
@@ -1033,13 +1049,27 @@ public sealed class DpsMeter : IDisposable
                 if (e.DatabaseUniqueId != 0)
                 {
                     _dbIdByPlayerEntityId[e.EntityId] = e.DatabaseUniqueId;
-                    // Container EntityCreate carries our own dbId (Player containers with
-                    // HasDbId are local — remote Player containers are never proximity-pushed).
-                    // Capture into _selfDbId either: (a) if OnLocalPlayerIdentified already ran
-                    // and matches this entity, or (b) speculatively as a first-write fallback —
-                    // the worst-case is overwriting an absent value with a slightly-stale one,
-                    // which the next OnLocalAvatarObserved corrects on contact.
-                    if (_localPlayerEntityId == 0 || _localPlayerEntityId == e.EntityId)
+                    // Self-dbId capture from Player-container EntityCreate. Only safe when
+                    // NetMessageLocalPlayer has ALREADY identified this exact entity as ours.
+                    //
+                    // The previous "speculative first-write fallback" (which captured anything
+                    // when _localPlayerEntityId == 0) was REMOVED after live evidence in
+                    // dps-meter.log lines 58501-58503: three peer Player container EntityCreates
+                    // arrived within 10 ms in a busy hub, all three captured as _selfDbId in
+                    // sequence, the last one persisted to dps-self.json, then restored to the
+                    // local avatar across multiple subsequent restarts. Result: every damage hit
+                    // for hours was credited to the wrong peer (see "Apok mis-recognition" in
+                    // dps-meter-diagnostics.mdc). The original assumption — "remote Player
+                    // containers are never proximity-pushed" — was simply wrong; the server
+                    // does broadcast peer Player containers in social areas / hubs.
+                    //
+                    // Without this branch, _selfDbId is captured only from server-authoritative
+                    // signals: NetMessageLocalPlayer (matches a known-local container) and the
+                    // local avatar's OwnerPlayerDbId at EntityCreate time (Branch A in
+                    // OnLocalAvatarObserved). The lazy capture path in OnLocalPlayerIdentified
+                    // covers any reverse-order case where the LocalPlayer message arrives before
+                    // its matching container EntityCreate (rare in practice).
+                    if (_localPlayerEntityId != 0 && _localPlayerEntityId == e.EntityId)
                     {
                         if (TryCaptureSelfDbIdLocked(e.DatabaseUniqueId))
                         {
@@ -1058,19 +1088,76 @@ public sealed class DpsMeter : IDisposable
                 // only sets NewlyCreated for members with zero prior circles).  The
                 // above fallback path still runs for avatars whose archive the scanner
                 // couldn't decode confidently (truncated blob, unusual name shape).
-                if (e.IsAvatar && e.OwnerPlayerDbId != 0 && !string.IsNullOrEmpty(e.PlayerName)
-                    && !_dbIdByAvatarId.ContainsKey(e.EntityId))
+                if (e.IsAvatar && e.OwnerPlayerDbId != 0 && !string.IsNullOrEmpty(e.PlayerName))
                 {
-                    _dbIdByAvatarId[e.EntityId]          = e.OwnerPlayerDbId;
-                    _playerNameByDbId[e.OwnerPlayerDbId] = e.PlayerName;
-                    // Also record the hero name so the persisted index can help future
-                    // mid-session launches — dbId → hero is exactly the pairing we need
-                    // for the _currentHeroNameByDbId fallback in GetTopHeroesBy60sShare.
-                    if (HeroPrototypes.Names.TryGetValue(e.PrototypeEnumIndex, out string? scannedHero))
-                        _currentHeroNameByDbId[e.OwnerPlayerDbId] = scannedHero;
-                    MarkPlayerIndexDirty(e.OwnerPlayerDbId);
-                    pairedDbId = e.OwnerPlayerDbId;
-                    directBind = true;
+                    // OwnerPlayerDbId is server-authoritative — it ALWAYS wins over any
+                    // existing _dbIdByAvatarId binding, even if the existing one came from
+                    // the persisted-restore path in OnLocalAvatarObserved (that path could
+                    // have applied a poisoned _selfDbId to this exact avatar before the
+                    // server's EntityCreate arrived). Overwriting on disagreement is the
+                    // primary healing channel for the "Apok mis-recognition" failure mode.
+                    bool wasBound = _dbIdByAvatarId.TryGetValue(e.EntityId, out ulong existingDb);
+                    bool overwrite = !wasBound || existingDb != e.OwnerPlayerDbId;
+                    if (overwrite)
+                    {
+                        _dbIdByAvatarId[e.EntityId]          = e.OwnerPlayerDbId;
+                        _playerNameByDbId[e.OwnerPlayerDbId] = e.PlayerName;
+                        // Also record the hero name so the persisted index can help future
+                        // mid-session launches — dbId → hero is exactly the pairing we need
+                        // for the _currentHeroNameByDbId fallback in GetTopHeroesBy60sShare.
+                        if (HeroPrototypes.Names.TryGetValue(e.PrototypeEnumIndex, out string? scannedHero))
+                            _currentHeroNameByDbId[e.OwnerPlayerDbId] = scannedHero;
+                        MarkPlayerIndexDirty(e.OwnerPlayerDbId);
+                        pairedDbId = e.OwnerPlayerDbId;
+                        directBind = true;
+                    }
+
+                    // Self-dbId healing channel (a): if this avatar is one of OUR registered
+                    // local avatars and its server-authoritative OwnerPlayerDbId differs
+                    // from the persisted _selfDbId, the persisted value is stale/poisoned.
+                    // Replace it from the authoritative source and re-persist so the next
+                    // restart-without-zone restores the correct value.
+                    if (_localAvatarEntityIds.Contains(e.EntityId)
+                        && _selfDbId != 0
+                        && _selfDbId != e.OwnerPlayerDbId)
+                    {
+                        selfDbHealedOldValue = _selfDbId;
+                        _selfDbId = e.OwnerPlayerDbId;
+                        selfDbHealedFromLocalAvatar = true;
+                        selfDbForLog = e.OwnerPlayerDbId;
+                    }
+
+                    // Self-dbId healing channel (b): a PEER's avatar EntityCreate proves
+                    // their account dbId is exactly the value we restored from dps-self.json
+                    // — i.e. the persisted file was written during a previous session by the
+                    // (now-removed) speculative capture branch grabbing this peer's Player
+                    // container EntityCreate. Wipe _selfDbId, drop any local-avatar bindings
+                    // to it (so the resolver doesn't keep returning the peer's nickname for
+                    // our row), and delete the poisoned file. The user's own dbId will be
+                    // re-captured on the next zone via channel (a) above.
+                    if (e.OwnerPlayerDbId == _selfDbId
+                        && _selfDbId != 0
+                        && !_localAvatarEntityIds.Contains(e.EntityId))
+                    {
+                        selfDbPoisonValue = _selfDbId;
+                        selfDbPoisonPeerEntityId = e.EntityId;
+                        selfDbPoisonDetected = true;
+                        _selfDbId = 0;
+                        // Scrub any local-avatar bindings that came from the poisoned restore
+                        // path — these would otherwise keep returning the peer's nick after
+                        // we wipe _selfDbId, since the binding itself still survives.
+                        if (_localAvatarEntityIds.Count > 0)
+                        {
+                            foreach (ulong localAvatarId in _localAvatarEntityIds)
+                            {
+                                if (_dbIdByAvatarId.TryGetValue(localAvatarId, out ulong boundDb)
+                                    && boundDb == selfDbPoisonValue)
+                                {
+                                    _dbIdByAvatarId.Remove(localAvatarId);
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // Queue EVERY avatar — whether we recognize its prototype index or not.
@@ -1132,6 +1219,33 @@ public sealed class DpsMeter : IDisposable
         {
             Diagnostic?.Invoke($"DpsMeter: self-dbId captured 0x{selfDbForLog:X16} (player container EntityCreate {e.EntityId}) — persisting for cross-restart binding restore");
             SaveSelfIdentity();
+        }
+        if (selfDbHealedFromLocalAvatar)
+        {
+            Diagnostic?.Invoke($"DpsMeter: self-dbId healed 0x{selfDbHealedOldValue:X16} -> 0x{selfDbForLog:X16} (local avatar {e.EntityId} OwnerPlayerDbId disagrees with persisted value — previous dps-self.json was stale or poisoned by a peer Player container in an earlier session)");
+            SaveSelfIdentity();
+        }
+        if (selfDbPoisonDetected)
+        {
+            Diagnostic?.Invoke($"DpsMeter: POISON DETECTED — persisted _selfDbId 0x{selfDbPoisonValue:X16} matches peer avatar {selfDbPoisonPeerEntityId} (proto {e.PrototypeEnumIndex}, nick='{e.PlayerName}') OwnerPlayerDbId. Wiping in-memory _selfDbId, scrubbing local-avatar bindings, deleting dps-self.json — next zone will repopulate from authoritative source. (Root cause: a previous session's speculative Player-container capture branch — removed in this build — grabbed this peer's container as our own.)");
+            TryDeleteSelfIdentityFile();
+        }
+    }
+
+    /// <summary>Best-effort delete of <see cref="SelfIdentityPath"/>. Called when a peer's
+    /// avatar EntityCreate proves the persisted self-dbId actually belongs to that peer
+    /// (poison detection in <see cref="OnEntityCreated"/>). Failures are silent — worst case
+    /// the next session re-detects the same poison and re-deletes; no functional harm.</summary>
+    private void TryDeleteSelfIdentityFile()
+    {
+        try
+        {
+            if (File.Exists(SelfIdentityPath))
+                File.Delete(SelfIdentityPath);
+        }
+        catch (Exception ex)
+        {
+            Diagnostic?.Invoke($"DpsMeter: failed to delete poisoned self-identity file: {ex.Message}");
         }
     }
 
