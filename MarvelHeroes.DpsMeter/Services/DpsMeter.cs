@@ -178,6 +178,11 @@ public sealed class DpsMeter : IDisposable
     /// pet hit. Cleared on region change because pet entity ids restart per region.</summary>
     private readonly HashSet<ulong> _loggedPeerPetFolds = new();
 
+    /// <summary>One-shot dedup for <see cref="CoalesceAnonymousRowsByHeroName"/> diagnostics.
+    /// Without this, every leaderboard rebuild (~4 Hz) emits identical fold lines — tens of
+    /// thousands per long session. Cleared on region change with the pet map.</summary>
+    private readonly HashSet<(ulong PetOrProxyOwner, ulong NamedAvatarOwner)> _loggedAnonByHeroFolds = new();
+
     /// <summary>One-shot dedup for the "target prototype isn't a boss" diagnostic path. Keyed by
     /// target <c>prototypeEnumIndex</c> so we log each distinct mob type exactly once per session
     /// (or until region change, which clears it). Without this a sustained AOE on trash packs
@@ -2376,6 +2381,7 @@ public sealed class DpsMeter : IDisposable
             // reason — all three are per-region by definition.
             _petRootOwnerByEntity.Clear();
             _loggedPeerPetFolds.Clear();
+            _loggedAnonByHeroFolds.Clear();
             _loggedOffByOneBossAdmits.Clear();
 
             // ── Entity-id-keyed maps are DELIBERATELY KEPT across region changes ─────────────
@@ -2998,14 +3004,21 @@ public sealed class DpsMeter : IDisposable
     /// has its own EntityCreate that resolves to the parent hero's prototype) but with
     /// an empty <c>PlayerName</c> (no dbId binding for a non-avatar entity).</para>
     ///
-    /// <para>Render-time heuristic: when an anonymous row's <see cref="HeroShareEntry.Name"/>
-    /// matches EXACTLY ONE non-anonymous row's <c>Name</c> on the same leaderboard, the
-    /// only sensible attribution is "this anon is that named player's pet".  Two named
-    /// rows on the same hero would be ambiguous (we couldn't tell which one the pet
-    /// belongs to) — leave those alone.  Same hero, no named rows at all is also
-    /// passed through (we'd just be merging anons into anons; the user-visible
-    /// `#XXXX` count goes down by N-1 but nothing else improves and we lose per-summon
-    /// granularity for the rare debugging case).</para>
+    /// <para>Render-time heuristic: when a row has empty <c>PlayerName</c> (unresolved
+    /// nick — common when <c>_dbIdByAvatarId</c> never bound that avatar this session)
+    /// but we've proven via <see cref="OnDamageDealt"/> that its <c>OwnerId</c> is a
+    /// pet/proxy (it exists as a key in <see cref="_petRootOwnerByEntity"/>), AND its
+    /// hero name matches EXACTLY ONE row on the leaderboard that already has a resolved
+    /// nickname, fold the pet's damage into that named row.</para>
+    ///
+    /// <para>**Hard guards (Apr 2026 take-2):** (a) Never fold <see cref="HeroShareEntry.IsSelf"/>
+    /// rows — the local player's avatar often has an empty <c>PlayerName</c> when
+    /// bindings=0, but it is NOT a summon; folding it into the only named peer playing
+    /// the same hero (e.g. merge self Blade into "Mrbil") was a catastrophic regression.
+    /// (b) Require <c>_petRootOwnerByEntity.ContainsKey(OwnerId)</c> — without this, a
+    /// second real player on the same hero with a failed nick-resolve looks identical to
+    /// a summon (empty <c>PlayerName</c>, same hero string) and would be absorbed into
+    /// the first named peer.</para>
     ///
     /// <para>The pass MUST run AFTER the player-name pass (so the "exactly one named
     /// row per hero" check is well-defined) and BEFORE the sort + truncate (so merged
@@ -3051,12 +3064,17 @@ public sealed class DpsMeter : IDisposable
             }
             else
             {
-                st.anonCount++;
+                // Only *pet/proxy* rows with failed nick-resolve count as fold candidates.
+                // Self rows and full avatars of peers also have empty PlayerName sometimes
+                // — they must NOT inflate anonCount or we re-introduce the "two Blades"
+                // bug (self merged into Mrbil).
+                if (!r.IsSelf && _petRootOwnerByEntity.ContainsKey(r.OwnerId))
+                    st.anonCount++;
             }
             byHero[r.Name] = st;
         }
 
-        // Quick-out when no anon-into-named opportunity exists at all.
+        // Quick-out when no pet-proxy-into-named opportunity exists at all.
         bool anyOpportunity = false;
         foreach (var kv in byHero)
         {
@@ -3078,9 +3096,11 @@ public sealed class DpsMeter : IDisposable
         {
             var r = rows[i];
 
-            // Anon row eligible for fold?
-            if (string.IsNullOrEmpty(r.PlayerName)
+            // Pet/proxy row eligible for fold?  (Never the local avatar — IsSelf.)
+            if (!r.IsSelf
+                && string.IsNullOrEmpty(r.PlayerName)
                 && !string.IsNullOrEmpty(r.Name)
+                && _petRootOwnerByEntity.ContainsKey(r.OwnerId)
                 && byHero.TryGetValue(r.Name, out var st)
                 && st.namedCount == 1)
             {
@@ -3105,7 +3125,8 @@ public sealed class DpsMeter : IDisposable
                     OwnerId    = existing.OwnerId,
                 };
                 anyMerged = true;
-                Diagnostic?.Invoke($"DpsMeter: anon-by-hero fold — anon owner={r.OwnerId} (hero='{r.Name}', total={r.Total60s}) → named row owner={existing.OwnerId} player='{existing.PlayerName}'");
+                if (_loggedAnonByHeroFolds.Add((r.OwnerId, existing.OwnerId)))
+                    Diagnostic?.Invoke($"DpsMeter: anon-by-hero fold — pet/proxy owner={r.OwnerId} (hero='{r.Name}', total={r.Total60s}) → named row owner={existing.OwnerId} player='{existing.PlayerName}'");
                 continue;
             }
 
