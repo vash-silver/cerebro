@@ -269,6 +269,33 @@ public sealed class DpsMeter : IDisposable
     /// the long tail of "this one weird prototype" without spamming the log on common mobs.</summary>
     private const int AdmittedTargetLogCap = 100;
 
+    /// <summary>Per-entity first-hit diagnostic for the normal-mode filter.  Keyed by target
+    /// <c>entityId</c> so each distinct entity that takes damage gets exactly one log line per
+    /// region — independent of the per-prototype dedup above.  Without this, a sustained fight
+    /// where many entities share a prototype is opaque: the per-prototype admit/drop line fires
+    /// once for the FIRST entity and every subsequent entity is silent, which makes "is target
+    /// X being counted?" unanswerable from the log because we have no entry for that entity at
+    /// all.  With this, every distinct entity that the filter touches surfaces one line of the
+    /// shape <c>target entity={id} → protoIdx={N} decision={admit|drop}</c>, which is enough to
+    /// cross-reference any entity-id the user pastes from a complaint screenshot against the
+    /// active prototype set.
+    ///
+    /// <para>Capped at <see cref="FirstHitEntityLogCap"/> per region.  In a typical Maggia
+    /// patrol / terminal pull the cap admits the first ~200 distinct entities (usually
+    /// equivalent to the first ~3–5 minutes of dense combat) and silently drops further entries
+    /// — sufficient to diagnose the "is target X being counted?" question for any active fight,
+    /// while bounded enough that a 20-minute patrol grind doesn't bloat the log file.</para>
+    /// </summary>
+    private readonly HashSet<ulong> _loggedFirstHitEntities = new();
+
+    /// <summary>Cap for <see cref="_loggedFirstHitEntities"/>.  Sized at 200 to comfortably
+    /// cover a single dense terminal/patrol fight (typically 50–150 distinct entities including
+    /// trash + named + summons), with headroom for transitions between back-to-back fights in
+    /// the same region.  If a 20-minute farm session blows past 200 entities, the long tail
+    /// still gets correctly admitted/dropped — it's only the per-entity diagnostic that goes
+    /// silent, not the underlying filtering.</summary>
+    private const int FirstHitEntityLogCap = 200;
+
     /// <summary>Per-hero all-time max single-hit, keyed by the hero's display name
     /// (e.g. "Iron Man", "Blade").  Keying by display name rather than an enum index means the
     /// record survives the entity-id namespace change on region transitions AND stays consistent
@@ -1653,7 +1680,22 @@ public sealed class DpsMeter : IDisposable
         {
             if (_prototypeByEntityId.TryGetValue(e.TargetEntityId, out uint normalTargetProtoIdx))
             {
-                if (!CombatantPrototypes.TryClassifyCombatant(normalTargetProtoIdx, out bool combatantViaShift))
+                bool admit = CombatantPrototypes.TryClassifyCombatant(normalTargetProtoIdx, out bool combatantViaShift);
+
+                // Per-entity first-hit diagnostic — surfaces the (entity → proto → decision) tuple
+                // for every distinct entity touched by the filter, independent of the per-prototype
+                // dedup further down.  Required for diagnosing "why is target=84 being counted?"
+                // questions: the per-prototype line fires once for the FIRST entity holding a given
+                // proto and every subsequent entity is silent, so a user staring at hits like
+                // `target=84 dmg=19065 (sustained)` can't tell which prototype the entity holds.
+                // See <see cref="_loggedFirstHitEntities"/> for the dedup contract.
+                if (_loggedFirstHitEntities.Count < FirstHitEntityLogCap
+                    && _loggedFirstHitEntities.Add(e.TargetEntityId))
+                {
+                    Diagnostic?.Invoke($"DpsMeter: first-hit on entity={e.TargetEntityId} → protoIdx={normalTargetProtoIdx} decision={(admit ? "admit" : "drop")} (raw {e.TotalDamage} damage). Use this to map entity ids in `target=X` PowerResult lines back to their prototype + filter outcome.");
+                }
+
+                if (!admit)
                 {
                     if (_loggedNonCombatantTargets.Add(normalTargetProtoIdx))
                         Diagnostic?.Invoke($"DpsMeter: non-combatant filter drop — target protoIdx={normalTargetProtoIdx} is not in CombatantPrototypes set (PropPrototype / DestructiblePropPrototype / item / non-agent record); damage dropped from normal-mode DPS so crates, vases, breakable doors, etc. don't inflate the 60-second window");
@@ -2744,6 +2786,7 @@ public sealed class DpsMeter : IDisposable
             _loggedUnknownNormalTargets.Clear();
             _loggedAdmittedNormalTargets.Clear();
             _loggedOffByOneCombatantAdmits.Clear();
+            _loggedFirstHitEntities.Clear();
             // Pet → chain-root edges are entity-id-keyed and entity ids restart per region
             // (server destroys all summons on zone), so carrying these forward would mis-
             // attribute damage if a re-allocated pet entity id collided with a stale entry.
