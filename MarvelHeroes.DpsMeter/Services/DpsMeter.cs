@@ -323,6 +323,57 @@ public sealed class DpsMeter : IDisposable
     /// transitions still wipe everything immediately (see <see cref="OnRegionChanged"/>).</summary>
     private static readonly TimeSpan FilterDedupResetInterval = TimeSpan.FromMinutes(5);
 
+    /// <summary>Per-entity dedup for the "<see cref="_prototypeByEntityId"/> entry invalidated
+    /// because the entity was killed/destroyed AND the cached prototype was a combatant" diagnostic.
+    /// This is the surgical signal for the "ghost damage on a dead mob's stale entry inflates DPS"
+    /// failure mode (Apr 2026):
+    ///
+    /// <para>Pre-fix sequence:</para>
+    /// <list type="number">
+    ///   <item>Real mob spawns → <see cref="OnEntityCreated"/> writes <c>_prototypeByEntityId[id] = combatantProto</c>.</item>
+    ///   <item>Player kills the mob → <c>OnEntityKilled</c>/<c>OnEntityDestroyed</c> fires but
+    ///         pre-fix did NOT remove the cache entry.</item>
+    ///   <item>Lingering DOT ticks / cleave splash / late projectile hits land on the corpse
+    ///         entity-id → <see cref="OnDamageDealt"/> looks up the still-cached combatant proto →
+    ///         hit is admitted → "ghost" DPS silently piles into the leaderboard with NO
+    ///         <c>first-hit</c> log line (entity already passed first-hit dedup) and no
+    ///         <c>combatant filter admit</c> log line (proto already passed admit dedup).</item>
+    /// </list>
+    ///
+    /// <para>Post-fix the cleanup happens in <see cref="InvalidatePrototypeCacheForRemovedEntity"/>
+    /// and emits this diagnostic exactly once per (entityId, region, dedup-window) when the removed
+    /// entry was a combatant — so the user can see "yes, the engine just stopped accepting ghost
+    /// damage on entityId=N" lines correlating with their kills.  Capped to keep busy mob-pulls
+    /// from drowning out the rest of the log; cleared on region change and on the periodic dedup
+    /// reset (every <see cref="FilterDedupResetInterval"/>).</para>
+    /// </summary>
+    private readonly HashSet<ulong> _loggedCacheCleanupCombatantRemovals = new();
+
+    /// <summary>Cap for <see cref="_loggedCacheCleanupCombatantRemovals"/>.  Sized at 2000 — a
+    /// dense 5 min mob pull (Maggia patrol, Bovine Sentinel terminal) kills ~200–500 entities; a
+    /// terminal end-boss fight kills ~50; a chapter run is rarely above 1000.  2 K headroom lets
+    /// the log capture every cleanup in even the worst real-world case without unbounded growth.</summary>
+    private const int CacheCleanupLogCap = 2000;
+
+    /// <summary>Per-entity dedup for the "EntityCreate replaced an existing prototype mapping with
+    /// a DIFFERENT prototype" diagnostic.  Catches the entity-id-reuse failure mode: when the
+    /// server allocates an entity-id that was previously assigned to a since-killed combatant and
+    /// the new entity is a destructible / orb / NPC, EntityCreate updates the cache to the new
+    /// proto (good, that's the post-fix behaviour).  Pre-fix, between the kill and the new
+    /// EntityCreate there was a window where ghost damage to the dead mob's entity-id was admitted
+    /// — and on some servers we observed entity-id reuse without an EntityKilled/Destroyed in
+    /// between (server quirk; the kill event was either dropped on the wire or simply not emitted
+    /// for the entity type), in which case the cleanup-on-death path can't help and only the
+    /// EntityCreate update closes the gap.  This diagnostic surfaces every such reuse so we know
+    /// the cache is being self-healing for entity types that don't generate proper kill/destroy
+    /// events.  Capped + cleared on the same windows as the cleanup set.</summary>
+    private readonly HashSet<ulong> _loggedCacheReuseEvents = new();
+
+    /// <summary>Cap for <see cref="_loggedCacheReuseEvents"/>.  Sized at 1000 — entity-id reuse
+    /// without proper kill/destroy events is a server-quirk path and shouldn't fire often; if it
+    /// fills repeatedly that's actionable diagnostic data for the sniffer side.</summary>
+    private const int CacheReuseLogCap = 1000;
+
     /// <summary>Per-hero all-time max single-hit, keyed by the hero's display name
     /// (e.g. "Iron Man", "Blade").  Keying by display name rather than an enum index means the
     /// record survives the entity-id namespace change on region transitions AND stays consistent
@@ -1159,6 +1210,27 @@ public sealed class DpsMeter : IDisposable
 
     private void OnEntityCreated(object? sender, EntityCreatedEvent e)
     {
+        // Detect entity-id reuse: server reused an entity-id slot for a different prototype
+        // without an EntityKilled/Destroyed having flushed the prior entry.  Surfaces a
+        // diagnostic so the operator can correlate "ghost damage admit" complaints with the
+        // exact reuse events; the cache itself is updated unconditionally below either way.
+        // (We deliberately read BEFORE the write so the comparison sees the prior entry; the
+        // ConcurrentDictionary indexer write a few lines down replaces it atomically.)
+        if (e.EntityId != 0
+            && e.PrototypeEnumIndex != 0
+            && _prototypeByEntityId.TryGetValue(e.EntityId, out uint existingProto)
+            && existingProto != 0
+            && existingProto != e.PrototypeEnumIndex)
+        {
+            bool wasCombatant = CombatantPrototypes.IsCombatant(existingProto);
+            bool isCombatant = CombatantPrototypes.IsCombatant(e.PrototypeEnumIndex);
+            if (_loggedCacheReuseEvents.Count < CacheReuseLogCap
+                && _loggedCacheReuseEvents.Add(e.EntityId))
+            {
+                Diagnostic?.Invoke($"DpsMeter: prototype-cache id-reuse — entityId={e.EntityId} replaced protoIdx={existingProto} (combatant={wasCombatant}) → {e.PrototypeEnumIndex} (combatant={isCombatant}). Server reallocated the entity-id slot without an EntityKilled/Destroyed reaching us in between (event dropped on the wire OR not emitted for this entity type). Cache updated to the new protoIdx; previous-mapping ghost-damage admits to this id are now closed.");
+            }
+        }
+
         // Tracked on a separate concurrent map rather than under _sync to keep this callback
         // lock-free — it runs on the sniffer's capture thread and can fire thousands of times
         // during a map transition. Reads happen inside OnDamageDealt/Tick which hold _sync, but
@@ -1710,8 +1782,10 @@ public sealed class DpsMeter : IDisposable
             _loggedAdmittedNormalTargets.Clear();
             _loggedOffByOneCombatantAdmits.Clear();
             _loggedFirstHitEntities.Clear();
+            _loggedCacheCleanupCombatantRemovals.Clear();
+            _loggedCacheReuseEvents.Clear();
             _lastFilterDedupResetUtc = nowUtc;
-            Diagnostic?.Invoke($"DpsMeter: filter-dedup periodic reset — every {FilterDedupResetInterval.TotalMinutes:F0} min the per-window admit/drop/first-hit caches are wiped so the next batch of diagnostic lines starts fresh. If a hit at this point still says \"silent drop\" / never appears at all, the underlying filter logic is genuinely silent; if a flurry of `combatant filter admit` / `non-combatant filter drop` / `first-hit on entity` lines appears in the next few seconds, that's expected — they're rebuilding from the cleared sets.");
+            Diagnostic?.Invoke($"DpsMeter: filter-dedup periodic reset — every {FilterDedupResetInterval.TotalMinutes:F0} min the per-window admit/drop/first-hit/cache-cleanup/cache-reuse caches are wiped so the next batch of diagnostic lines starts fresh. If a hit at this point still says \"silent drop\" / never appears at all, the underlying filter logic is genuinely silent; if a flurry of `combatant filter admit` / `non-combatant filter drop` / `first-hit on entity` / `prototype-cache cleanup` / `prototype-cache id-reuse` lines appears in the next few seconds, that's expected — they're rebuilding from the cleared sets.");
         }
 
         // ── Non-combatant filter (NORMAL DPS MODE ONLY, runs BEFORE the lock) ─────────────────
@@ -2848,6 +2922,8 @@ public sealed class DpsMeter : IDisposable
             _loggedAdmittedNormalTargets.Clear();
             _loggedOffByOneCombatantAdmits.Clear();
             _loggedFirstHitEntities.Clear();
+            _loggedCacheCleanupCombatantRemovals.Clear();
+            _loggedCacheReuseEvents.Clear();
             // Restart the periodic-reset clock too: the next OnDamageDealt call will stamp
             // _lastFilterDedupResetUtc and a fresh 5-min window starts from this region's
             // first hit (instead of from a stale wall-clock value carried in from the
@@ -2931,10 +3007,66 @@ public sealed class DpsMeter : IDisposable
     }
 
     private void OnEntityKilled(object? sender, EntityKillEvent e)
-        => OnEngagedEntityRemoved(e.EntityId, e.UtcTime, sourceTag: "killed");
+    {
+        InvalidatePrototypeCacheForRemovedEntity(e.EntityId, sourceTag: "killed");
+        OnEngagedEntityRemoved(e.EntityId, e.UtcTime, sourceTag: "killed");
+    }
 
     private void OnEntityDestroyed(object? sender, EntityDestroyEvent e)
-        => OnEngagedEntityRemoved(e.EntityId, e.UtcTime, sourceTag: "destroyed");
+    {
+        InvalidatePrototypeCacheForRemovedEntity(e.EntityId, sourceTag: "destroyed");
+        OnEngagedEntityRemoved(e.EntityId, e.UtcTime, sourceTag: "destroyed");
+    }
+
+    /// <summary>Removes the entity-id → prototype-index entry from <see cref="_prototypeByEntityId"/>
+    /// when the server tells us the entity is gone (kill or destroy).  Without this the entry
+    /// idles forever inside the per-region cache, and any post-death damage event that targets
+    /// the same entity-id (lingering DOT ticks, in-flight projectiles, cleave splash that hits
+    /// the corpse before it despawns) silently inherits the dead mob's prototype-index in
+    /// <see cref="OnDamageDealt"/>'s normal-mode filter — admitting the hit as legitimate
+    /// combatant damage even though the user is now hitting a corpse, an environmental
+    /// destructible the server reused the entity-id slot for, or simply nothing visible at all.
+    /// The result is "ghost DPS": the cumulative session total grows over time with no
+    /// corresponding <c>first-hit</c> diagnostic line because the entity-id long since passed
+    /// the per-region first-hit dedup, AND no <c>combatant filter admit</c> line because the
+    /// prototype-index already passed the per-region admit dedup too.  Pre-fix, the only
+    /// observable signal was the <see cref="DpsMeter.State"/> heartbeat showing <c>sess</c>
+    /// climbing in seconds where every visible decision was <c>drop</c>.
+    ///
+    /// <para>The diagnostic emitted here is the <i>positive</i> signal that the cleanup is
+    /// working — exactly one line per killed combatant entity-id per dedup window — so a user
+    /// reproducing the issue can grep <c>prototype-cache cleanup</c> in their log and confirm
+    /// the engine is no longer accepting ghost damage on that entity-id.  Lines fire only when
+    /// the removed entry was a known combatant (the silent-admit failure mode); orb / NPC /
+    /// destructible removals are silent because removing those entries doesn't change any
+    /// scoring decision (the filter would have dropped them anyway).</para>
+    ///
+    /// <para>Idempotent and lock-free.  Safe to call from the sniffer's capture thread
+    /// concurrently with <see cref="OnDamageDealt"/> (which only reads
+    /// <c>_prototypeByEntityId</c>); the underlying <see cref="ConcurrentDictionary{TKey, TValue}"/>
+    /// guarantees atomic <see cref="ConcurrentDictionary{TKey, TValue}.TryRemove(TKey, out TValue)"/>
+    /// against concurrent <see cref="ConcurrentDictionary{TKey, TValue}.TryGetValue"/> readers.</para>
+    /// </summary>
+    private void InvalidatePrototypeCacheForRemovedEntity(ulong entityId, string sourceTag)
+    {
+        if (entityId == 0) return;
+        if (!_prototypeByEntityId.TryRemove(entityId, out uint removedProto)) return;
+        if (removedProto == 0) return;
+
+        // Only emit a diagnostic when the removed entry was actually a combatant — that's the
+        // exact failure-mode signal we care about.  Cache entries for destructibles, orbs, NPCs
+        // (anything the filter drops) being removed isn't actionable: their removal doesn't
+        // change any scoring decision and would just add noise to a busy mob-pull log.
+        if (!CombatantPrototypes.IsCombatant(removedProto)) return;
+
+        // Dedup on entityId via HashSet.Add semantics (returns false if already present); cap
+        // bounds worst-case log volume on long sessions.  Cleared on region change AND on the
+        // periodic 5-minute reset, so the user can re-trigger lines after waiting briefly.
+        if (_loggedCacheCleanupCombatantRemovals.Count >= CacheCleanupLogCap) return;
+        if (!_loggedCacheCleanupCombatantRemovals.Add(entityId)) return;
+
+        Diagnostic?.Invoke($"DpsMeter: prototype-cache cleanup on {sourceTag} — entityId={entityId} (was protoIdx={removedProto}, was-combatant=true). Subsequent damage events targeting this entityId would have been silently admitted as ghost-mob damage; the entry has been evicted so future hits to the same id will correctly drop as `unknown prototype` (or fire a fresh `combatant filter admit` if the server reallocates the slot via a new EntityCreate). If `sess` keeps climbing AFTER you see this line for every mob you killed, the bug is somewhere ELSE — paste the next log window so we can compare admit/cleanup pairs against `sess` deltas.");
+    }
 
     // Note (Apr 2026, second iteration of "numbers reducing after fight ended" fix):
     // FastClearFrozenIfStale was REMOVED.  See the comment at the EncounterFrozenFastClearGrace
