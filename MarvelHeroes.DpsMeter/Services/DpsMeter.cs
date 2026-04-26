@@ -235,6 +235,30 @@ public sealed class DpsMeter : IDisposable
     /// got dropped (and in turn add their prototypes to <see cref="CombatantPrototypes"/>).</summary>
     private const int UnknownTargetLogCap = 25;
 
+    /// <summary>One-shot dedup for the "non-combatant filter ADMITTED this hit" diagnostic in
+    /// normal DPS mode.  Keyed by target <c>prototypeEnumIndex</c>: the FIRST time a given
+    /// prototype is admitted as a combatant during the current region, we emit one log line
+    /// with the protoIdx, the entityId of the hit, and the damage value.  This makes "what's
+    /// actually being counted as DPS" trivially answerable from the log: grep for
+    /// <c>combatant filter admit</c> after a fight, cross-reference each protoIdx against the
+    /// dumper output (or <c>HeroPrototypes.Names</c> for hero protos) and you can see exactly
+    /// which prototypes the meter is admitting.  If any of them are obviously wrong
+    /// (XP orb, projectile, environmental destructible smart-prop), they belong on a
+    /// to-exclude list at dumper-generation time, not at runtime.
+    ///
+    /// <para>Capped at <see cref="AdmittedTargetLogCap"/> per region for the same reason as the
+    /// unknown-drop cap above — a busy mob fight can hit 50+ distinct prototypes inside the first
+    /// 30 s and we'd rather lose the long tail than flood the log.  Cleared on region change with
+    /// the rest of the per-region dedup state.</para></summary>
+    private readonly HashSet<uint> _loggedAdmittedNormalTargets = new();
+
+    /// <summary>Cap for <see cref="_loggedAdmittedNormalTargets"/>.  See remarks on that field
+    /// for rationale.  Sized larger than the unknown-drop cap (25) because a busy patrol /
+    /// terminal can legitimately hit 30–60 distinct mob prototypes inside the first minute of
+    /// a fight (chapter / patrol mob mixes are diverse), and we want enough headroom to capture
+    /// the long tail of "this one weird prototype" without spamming the log on common mobs.</summary>
+    private const int AdmittedTargetLogCap = 100;
+
     /// <summary>Per-hero all-time max single-hit, keyed by the hero's display name
     /// (e.g. "Iron Man", "Blade").  Keying by display name rather than an enum index means the
     /// record survives the entity-id namespace change on region transitions AND stays consistent
@@ -1592,6 +1616,19 @@ public sealed class DpsMeter : IDisposable
                         Diagnostic?.Invoke($"DpsMeter: non-combatant filter drop — target protoIdx={normalTargetProtoIdx} is not in CombatantPrototypes set (PropPrototype / DestructiblePropPrototype / item / non-agent record); damage dropped from normal-mode DPS so crates, vases, breakable doors, etc. don't inflate the 60-second window");
                     return;
                 }
+
+                // Admit path — emit a one-shot diagnostic per distinct protoIdx so we have full
+                // visibility into "what is actually being counted as DPS" without needing to
+                // change code or re-build.  Without this, drops are logged but admits are silent
+                // and a user reporting "objects damage still being counted" can't be diagnosed
+                // because we don't know which prototype is the culprit.  See
+                // <see cref="_loggedAdmittedNormalTargets"/> for the dedup contract; the cap
+                // exists so a 60-mob patrol pull doesn't dump 60 lines into the log.
+                if (_loggedAdmittedNormalTargets.Count < AdmittedTargetLogCap
+                    && _loggedAdmittedNormalTargets.Add(normalTargetProtoIdx))
+                {
+                    Diagnostic?.Invoke($"DpsMeter: combatant filter admit — target protoIdx={normalTargetProtoIdx} (entityId={e.TargetEntityId}, dmg={e.TotalDamage}). First admit for this prototype this region; this is what's being counted toward your normal-mode DPS. If this looks wrong (orb pickup, projectile, environmental smart-prop), paste this line and we'll move the prototype out of CombatantPrototypes.");
+                }
             }
             else
             {
@@ -2627,6 +2664,7 @@ public sealed class DpsMeter : IDisposable
             _loggedUnknownBossTargets.Clear();
             _loggedNonCombatantTargets.Clear();
             _loggedUnknownNormalTargets.Clear();
+            _loggedAdmittedNormalTargets.Clear();
             // Pet → chain-root edges are entity-id-keyed and entity ids restart per region
             // (server destroys all summons on zone), so carrying these forward would mis-
             // attribute damage if a re-allocated pet entity id collided with a stale entry.
