@@ -211,6 +211,16 @@ public sealed class DpsMeter : IDisposable
     /// branch in <see cref="OnDamageDealt"/> for when the diagnostic fires.</summary>
     private readonly HashSet<uint> _loggedNonCombatantTargets = new();
 
+    /// <summary>Sibling of <see cref="_loggedOffByOneBossAdmits"/> for the normal-mode combatant
+    /// filter.  Logged exactly once per distinct prototype per region whenever
+    /// <see cref="CombatantPrototypes.TryClassifyCombatant"/> resolved the admit through the
+    /// off-by-one shift path (the only path that actually matches above index 10000 — see the
+    /// CombatantPrototypes class remarks for why the literal probe was retired).  Lets the user
+    /// grep <c>combatant filter admit (off-by-one shift)</c> after a fight to know which
+    /// prototypes are still relying on the dumper-bug compensation, useful as a checklist when
+    /// the dumper is eventually regenerated against the C# class hierarchy.</summary>
+    private readonly HashSet<uint> _loggedOffByOneCombatantAdmits = new();
+
     /// <summary>Sibling of <see cref="_loggedNonCombatantTargets"/> for the "unknown prototype"
     /// branch of the normal-mode non-combatant filter — entities whose <c>EntityCreate</c> was
     /// never observed by the sniffer (or arrived after the first hit on them).  Keyed by target
@@ -1643,7 +1653,7 @@ public sealed class DpsMeter : IDisposable
         {
             if (_prototypeByEntityId.TryGetValue(e.TargetEntityId, out uint normalTargetProtoIdx))
             {
-                if (!CombatantPrototypes.IsCombatant(normalTargetProtoIdx))
+                if (!CombatantPrototypes.TryClassifyCombatant(normalTargetProtoIdx, out bool combatantViaShift))
                 {
                     if (_loggedNonCombatantTargets.Add(normalTargetProtoIdx))
                         Diagnostic?.Invoke($"DpsMeter: non-combatant filter drop — target protoIdx={normalTargetProtoIdx} is not in CombatantPrototypes set (PropPrototype / DestructiblePropPrototype / item / non-agent record); damage dropped from normal-mode DPS so crates, vases, breakable doors, etc. don't inflate the 60-second window");
@@ -1661,6 +1671,17 @@ public sealed class DpsMeter : IDisposable
                     && _loggedAdmittedNormalTargets.Add(normalTargetProtoIdx))
                 {
                     Diagnostic?.Invoke($"DpsMeter: combatant filter admit — target protoIdx={normalTargetProtoIdx} (entityId={e.TargetEntityId}, dmg={e.TotalDamage}). First admit for this prototype this region; this is what's being counted toward your normal-mode DPS. If this looks wrong (orb pickup, projectile, environmental smart-prop), paste this line and we'll move the prototype out of CombatantPrototypes.");
+                }
+
+                // Surface off-by-one shift admits one-shot per protoIdx so the diagnostic log
+                // tells us which prototypes are still relying on the dumper-bug compensation.
+                // Mirrors the boss-mode "off-by-one fallback" line emitted by TryClassifyBoss
+                // above; helpful as a checklist when the dumper is eventually regenerated
+                // against the EmuSource C# class hierarchy walk (at which point the shift goes
+                // away and CombatantPrototypes can drop DumperOffByOneThreshold entirely).
+                if (combatantViaShift && _loggedOffByOneCombatantAdmits.Add(normalTargetProtoIdx))
+                {
+                    Diagnostic?.Invoke($"DpsMeter: combatant filter admit (off-by-one shift) — target protoIdx={normalTargetProtoIdx} matched via dumper-bug compensation at protoIdx={normalTargetProtoIdx - 1u}; once the dumper is regenerated to the C# class hierarchy walk this admit will become a literal lookup at the new index");
                 }
             }
             else
@@ -2722,6 +2743,7 @@ public sealed class DpsMeter : IDisposable
             _loggedNonCombatantTargets.Clear();
             _loggedUnknownNormalTargets.Clear();
             _loggedAdmittedNormalTargets.Clear();
+            _loggedOffByOneCombatantAdmits.Clear();
             // Pet → chain-root edges are entity-id-keyed and entity ids restart per region
             // (server destroys all summons on zone), so carrying these forward would mis-
             // attribute damage if a re-allocated pet entity id collided with a stale entry.

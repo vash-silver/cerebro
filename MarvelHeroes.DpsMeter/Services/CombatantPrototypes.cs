@@ -67,13 +67,43 @@ namespace MarvelHeroes.DpsMeter.Services;
 /// </code>
 ///
 /// <para>
-/// <b>Known dumper bug — off-by-one for high indices.</b>  Same as <see cref="BossPrototypes"/>:
-/// the dumper walks the blueprint inheritance graph but the live network encodes prototype
+/// <b>Known dumper bug — off-by-one for high indices.</b>
+/// The dumper walks the blueprint inheritance graph but the live network encodes prototype
 /// indices using EmuSource's C# class hierarchy walk.  Those trees diverge by exactly one
-/// record around index 10000–13784, so every dumper index ≥ 10000 is exactly one less than
-/// the live network value for the same prototype.  <see cref="IsCombatant"/> compensates at
-/// lookup time the same way <see cref="BossPrototypes.IsBoss"/> does — once the dumper bug
-/// is fixed and this file regenerated, drop the <c>DumperOffByOneThreshold</c> compensation.
+/// record around index 10000–13784, so for every prototype P with network-encoded
+/// <c>prototypeEnumIndex = N ≥ 10000</c>, this file stores P at the entry labelled
+/// <c>N - 1</c>.  <see cref="IsCombatant"/> compensates at lookup time by pace42g
+/// <c>Indices.Contains(N - 1)</c> for indices ≥ <see cref="DumperOffByOneThreshold"/>
+/// and skipping the literal probe entirely.
+/// </para>
+///
+/// <para>
+/// <b>Why "shift only" instead of "literal OR shift" (which <see cref="BossPrototypes.IsBoss"/>
+/// historically used).</b>  The "literal OR shift" pattern was originally chosen for boss
+/// detection where false-positive cost is bounded ("trash damage occasionally counted as boss
+/// damage" — see <c>BossPrototypes</c> remarks).  For combatant scoring the cost flips: this
+/// file is dense (5400+ entries spanning 0–21000 vs ~250 boss entries), so a literal probe at
+/// any index ≥ 10000 has a high chance of "succeeding" by hitting an unrelated neighbour
+/// prototype that the dumper happened to label with that index — and admitting damage on the
+/// wrong target.  Live triage of user reports (Apr 2026) showed the literal-OR-shift pattern
+/// admitting Surtur-raid jail-cell gatekeepers, gang member arsonists, and Lizard Animals as
+/// "valid combatants" while the user was fighting Maggia in an unrelated chapter zone — every
+/// one of those false admits was a literal hit at <c>N</c> for a prototype the dumper actually
+/// excluded as non-agent at <c>N - 1</c>.  Switching to shift-only for ≥ 10000 eliminates the
+/// systematic false positives at the cost of (a) potentially missing entries in
+/// <c>[10000, divergence_point)</c> if the divergence boundary turns out to be higher than
+/// 10000, and (b) requiring a dumper regeneration to remove the redundant "literal-N for
+/// network-(N+1)" entries from this file (the regen is the proper long-term fix referenced in
+/// <c>BossPrototypes</c> too).
+/// </para>
+///
+/// <para>
+/// Once the dumper is regenerated against the EmuSource-style C# class hierarchy and this
+/// file no longer carries the off-by-one shift, drop the <see cref="DumperOffByOneThreshold"/>
+/// compensation entirely.  The <see cref="TryClassifyCombatant"/> overload exposes a
+/// <c>requiredShift</c> bool so the meter can emit a one-shot diagnostic for every admit that
+/// went through the off-by-one path — useful to verify the regen actually eliminated the
+/// shift requirement.
 /// </para>
 /// </summary>
 internal static class CombatantPrototypes
@@ -5490,29 +5520,55 @@ internal static class CombatantPrototypes
     };
 
     /// <summary>Threshold above which the dumper-bug off-by-one compensation kicks in.
-    /// See class remarks for the rationale.  Mirrors <c>BossPrototypes.DumperOffByOneThreshold</c>.</summary>
+    /// See class remarks for the rationale.  Mirrors <c>BossPrototypes.DumperOffByOneThreshold</c>.
+    /// For indices &lt; this threshold the literal probe is correct; for indices ≥ this
+    /// threshold the literal probe is <b>systematically wrong</b> (it would hit the
+    /// dumper-shifted neighbour prototype at network index <c>N + 1</c>) and only the
+    /// shifted probe (<c>Indices.Contains(N - 1)</c>) is meaningful.</summary>
     private const uint DumperOffByOneThreshold = 10000u;
 
     /// <summary>
     /// Returns <c>true</c> when <paramref name="prototypeEnumIndex"/> is a recognised
-    /// combatant.  Probes the literal value first and, if the index is ≥
-    /// <see cref="DumperOffByOneThreshold"/>, also probes <c>prototypeEnumIndex - 1</c> as
-    /// a workaround for the dumper-bug off-by-one (see class remarks).
+    /// combatant.  For indices &lt; <see cref="DumperOffByOneThreshold"/> probes the literal
+    /// value (no off-by-one applies); for indices ≥ the threshold probes
+    /// <c>prototypeEnumIndex - 1</c> ONLY (the literal probe is systematically wrong in that
+    /// range — see class remarks).
     ///
     /// <para>This is on the hot path — every <c>NetMessagePowerResult</c> does one lookup
     /// in normal DPS mode, so this MUST stay branchless and allocation-free.</para>
     /// </summary>
     public static bool IsCombatant(uint prototypeEnumIndex)
     {
-        if (Indices.Contains(prototypeEnumIndex))
-            return true;
+        if (prototypeEnumIndex < DumperOffByOneThreshold)
+            return Indices.Contains(prototypeEnumIndex);
 
-        if (prototypeEnumIndex >= DumperOffByOneThreshold
-            && Indices.Contains(prototypeEnumIndex - 1u))
+        return Indices.Contains(prototypeEnumIndex - 1u);
+    }
+
+    /// <summary>
+    /// Like <see cref="IsCombatant"/> but reports whether the match required the off-by-one
+    /// shift.  Returns <c>true</c> if <paramref name="prototypeEnumIndex"/> is a recognised
+    /// combatant; sets <paramref name="requiredShift"/> to <c>true</c> iff the threshold
+    /// branch fired (i.e. the index is ≥ <see cref="DumperOffByOneThreshold"/> and the match
+    /// resolved at <c>prototypeEnumIndex - 1</c>).  Used by the meter's diagnostic path to
+    /// emit a one-shot "admit (off-by-one shift)" line per distinct prototype, mirroring
+    /// <c>BossPrototypes.TryClassifyBoss</c>.
+    /// </summary>
+    public static bool TryClassifyCombatant(uint prototypeEnumIndex, out bool requiredShift)
+    {
+        if (prototypeEnumIndex < DumperOffByOneThreshold)
         {
+            requiredShift = false;
+            return Indices.Contains(prototypeEnumIndex);
+        }
+
+        if (Indices.Contains(prototypeEnumIndex - 1u))
+        {
+            requiredShift = true;
             return true;
         }
 
+        requiredShift = false;
         return false;
     }
 }
