@@ -202,6 +202,15 @@ public sealed class DpsMeter : IDisposable
     /// makes it visible when the workaround is what's keeping a fight working.</summary>
     private readonly HashSet<uint> _loggedOffByOneBossAdmits = new();
 
+    /// <summary>One-shot dedup for the "non-combatant filter dropped this hit" diagnostic in
+    /// normal DPS mode.  Keyed by target <c>prototypeEnumIndex</c> so each distinct breakable
+    /// prop / item / non-agent record gets exactly one log line per region (cleared on region
+    /// change with the rest of the per-region dedup state).  Without this, sustained AOEs that
+    /// splash on environmental destructibles would emit a rejection line on every PowerResult.
+    /// See <see cref="CombatantPrototypes"/> for what counts as a combatant; see the filter
+    /// branch in <see cref="OnDamageDealt"/> for when the diagnostic fires.</summary>
+    private readonly HashSet<uint> _loggedNonCombatantTargets = new();
+
     /// <summary>Per-hero all-time max single-hit, keyed by the hero's display name
     /// (e.g. "Iron Man", "Blade").  Keying by display name rather than an enum index means the
     /// record survives the entity-id namespace change on region transitions AND stays consistent
@@ -1526,6 +1535,34 @@ public sealed class DpsMeter : IDisposable
         if (dmg == 0 || rawOwner == 0)
             return;
 
+        // ── Non-combatant filter (NORMAL DPS MODE ONLY, runs BEFORE the lock) ─────────────────
+        // Drop hits on environmental destructibles (PropPrototype / DestructiblePropPrototype —
+        // crates, vases, breakable doors), world Item entities, and any other WorldEntityPrototype
+        // descendant that the game does NOT classify as an AgentPrototype (see
+        // CombatantPrototypes for the full agent hierarchy: avatars, mobs, bosses, team-ups, orbs,
+        // missiles, smart props).  Without this filter, AOEs that splash on crates inflate the
+        // user's DPS — every crate hit shows up as ~21k physical damage in the live PowerResult
+        // archive, and a single big AOE on a loot room can dump millions of fake DPS into the
+        // 60-second window.  Boss-only mode has its own narrower filter via BossPrototypes
+        // (which already excludes everything that's not a boss target), so we explicitly skip
+        // this gate when boss-only is on to avoid double-filtering.
+        //
+        // We deliberately ADMIT unknown prototypes (the same policy boss-only mode uses for
+        // unknown targets): if the target's EntityCreate wasn't observed, the most likely cause
+        // is "user attached the meter mid-fight" and silently dropping the hit would be a worse
+        // failure mode than admitting a possibly-environmental record we never saw spawn.  In
+        // practice, the cache fills within the first second of any fight and unknown-target
+        // hits are vanishingly rare after that.
+        if (!_bossOnlyMode
+            && e.TargetEntityId != 0
+            && _prototypeByEntityId.TryGetValue(e.TargetEntityId, out uint normalTargetProtoIdx)
+            && !CombatantPrototypes.IsCombatant(normalTargetProtoIdx))
+        {
+            if (_loggedNonCombatantTargets.Add(normalTargetProtoIdx))
+                Diagnostic?.Invoke($"DpsMeter: non-combatant filter drop — target protoIdx={normalTargetProtoIdx} is not in CombatantPrototypes set (PropPrototype / DestructiblePropPrototype / item / non-agent record); damage dropped from normal-mode DPS so crates, vases, breakable doors, etc. don't inflate the 60-second window");
+            return;
+        }
+
         // ── Boss-only filter (runs BEFORE the lock so we don't churn window state for hits we
         // immediately throw away).  We resolve target → prototypeEnumIndex via the same cache the
         // main resolver uses; if the target's EntityCreate was missed, its prototype is unknown
@@ -2547,6 +2584,7 @@ public sealed class DpsMeter : IDisposable
             _loggedUnknownHeroes.Clear();
             _loggedNonBossTargets.Clear();
             _loggedUnknownBossTargets.Clear();
+            _loggedNonCombatantTargets.Clear();
             // Pet → chain-root edges are entity-id-keyed and entity ids restart per region
             // (server destroys all summons on zone), so carrying these forward would mis-
             // attribute damage if a re-allocated pet entity id collided with a stale entry.
