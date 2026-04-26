@@ -211,6 +211,30 @@ public sealed class DpsMeter : IDisposable
     /// branch in <see cref="OnDamageDealt"/> for when the diagnostic fires.</summary>
     private readonly HashSet<uint> _loggedNonCombatantTargets = new();
 
+    /// <summary>Sibling of <see cref="_loggedNonCombatantTargets"/> for the "unknown prototype"
+    /// branch of the normal-mode non-combatant filter — entities whose <c>EntityCreate</c> was
+    /// never observed by the sniffer (or arrived after the first hit on them).  Keyed by target
+    /// <c>entityId</c> rather than <c>prototypeEnumIndex</c> because by definition we have NO
+    /// prototype index here; entity ids restart per region so the per-region clear below keeps
+    /// the dedup set bounded.  Capped at <see cref="UnknownTargetLogCap"/> per region to prevent
+    /// log flood when a fresh region rains EntityCreates that the sniffer hasn't processed yet.
+    ///
+    /// <para>The unknown-target branch deliberately DROPS in normal mode (unlike boss mode which
+    /// admits optimistically): production logs show that crate / vase / breakable-door
+    /// EntityCreates are by far the most common cache misses (their EntityCreates often get lost
+    /// in the post-region-change burst) and admitting them defeats the entire purpose of the
+    /// non-combatant filter.  Real mob hits virtually always have a cached prototype because mobs
+    /// have a non-trivial spawn animation that gives the sniffer plenty of time to process the
+    /// EntityCreate before the first hit lands on them.</para></summary>
+    private readonly HashSet<ulong> _loggedUnknownNormalTargets = new();
+
+    /// <summary>Cap for <see cref="_loggedUnknownNormalTargets"/> — once we've emitted this many
+    /// unknown-target diagnostics in a single region, stop logging until the next region change.
+    /// Prevents log flood during the EntityCreate burst that follows a region transition while
+    /// still surfacing enough samples for the user to grep for legitimate mob entity ids that
+    /// got dropped (and in turn add their prototypes to <see cref="CombatantPrototypes"/>).</summary>
+    private const int UnknownTargetLogCap = 25;
+
     /// <summary>Per-hero all-time max single-hit, keyed by the hero's display name
     /// (e.g. "Iron Man", "Blade").  Keying by display name rather than an enum index means the
     /// record survives the entity-id namespace change on region transitions AND stays consistent
@@ -1547,20 +1571,37 @@ public sealed class DpsMeter : IDisposable
         // (which already excludes everything that's not a boss target), so we explicitly skip
         // this gate when boss-only is on to avoid double-filtering.
         //
-        // We deliberately ADMIT unknown prototypes (the same policy boss-only mode uses for
-        // unknown targets): if the target's EntityCreate wasn't observed, the most likely cause
-        // is "user attached the meter mid-fight" and silently dropping the hit would be a worse
-        // failure mode than admitting a possibly-environmental record we never saw spawn.  In
-        // practice, the cache fills within the first second of any fight and unknown-target
-        // hits are vanishingly rare after that.
-        if (!_bossOnlyMode
-            && e.TargetEntityId != 0
-            && _prototypeByEntityId.TryGetValue(e.TargetEntityId, out uint normalTargetProtoIdx)
-            && !CombatantPrototypes.IsCombatant(normalTargetProtoIdx))
+        // <b>Unknown-target policy: DROP (opposite of boss mode).</b>  Earlier iterations of this
+        // filter admitted unknown targets to mirror boss-mode's optimistic policy, but production
+        // logs showed that crate / vase / breakable-door EntityCreates are by far the most common
+        // cache misses (their EntityCreates often get lost in the post-region-change burst) and
+        // admitting them was defeating the entire purpose of the filter.  Real mob hits virtually
+        // always have a cached prototype because mobs have a non-trivial spawn animation that
+        // gives the sniffer plenty of time to process the EntityCreate before the first hit lands.
+        // The trade-off (a real mob hitting before its EntityCreate is processed gets dropped) is
+        // bounded to the first ~1s of any fight and is barely visible in the 60s sliding window.
+        // Boss mode keeps admit-unknown because hit volume is low and the cost of dropping a real
+        // boss is much higher than the cost of admitting an unknown environmental hit.
+        if (!_bossOnlyMode && e.TargetEntityId != 0)
         {
-            if (_loggedNonCombatantTargets.Add(normalTargetProtoIdx))
-                Diagnostic?.Invoke($"DpsMeter: non-combatant filter drop — target protoIdx={normalTargetProtoIdx} is not in CombatantPrototypes set (PropPrototype / DestructiblePropPrototype / item / non-agent record); damage dropped from normal-mode DPS so crates, vases, breakable doors, etc. don't inflate the 60-second window");
-            return;
+            if (_prototypeByEntityId.TryGetValue(e.TargetEntityId, out uint normalTargetProtoIdx))
+            {
+                if (!CombatantPrototypes.IsCombatant(normalTargetProtoIdx))
+                {
+                    if (_loggedNonCombatantTargets.Add(normalTargetProtoIdx))
+                        Diagnostic?.Invoke($"DpsMeter: non-combatant filter drop — target protoIdx={normalTargetProtoIdx} is not in CombatantPrototypes set (PropPrototype / DestructiblePropPrototype / item / non-agent record); damage dropped from normal-mode DPS so crates, vases, breakable doors, etc. don't inflate the 60-second window");
+                    return;
+                }
+            }
+            else
+            {
+                if (_loggedUnknownNormalTargets.Count < UnknownTargetLogCap
+                    && _loggedUnknownNormalTargets.Add(e.TargetEntityId))
+                {
+                    Diagnostic?.Invoke($"DpsMeter: non-combatant filter drop (unknown prototype) — target entityId={e.TargetEntityId} (EntityCreate not yet observed; dropping conservatively because cache misses on this branch are dominated by environmental destructibles whose EntityCreates were lost in the post-region-change burst). If a real mob is being dropped here, its prototype is missing from CombatantPrototypes — paste this entityId into a probe report and we'll add it.");
+                }
+                return;
+            }
         }
 
         // ── Boss-only filter (runs BEFORE the lock so we don't churn window state for hits we
@@ -2585,6 +2626,7 @@ public sealed class DpsMeter : IDisposable
             _loggedNonBossTargets.Clear();
             _loggedUnknownBossTargets.Clear();
             _loggedNonCombatantTargets.Clear();
+            _loggedUnknownNormalTargets.Clear();
             // Pet → chain-root edges are entity-id-keyed and entity ids restart per region
             // (server destroys all summons on zone), so carrying these forward would mis-
             // attribute damage if a re-allocated pet entity id collided with a stale entry.
