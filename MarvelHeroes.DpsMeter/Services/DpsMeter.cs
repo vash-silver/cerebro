@@ -239,11 +239,15 @@ public sealed class DpsMeter : IDisposable
     private readonly HashSet<ulong> _loggedUnknownNormalTargets = new();
 
     /// <summary>Cap for <see cref="_loggedUnknownNormalTargets"/> — once we've emitted this many
-    /// unknown-target diagnostics in a single region, stop logging until the next region change.
-    /// Prevents log flood during the EntityCreate burst that follows a region transition while
-    /// still surfacing enough samples for the user to grep for legitimate mob entity ids that
-    /// got dropped (and in turn add their prototypes to <see cref="CombatantPrototypes"/>).</summary>
-    private const int UnknownTargetLogCap = 25;
+    /// unknown-target diagnostics in a single dedup window, stop logging until the next region
+    /// change OR the next periodic reset (see <see cref="FilterDedupResetInterval"/>).  Prevents
+    /// log flood during the EntityCreate burst that follows a region transition while still
+    /// surfacing enough samples for the user to grep for legitimate mob entity ids that got
+    /// dropped (and in turn add their prototypes to <see cref="CombatantPrototypes"/>).
+    /// Sized at 200 (was 25) so a busy patrol with many missed EntityCreates surfaces enough
+    /// samples to be useful — paired with the 5 min periodic reset, the on-disk volume is still
+    /// bounded.</summary>
+    private const int UnknownTargetLogCap = 200;
 
     /// <summary>One-shot dedup for the "non-combatant filter ADMITTED this hit" diagnostic in
     /// normal DPS mode.  Keyed by target <c>prototypeEnumIndex</c>: the FIRST time a given
@@ -263,11 +267,15 @@ public sealed class DpsMeter : IDisposable
     private readonly HashSet<uint> _loggedAdmittedNormalTargets = new();
 
     /// <summary>Cap for <see cref="_loggedAdmittedNormalTargets"/>.  See remarks on that field
-    /// for rationale.  Sized larger than the unknown-drop cap (25) because a busy patrol /
-    /// terminal can legitimately hit 30–60 distinct mob prototypes inside the first minute of
-    /// a fight (chapter / patrol mob mixes are diverse), and we want enough headroom to capture
-    /// the long tail of "this one weird prototype" without spamming the log on common mobs.</summary>
-    private const int AdmittedTargetLogCap = 100;
+    /// for rationale.  Sized at 1000 (was 100) so a long session with diverse mob mixes
+    /// (chapters, patrols, X-Defense waves) doesn't go silent.  Combined with the 5 min
+    /// periodic reset (see <see cref="FilterDedupResetInterval"/>) the user gets a fresh
+    /// per-prototype admit batch every 5 min for the duration of the session, so any
+    /// "objects still being counted" complaint that surfaces 20+ minutes in is still
+    /// actionable from the log instead of needing a meter restart to repopulate the set.
+    /// Per-region clear in <see cref="OnRegionChanged"/> takes precedence over the periodic
+    /// reset so cross-region dedup stays clean.</summary>
+    private const int AdmittedTargetLogCap = 1000;
 
     /// <summary>Per-entity first-hit diagnostic for the normal-mode filter.  Keyed by target
     /// <c>entityId</c> so each distinct entity that takes damage gets exactly one log line per
@@ -280,21 +288,40 @@ public sealed class DpsMeter : IDisposable
     /// cross-reference any entity-id the user pastes from a complaint screenshot against the
     /// active prototype set.
     ///
-    /// <para>Capped at <see cref="FirstHitEntityLogCap"/> per region.  In a typical Maggia
-    /// patrol / terminal pull the cap admits the first ~200 distinct entities (usually
-    /// equivalent to the first ~3–5 minutes of dense combat) and silently drops further entries
-    /// — sufficient to diagnose the "is target X being counted?" question for any active fight,
-    /// while bounded enough that a 20-minute patrol grind doesn't bloat the log file.</para>
+    /// <para>Capped at <see cref="FirstHitEntityLogCap"/> per dedup window.  Combined with
+    /// the 5 min periodic reset (see <see cref="FilterDedupResetInterval"/>), a busy session
+    /// gets a rolling-window of "the last 5 minutes' worth of distinct entities" rather than
+    /// "the first 5 minutes' worth and then nothing" — important because the user's complaint
+    /// about a specific entity often surfaces 10+ minutes into a session and the original
+    /// per-region-only dedup went silent by then.</para>
     /// </summary>
     private readonly HashSet<ulong> _loggedFirstHitEntities = new();
 
-    /// <summary>Cap for <see cref="_loggedFirstHitEntities"/>.  Sized at 200 to comfortably
-    /// cover a single dense terminal/patrol fight (typically 50–150 distinct entities including
-    /// trash + named + summons), with headroom for transitions between back-to-back fights in
-    /// the same region.  If a 20-minute farm session blows past 200 entities, the long tail
-    /// still gets correctly admitted/dropped — it's only the per-entity diagnostic that goes
-    /// silent, not the underlying filtering.</summary>
-    private const int FirstHitEntityLogCap = 200;
+    /// <summary>Cap for <see cref="_loggedFirstHitEntities"/>.  Sized at 5000 (was 200) so a
+    /// dense 5 min combat window comfortably surfaces every distinct entity-id touched.  A
+    /// typical Maggia patrol or terminal generates ~500–2000 distinct entities in 5 min so
+    /// the 5000 ceiling has comfortable headroom without unbounded growth.  At ~150 chars per
+    /// log line the worst-case disk cost is ~750 KB per dedup window — acceptable for a
+    /// diagnostic file gated behind <c>LoggingEnabled: true</c>.</summary>
+    private const int FirstHitEntityLogCap = 5000;
+
+    /// <summary>Wall-clock timestamp of the last periodic dedup reset (or <see cref="DateTime.MinValue"/>
+    /// at process start, on which the next reset stamps but does NOT clear — first window starts
+    /// fresh by construction).  Read+written from <see cref="OnDamageDealt"/> only, BEFORE the
+    /// <see cref="_sync"/> lock is taken; the path is single-threaded in practice (one packet
+    /// consumer thread invokes <see cref="OnDamageDealt"/>) so the unlocked access is safe.
+    /// Used together with <see cref="FilterDedupResetInterval"/> to periodically wipe all four
+    /// per-window dedup sets so long sessions keep emitting fresh admit/drop/first-hit
+    /// diagnostics instead of going silent after the caps fill.  Region transitions still
+    /// trigger a full reset via <see cref="OnRegionChanged"/> independently of this clock.</summary>
+    private DateTime _lastFilterDedupResetUtc = DateTime.MinValue;
+
+    /// <summary>How often the per-window filter dedup state (admit/drop/first-hit/off-by-one
+    /// caches) is wiped while staying inside a single region.  Sized at 5 minutes as a
+    /// compromise between "user can re-trigger the diagnostic by waiting briefly" and "the log
+    /// doesn't see the same protoIdx admitted 12 times per hour for the same farm spot".  Region
+    /// transitions still wipe everything immediately (see <see cref="OnRegionChanged"/>).</summary>
+    private static readonly TimeSpan FilterDedupResetInterval = TimeSpan.FromMinutes(5);
 
     /// <summary>Per-hero all-time max single-hit, keyed by the hero's display name
     /// (e.g. "Iron Man", "Blade").  Keying by display name rather than an enum index means the
@@ -1653,6 +1680,40 @@ public sealed class DpsMeter : IDisposable
         if (dmg == 0 || rawOwner == 0)
             return;
 
+        // ── Periodic filter-dedup reset ───────────────────────────────────────────────────────
+        // Every <see cref="FilterDedupResetInterval"/> wall-clock window we wipe all per-window
+        // dedup sets so long sessions keep surfacing fresh admit/drop/first-hit/off-by-one
+        // diagnostics.  Without this, a long farm session in a single region fills the dedup
+        // sets after the first ~5 min of combat and goes silent for the remainder — and a
+        // user complaint that only manifests 20+ min into a play session ("DPS to objects
+        // still added") becomes impossible to triage from the log because the cache prevents
+        // any new diagnostic from emitting.  Region transitions still trigger a full reset
+        // via <see cref="OnRegionChanged"/>; this timer is the in-region complement.
+        //
+        // Done unlocked (matching the existing filter-block convention below) — the path is
+        // single-threaded in practice so the read-then-write race is benign.  The first call
+        // after process start stamps without clearing because <c>_lastFilterDedupResetUtc</c>
+        // defaults to <see cref="DateTime.MinValue"/> and the first window deliberately uses
+        // the freshly-allocated empty sets instead of double-clearing them.
+        DateTime nowUtc = DateTime.UtcNow;
+        if (_lastFilterDedupResetUtc == DateTime.MinValue)
+        {
+            _lastFilterDedupResetUtc = nowUtc;
+        }
+        else if (nowUtc - _lastFilterDedupResetUtc >= FilterDedupResetInterval)
+        {
+            _loggedNonBossTargets.Clear();
+            _loggedUnknownBossTargets.Clear();
+            _loggedOffByOneBossAdmits.Clear();
+            _loggedNonCombatantTargets.Clear();
+            _loggedUnknownNormalTargets.Clear();
+            _loggedAdmittedNormalTargets.Clear();
+            _loggedOffByOneCombatantAdmits.Clear();
+            _loggedFirstHitEntities.Clear();
+            _lastFilterDedupResetUtc = nowUtc;
+            Diagnostic?.Invoke($"DpsMeter: filter-dedup periodic reset — every {FilterDedupResetInterval.TotalMinutes:F0} min the per-window admit/drop/first-hit caches are wiped so the next batch of diagnostic lines starts fresh. If a hit at this point still says \"silent drop\" / never appears at all, the underlying filter logic is genuinely silent; if a flurry of `combatant filter admit` / `non-combatant filter drop` / `first-hit on entity` lines appears in the next few seconds, that's expected — they're rebuilding from the cleared sets.");
+        }
+
         // ── Non-combatant filter (NORMAL DPS MODE ONLY, runs BEFORE the lock) ─────────────────
         // Drop hits on environmental destructibles (PropPrototype / DestructiblePropPrototype —
         // crates, vases, breakable doors), world Item entities, and any other WorldEntityPrototype
@@ -1698,7 +1759,7 @@ public sealed class DpsMeter : IDisposable
                 if (!admit)
                 {
                     if (_loggedNonCombatantTargets.Add(normalTargetProtoIdx))
-                        Diagnostic?.Invoke($"DpsMeter: non-combatant filter drop — target protoIdx={normalTargetProtoIdx} is not in CombatantPrototypes set (PropPrototype / DestructiblePropPrototype / item / non-agent record); damage dropped from normal-mode DPS so crates, vases, breakable doors, etc. don't inflate the 60-second window");
+                        Diagnostic?.Invoke($"DpsMeter: non-combatant filter drop — target protoIdx={normalTargetProtoIdx} (entityId={e.TargetEntityId}, dmg={e.TotalDamage}) is not in CombatantPrototypes set (PropPrototype / DestructiblePropPrototype / item / non-agent record); damage dropped from normal-mode DPS so crates, vases, breakable doors, etc. don't inflate the 60-second window. Cross-reference the entityId against `target=X` PowerResult lines to see how many subsequent hits get silently dropped after the first one.");
                     return;
                 }
 
@@ -2787,6 +2848,12 @@ public sealed class DpsMeter : IDisposable
             _loggedAdmittedNormalTargets.Clear();
             _loggedOffByOneCombatantAdmits.Clear();
             _loggedFirstHitEntities.Clear();
+            // Restart the periodic-reset clock too: the next OnDamageDealt call will stamp
+            // _lastFilterDedupResetUtc and a fresh 5-min window starts from this region's
+            // first hit (instead of from a stale wall-clock value carried in from the
+            // previous region — which could fire a no-op clear on the very next hit if the
+            // previous reset was almost due).
+            _lastFilterDedupResetUtc = DateTime.MinValue;
             // Pet → chain-root edges are entity-id-keyed and entity ids restart per region
             // (server destroys all summons on zone), so carrying these forward would mis-
             // attribute damage if a re-allocated pet entity id collided with a stale entry.
