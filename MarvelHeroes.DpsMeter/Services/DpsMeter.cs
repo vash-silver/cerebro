@@ -464,6 +464,22 @@ public sealed class DpsMeter : IDisposable
     private readonly Queue<(DateTime Ts, ulong Owner, uint Damage)> _scoring = new();
     private readonly Dictionary<ulong, long> _totalsPerOwner = new();
 
+    // Cumulative per-owner totals that grow monotonically until region change or boss-mode
+    // toggle.  Mirrors _totalsPerOwner on every admit but is NOT decayed by Tick — that's the
+    // whole point: in normal (non-boss) mode the leaderboard should show "what each player
+    // contributed this region", not "what they contributed in the last 60 s" (which decays
+    // mid-fight and produces the recurring "numbers reducing after I stopped attacking"
+    // perception bug).  Boss mode has its own equivalent (_encounterTotalsPerOwner) bounded by
+    // fight start/end; this dict is the normal-mode equivalent bounded by region change.
+    //
+    // Why a separate dict (instead of repurposing _encounterTotalsPerOwner with a different
+    // gate): the encounter accumulator's lifecycle is entangled with engaged-boss tracking,
+    // freeze/auto-clear logic, and stall watchdogs — semantics that don't apply outside a
+    // bounded fight.  Cleanest split: each mode owns its own accumulator with a coherent
+    // lifecycle.  Both share the 60s sliding window for the "live DPS" big number (rate),
+    // which is mode-agnostic and never wants the cumulative totals.
+    private readonly Dictionary<ulong, long> _sessionTotalsPerOwner = new();
+
     // Separate (shorter) queue for the instant 5 s DPS number.  We could derive this from
     // `_scoring` by scanning it on every tick, but keeping a dedicated queue avoids the scan
     // and lets the scoring queue stay decoupled (different window size, different semantics).
@@ -483,6 +499,16 @@ public sealed class DpsMeter : IDisposable
     /// <summary>Total damage by <see cref="LikelySelfOwnerId"/> inside the
     /// <see cref="OwnerScoringWindow"/> — useful for a secondary "60s encounter" display.</summary>
     public long CurrentOwnerTotal60s { get; private set; }
+
+    /// <summary>Cumulative damage by <see cref="LikelySelfOwnerId"/> since the last region change
+    /// or boss-mode toggle — drives the <c>Total:</c> number shown beneath the live DPS in normal
+    /// (non-boss) mode.  Unlike <see cref="CurrentOwnerTotal60s"/> this value never decays: it
+    /// only grows during a region session and resets atomically with
+    /// <see cref="_sessionTotalsPerOwner"/> on region change / mode flip.  Boss mode keeps using
+    /// <see cref="EncounterSnapshot.SelfTotal"/> for its <c>Fight:</c> label — session totals are
+    /// purely the normal-mode equivalent (an encounter without a fight boundary).
+    /// Lock <see cref="_sync"/>.</summary>
+    public long CurrentOwnerSessionTotal { get; private set; }
 
     /// <summary>All-time personal-best single hit for <see cref="CurrentHeroDisplayName"/>.
     /// Reads from <see cref="_maxHitByHeroName"/>.  When the hero is not yet identified this
@@ -569,8 +595,15 @@ public sealed class DpsMeter : IDisposable
                 _scoring.Clear();
                 _instant.Clear();
                 _totalsPerOwner.Clear();
+                // Session totals are also wiped — toggling the filter is a deliberate "I'm
+                // changing what damage gets counted" act, so carrying forward a Total: number
+                // built from the previous filter would be misleading (e.g. boss-only ON would
+                // suddenly drop the leaderboard to a fraction of its previous total because
+                // trash damage is now excluded).  Cleanest semantic: a mode flip starts fresh.
+                _sessionTotalsPerOwner.Clear();
                 CurrentDps = 0;
                 CurrentOwnerTotal60s = 0;
+                CurrentOwnerSessionTotal = 0;
                 // Re-arm the boss-fight idle detector so the very next hit doesn't get
                 // mis-classified as "post-idle" (the previous _lastSelfBossHitUtc is now
                 // meaningless given we just wiped the windows).
@@ -2075,6 +2108,12 @@ public sealed class DpsMeter : IDisposable
             _totalsPerOwner.TryGetValue(scoringOwner, out long prev);
             _totalsPerOwner[scoringOwner] = prev + dmg;
 
+            // Mirror into the cumulative per-region accumulator that drives the normal-mode
+            // leaderboard (Total: …) — same admit gate as the 60s window above, no decay.
+            // See _sessionTotalsPerOwner field comment for the rationale.
+            _sessionTotalsPerOwner.TryGetValue(scoringOwner, out long sessPrev);
+            _sessionTotalsPerOwner[scoringOwner] = sessPrev + dmg;
+
             // Refresh the self-idle timer ONLY when the hit we just scored is ours.  Peer
             // hits intentionally don't refresh — keeping a peer-driven timer alive would
             // suppress the auto-reset every time we zone into a populated public area.
@@ -2238,9 +2277,14 @@ public sealed class DpsMeter : IDisposable
                 }
             }
 
+            long newOwnerSessionTotal = _sessionTotalsPerOwner.TryGetValue(newOwner, out long sessTotal)
+                ? sessTotal
+                : 0;
+
             changed = Math.Abs(newDps - CurrentDps) > 0.5 || newOwner != prevSelfOwner || maxChanged || heroChanged;
             CurrentDps = newDps;
             CurrentOwnerTotal60s = newOwnerTotal;
+            CurrentOwnerSessionTotal = newOwnerSessionTotal;
         }
 
         if (newRecord)
@@ -2536,12 +2580,18 @@ public sealed class DpsMeter : IDisposable
                 }
             }
 
+            long newOwnerSessionTotal = _sessionTotalsPerOwner.TryGetValue(_likelySelfOwnerId, out long sessTotal)
+                ? sessTotal
+                : 0;
+
             changed = Math.Abs(newDps - CurrentDps) > 0.5
                    || newOwnerTotal != CurrentOwnerTotal60s
+                   || newOwnerSessionTotal != CurrentOwnerSessionTotal
                    || ownerAfter != ownerBefore
                    || heroChanged;
             CurrentDps = newDps;
             CurrentOwnerTotal60s = newOwnerTotal;
+            CurrentOwnerSessionTotal = newOwnerSessionTotal;
 
             // ── Periodic state dump (~every 10s) ────────────────────────────────────────────
             // Surfaces the resolved owner/hero/total table to the log so that "DPS shows 0
@@ -2559,8 +2609,10 @@ public sealed class DpsMeter : IDisposable
                   .Append(" hero='").Append(CurrentHeroDisplayName).Append("'")
                   .Append(" bossOnly=").Append(_bossOnlyMode)
                   .Append(" 60s=").Append(CurrentOwnerTotal60s)
+                  .Append(" sess=").Append(CurrentOwnerSessionTotal)
                   .Append(" dps=").Append((long)CurrentDps)
                   .Append(" rows=").Append(_totalsPerOwner.Count)
+                  .Append(" sessRows=").Append(_sessionTotalsPerOwner.Count)
                   .Append(" localAvatars=[").Append(string.Join(",", _localAvatarEntityIds))
                   .Append("] localPlayer=").Append(_localPlayerEntityId);
                 // Encounter dump (only meaningful in boss mode; suppress otherwise to keep the
@@ -2649,11 +2701,16 @@ public sealed class DpsMeter : IDisposable
         {
             _scoring.Clear();
             _totalsPerOwner.Clear();
+            // Session totals are bounded by region — zoning ends the "this region" reading
+            // unconditionally so the next region starts from zero (matches the encounter
+            // accumulator's region-change wipe in boss mode for symmetry).
+            _sessionTotalsPerOwner.Clear();
             _instant.Clear();
             _likelySelfOwnerId = 0;
             _likelySelfChosenAt = default;
             CurrentDps = 0;
             CurrentOwnerTotal60s = 0;
+            CurrentOwnerSessionTotal = 0;
             // MaxSingleHit is NOT reset here — it's the hero's all-time personal best, not a
             // per-region number. The next DamageDealt event will re-load it from
             // _maxHitByHeroName once the avatar's display name is re-identified.
@@ -2977,6 +3034,103 @@ public sealed class DpsMeter : IDisposable
 
             // Same anonymous-tag pass as the 60s variant — peers without resolved nicknames
             // get a stable per-owner #XXXX hash so the user can distinguish unnamed players.
+            for (int i = 0; i < rows.Count; i++)
+            {
+                var r = rows[i];
+                if (r.IsSelf) continue;
+                if (!string.IsNullOrEmpty(r.PlayerName)) continue;
+
+                string tag = "#" + (r.OwnerId & 0xFFFF).ToString("X4");
+                rows[i] = new HeroShareEntry
+                {
+                    Name       = r.Name,
+                    Percent    = r.Percent,
+                    Total60s   = r.Total60s,
+                    IsSelf     = r.IsSelf,
+                    OwnerId    = r.OwnerId,
+                    PlayerName = tag,
+                };
+            }
+            return rows;
+        }
+    }
+
+    /// <summary>Top-N rows by cumulative session total (normal / non-boss mode), ranked by
+    /// absolute damage with percent computed against the sum of admitted owners since the
+    /// region was entered.  Identical row shape and coalescing pipeline to
+    /// <see cref="GetTopHeroesByEncounterShare"/> — only the source totals differ
+    /// (<see cref="_sessionTotalsPerOwner"/> grows monotonically until region change,
+    /// vs the encounter dict which is bounded by boss kill / freeze / clear).
+    ///
+    /// <para>This is the "DPS for all behaves like boss-only" leaderboard requested by users
+    /// who want a Recount/Skada-style fight breakdown in normal mode without having to flip
+    /// boss-only ON.  Reset triggers: region change, boss-only mode toggle.</para>
+    ///
+    /// <para>No mode gate (callers must check <see cref="BossOnlyMode"/> themselves and pick
+    /// the right method) — keeping that decision at the call site lets the presenter switch
+    /// data sources atomically with the title prefix and detail-line label.  Self row is
+    /// force-emitted so the user is never invisible from their own leaderboard even if hero
+    /// resolution fails (mid-session attach + custom-server hero whose powers aren't in the
+    /// static HeroPowers index — same regression that motivated the equivalent guard on the
+    /// 60 s and encounter variants).</para></summary>
+    public IReadOnlyList<HeroShareEntry> GetTopHeroesBySessionShare(int max)
+    {
+        if (max <= 0) return Array.Empty<HeroShareEntry>();
+
+        lock (_sync)
+        {
+            if (_sessionTotalsPerOwner.Count == 0)
+                return Array.Empty<HeroShareEntry>();
+
+            long totalSessionDamage = 0;
+            foreach (var kv in _sessionTotalsPerOwner)
+            {
+                if (_heroNameByOwnerId.ContainsKey(kv.Key)
+                    || (_likelySelfOwnerId != 0 && kv.Key == _likelySelfOwnerId))
+                    totalSessionDamage += kv.Value;
+            }
+            if (totalSessionDamage <= 0)
+                return Array.Empty<HeroShareEntry>();
+
+            var boundDbIds = new HashSet<ulong>(_dbIdByAvatarId.Values);
+            foreach (var cv in _dbIdByPlayerEntityId.Values) boundDbIds.Add(cv);
+
+            var rows = new List<HeroShareEntry>(_sessionTotalsPerOwner.Count);
+            foreach (var kv in _sessionTotalsPerOwner)
+            {
+                bool isSelf = _likelySelfOwnerId != 0 && kv.Key == _likelySelfOwnerId;
+                _heroNameByOwnerId.TryGetValue(kv.Key, out string? name);
+                if (string.IsNullOrEmpty(name) && !isSelf)
+                    continue;
+
+                string nickname = ResolveNicknameForOwnerLocked(kv.Key, name, boundDbIds);
+                rows.Add(new HeroShareEntry
+                {
+                    Name       = name ?? string.Empty,
+                    Total60s   = kv.Value, // field name is historical — actual value here is session total
+                    Percent    = kv.Value * 100.0 / totalSessionDamage,
+                    IsSelf     = isSelf,
+                    PlayerName = nickname,
+                    OwnerId    = kv.Key,
+                });
+            }
+
+            // Same three-stage coalesce pipeline as the other two leaderboard methods —
+            // pet/summon → chain root, peer-summon by player nickname, anonymous → unique
+            // hero match.  Order matters: pet-chain first (fills empty PlayerName fields),
+            // then by-name (now has names to match on), then anonymous-by-hero (final
+            // catch-all for residual unnamed rows).
+            rows = CoalesceRowsByPetChainRoot(rows, totalSessionDamage);
+            rows = CoalesceRowsByPlayerName(rows, totalSessionDamage);
+            rows = CoalesceAnonymousRowsByHeroName(rows, totalSessionDamage);
+
+            rows.Sort((a, b) =>
+            {
+                int c = b.Total60s.CompareTo(a.Total60s);
+                return c != 0 ? c : string.CompareOrdinal(a.Name, b.Name);
+            });
+            if (rows.Count > max) rows.RemoveRange(max, rows.Count - max);
+
             for (int i = 0; i < rows.Count; i++)
             {
                 var r = rows[i];

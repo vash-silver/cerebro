@@ -63,10 +63,14 @@ public partial class DpsOverlayWindow : Window
     /// <param name="totalDamage60s">ALWAYS the 60s sliding-window total for the local self owner.
     /// Drives the big-number fallback (live 5s → 60s avg → "—") regardless of mode — that
     /// behavior must stay invariant or the user perceives the meter as "broken / changed."</param>
+    /// <param name="totalDamageSession">Cumulative-since-region total for the local self owner.
+    /// Drives the <c>Total: X</c> label on the detail line in normal (non-boss) mode — the
+    /// non-decaying mirror of <c>Fight: X</c> in boss mode.  Resets on region change and on
+    /// boss-only mode toggle.</param>
     /// <param name="topHeroes">Up to 5 rows of nearby heroes ranked by total damage (descending).
     /// Source depends on mode: encounter accumulator in boss mode (totals from first hit until
-    /// last engaged boss dies), 60s sliding window in normal mode.  Pass <c>null</c> or an empty
-    /// list to blank the leaderboard (used during region transitions).</param>
+    /// last engaged boss dies), cumulative session totals in normal mode.  Pass <c>null</c> or
+    /// an empty list to blank the leaderboard (used during region transitions).</param>
     /// <param name="encounter">Encounter snapshot from <see cref="DpsMeterClass.GetEncounterSnapshot"/>.
     /// In boss mode drives the detail line's "Fight: X" / "fight ended · Fight: X" label;
     /// the BIG NUMBER never reads from this — encounter data is only ever shown on the
@@ -75,6 +79,7 @@ public partial class DpsOverlayWindow : Window
     public void UpdateDps(
         double dps,
         long totalDamage60s,
+        long totalDamageSession,
         ulong ownerEntityId,
         uint maxSingleHit,
         string heroDisplayName,
@@ -87,7 +92,7 @@ public partial class DpsOverlayWindow : Window
             // Use BeginInvoke instead of Invoke so the capture-thread event handler doesn't block
             // on UI rendering — if the UI thread is busy we just drop the visual update (next
             // event will catch up), which is preferable to stalling packet processing.
-            Dispatcher.BeginInvoke(new Action(() => UpdateDps(dps, totalDamage60s, ownerEntityId, maxSingleHit, heroDisplayName, bossOnlyMode, topHeroes, encounter)));
+            Dispatcher.BeginInvoke(new Action(() => UpdateDps(dps, totalDamage60s, totalDamageSession, ownerEntityId, maxSingleHit, heroDisplayName, bossOnlyMode, topHeroes, encounter)));
             return;
         }
 
@@ -155,11 +160,11 @@ public partial class DpsOverlayWindow : Window
         //   • a small mode hint so the big number above can never be misread — "live"
         //     while the 5s window is feeding it, "<window> avg" while we're showing the
         //     decaying rolling average, "idle" when both windows are empty, AND
-        //   • a context number — `60s: …` in normal mode (the rolling-window total that
-        //     drives the big-number fallback), or `Fight: …` in boss mode (the cumulative
-        //     encounter total).  The "Fight" number is read from the encounter snapshot,
-        //     NOT from totalDamage60s — they're independent quantities (totalDamage60s is
-        //     bounded at 60 s of decay, encounter.SelfTotal grows for the whole fight).
+        //   • a context number — `Total: …` in normal mode (cumulative since region change,
+        //     mirrors the boss-mode fight total) or `Fight: …` in boss mode (cumulative
+        //     encounter total).  Both are read from totals that grow monotonically until
+        //     reset by region change / mode flip / fight clear — never from the decaying
+        //     60 s sliding window (that one feeds only the big-number fallback above).
         string modeTag;
         if (ownerEntityId == 0)
         {
@@ -184,9 +189,16 @@ public partial class DpsOverlayWindow : Window
                 modeTag = "waiting for boss…";
         }
         else if (liveActive)
-            modeTag = $"live · 60s: {FormatTotal(totalDamage60s)}";
-        else if (totalDamage60s > 0)
-            modeTag = $"60s avg · 60s: {FormatTotal(totalDamage60s)}";
+            modeTag = $"live · Total: {FormatTotal(totalDamageSession)}";
+        else if (totalDamageSession > 0)
+            // 60 s window may have drained (totalDamage60s == 0) but the cumulative
+            // session total is still meaningful — show it with the right "why is the
+            // big number not live" tag.  Prefer "60s avg" while the rolling window is
+            // still feeding the displayDps fallback; fall through to "idle" once both
+            // the 5 s and 60 s windows are empty.
+            modeTag = totalDamage60s > 0
+                ? $"60s avg · Total: {FormatTotal(totalDamageSession)}"
+                : $"idle · Total: {FormatTotal(totalDamageSession)}";
         else
             modeTag = "idle · waiting for damage";
         DetailText.Text = modeTag;

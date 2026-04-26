@@ -151,6 +151,9 @@ public sealed class DpsOverlayPresenter : IDisposable
         double dps = _meter.CurrentDps;
         long total60s = _meter.CurrentOwnerTotal60s; // ALWAYS the 60s rolling total — the big
                                                      // DPS number's fallback math depends on it.
+        long sessionTotal = _meter.CurrentOwnerSessionTotal; // Cumulative-since-region total —
+                                                              // drives the "Total: X" detail in
+                                                              // normal mode (mirror of "Fight: X").
         ulong owner = _meter.LikelySelfOwnerId;
         uint maxHit = _meter.MaxSingleHit;
         string heroName = _meter.CurrentHeroDisplayName;
@@ -161,12 +164,13 @@ public sealed class DpsOverlayPresenter : IDisposable
         // (with 60s rolling-avg fallback) regardless of mode — that's the user's primary
         // "what am I doing right now" signal and it must not change semantics underfoot.
         //
-        // Boss mode + no encounter (waiting for boss…): do NOT feed GetTopHeroesBy60sShare —
-        // that window includes everyone in AOI, so idle users still see peers' trash/hub damage
-        // drifting the bars. Encounter view only when a fight is active or frozen ended.
-        var top5 = SelectTopHeroesForBossOverlay(_meter, bossOnly, encounter);
+        // Mode-driven leaderboard sources:
+        //   • boss-only ON  + active/ended encounter → encounter accumulator (Fight: X)
+        //   • boss-only ON  + waiting-for-boss       → empty (don't feed peer hub damage)
+        //   • boss-only OFF                          → cumulative session totals (Total: X)
+        var top5 = SelectTopHeroesForOverlay(_meter, bossOnly, encounter);
 
-        _window?.UpdateDps(dps, total60s, owner, maxHit, heroName, bossOnly, top5, encounter);
+        _window?.UpdateDps(dps, total60s, sessionTotal, owner, maxHit, heroName, bossOnly, top5, encounter);
     }
 
     private void OnDecayTick(object? sender, EventArgs e)
@@ -190,11 +194,12 @@ public sealed class DpsOverlayPresenter : IDisposable
         // to the pre-encounter behavior.  Keep both call sites in lockstep.
         bool bossOnly = _meter.BossOnlyMode;
         var encounter = _meter.GetEncounterSnapshot();
-        var top5 = SelectTopHeroesForBossOverlay(_meter, bossOnly, encounter);
+        var top5 = SelectTopHeroesForOverlay(_meter, bossOnly, encounter);
 
         _window.UpdateDps(
             _meter.CurrentDps,
             _meter.CurrentOwnerTotal60s,
+            _meter.CurrentOwnerSessionTotal,
             _meter.LikelySelfOwnerId,
             _meter.MaxSingleHit,
             _meter.CurrentHeroDisplayName,
@@ -242,17 +247,31 @@ public sealed class DpsOverlayPresenter : IDisposable
         }
     }
 
-    /// <summary>Boss-only overlay: show encounter leaderboard only while a fight is active or
-    /// the ended snapshot is frozen. Otherwise return an empty list — never the global 60s
-    /// AOI leaderboard, which would keep moving from other players while the detail line reads
-    /// <c>waiting for boss…</c>.</summary>
-    private static IReadOnlyList<DpsMeter.HeroShareEntry> SelectTopHeroesForBossOverlay(
+    /// <summary>Picks the leaderboard source by mode + encounter state.
+    ///
+    /// <list type="bullet">
+    ///   <item><b>Normal (boss-only OFF)</b> → <see cref="DpsMeter.GetTopHeroesBySessionShare"/>
+    ///         (cumulative since region change).  Replaces the legacy 60 s sliding-window
+    ///         leaderboard so the bars show "what each player has contributed this region"
+    ///         instead of decaying after each burst — addresses the recurring "numbers
+    ///         reducing after fight ended" perception even outside boss-only mode.</item>
+    ///   <item><b>Boss mode + active/ended encounter</b> →
+    ///         <see cref="DpsMeter.GetTopHeroesByEncounterShare"/> (Fight: X totals).</item>
+    ///   <item><b>Boss mode + waiting-for-boss</b> → empty list.  Never the global session
+    ///         leaderboard, which would keep moving from other players while the detail line
+    ///         reads <c>waiting for boss…</c>.</item>
+    /// </list>
+    ///
+    /// Method intentionally returns an interface, not a struct/snapshot — callers (the
+    /// presenter, both event-driven and tick-driven) read from the result once per dispatch
+    /// and don't need to keep it stable across calls.</summary>
+    private static IReadOnlyList<DpsMeter.HeroShareEntry> SelectTopHeroesForOverlay(
         DpsMeter meter,
         bool bossOnly,
         DpsMeter.EncounterSnapshot encounter)
     {
         if (!bossOnly)
-            return meter.GetTopHeroesBy60sShare(5);
+            return meter.GetTopHeroesBySessionShare(5);
         if (encounter.IsActive || encounter.IsEnded)
             return meter.GetTopHeroesByEncounterShare(5);
         return Array.Empty<DpsMeter.HeroShareEntry>();
