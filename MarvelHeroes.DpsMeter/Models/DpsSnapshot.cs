@@ -19,6 +19,7 @@ public sealed class DpsSnapshot
     public uint     MaxSingleHit  { get; set; }
     public bool     EncounterEnded { get; set; }
     public long     EncounterSelfTotal { get; set; }
+    public bool     IsAutoSave    { get; set; }
     public List<HeroEntry>  Leaderboard     { get; set; } = new();
     public List<PowerEntry> PowerBreakdown  { get; set; } = new();
 
@@ -88,6 +89,32 @@ public static class DpsReportStore
         {
             var file = Path.Combine(ReportsDirectory, $"dps-{id}.json");
             if (File.Exists(file)) File.Delete(file);
+        }
+        catch { }
+    }
+
+    /// <summary>Delete oldest auto-saves beyond <paramref name="maxCount"/> so the folder
+    /// doesn't grow unbounded during long play sessions.</summary>
+    public static void PruneOldAutoSaves(int maxCount = 50)
+    {
+        try
+        {
+            if (!Directory.Exists(ReportsDirectory)) return;
+            var autoFiles = new List<(string path, DpsSnapshot snap)>();
+            foreach (var file in Directory.GetFiles(ReportsDirectory, "dps-*.json"))
+            {
+                try
+                {
+                    var snap = JsonSerializer.Deserialize<DpsSnapshot>(File.ReadAllText(file));
+                    if (snap?.IsAutoSave == true) autoFiles.Add((file, snap));
+                }
+                catch { }
+            }
+            // Sort oldest first (by SavedUtc), delete the excess.
+            autoFiles.Sort((a, b) => a.snap.SavedUtc.CompareTo(b.snap.SavedUtc));
+            int excess = autoFiles.Count - maxCount;
+            for (int i = 0; i < excess; i++)
+                try { File.Delete(autoFiles[i].path); } catch { }
         }
         catch { }
     }

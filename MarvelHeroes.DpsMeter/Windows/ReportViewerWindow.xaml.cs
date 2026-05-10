@@ -166,9 +166,10 @@ public partial class ReportViewerWindow : Window
 
     private sealed class SnapshotListItem(DpsSnapshot s)
     {
-        public DpsSnapshot Snapshot  { get; } = s;
-        public string      Label     { get; } = s.Label;
-        public string      SavedLocal{ get; } = s.SavedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+        public DpsSnapshot Snapshot           { get; } = s;
+        public string      Label              { get; } = s.Label;
+        public string      SavedLocal         { get; } = s.SavedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+        public Visibility  AutoBadgeVisibility{ get; } = s.IsAutoSave ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private sealed class LeaderboardRow

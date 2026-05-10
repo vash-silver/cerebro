@@ -59,7 +59,7 @@
 
         <!-- Left: report list -->
         <DockPanel Grid.Column="0" Grid.Row="0">
-            <TextBlock DockPanel.Dock="Top" Text="SAVED SNAPSHOTS"
+            <TextBlock DockPanel.Dock="Top" Text="FIGHT HISTORY"
                        FontSize="10" Foreground="#88FF6B00" Margin="0,0,0,4"
                        FontFamily="Segoe UI" FontWeight="SemiBold"/>
             <ListBox x:Name="SnapshotList"
@@ -69,8 +69,17 @@
                 <ListBox.ItemTemplate>
                     <DataTemplate>
                         <StackPanel>
-                            <TextBlock Text="{Binding Label}" FontSize="12"
-                                       FontFamily="Segoe UI" TextTrimming="CharacterEllipsis"/>
+                            <StackPanel Orientation="Horizontal">
+                                <Border Visibility="{Binding AutoBadgeVisibility}"
+                                        Background="#33FF6B00" CornerRadius="2"
+                                        Padding="4,0" Margin="0,0,5,0"
+                                        VerticalAlignment="Center">
+                                    <TextBlock Text="AUTO" FontSize="9" FontFamily="Segoe UI"
+                                               FontWeight="SemiBold" Foreground="#BBFF6B00"/>
+                                </Border>
+                                <TextBlock Text="{Binding Label}" FontSize="12"
+                                           FontFamily="Segoe UI" TextTrimming="CharacterEllipsis"/>
+                            </StackPanel>
                             <TextBlock Text="{Binding SavedLocal}" FontSize="10"
                                        Foreground="#88FFFFFF" FontFamily="Segoe UI"/>
                         </StackPanel>

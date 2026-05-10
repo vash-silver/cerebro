@@ -35,6 +35,11 @@ public sealed class DpsOverlayPresenter : IDisposable
 
     private DateTime _lastStatsLogUtc = DateTime.MinValue;
 
+    // Tracks previous boss-encounter state so we can detect the active→ended transition
+    // and trigger an auto-save exactly once per fight.
+    private bool _prevBossEncounterActive;
+    private bool _prevBossEncounterEnded;
+
     public DpsOverlayPresenter(MhMissionSniffer sniffer, Dispatcher uiDispatcher)
     {
         _sniffer = sniffer ?? throw new ArgumentNullException(nameof(sniffer));
@@ -223,6 +228,14 @@ public sealed class DpsOverlayPresenter : IDisposable
             bossEncounter,
             powerBreakdown);
 
+        // Auto-save when a boss fight transitions from active → ended.
+        // Guard: previous tick must have seen IsActive=true so we don't fire on a stale
+        // "already ended" state left over from a previous fight or from startup.
+        if (_prevBossEncounterActive && !_prevBossEncounterEnded && bossEncounter.IsEnded)
+            AutoSaveFight(bossTop5, bossEncounter, powerBreakdown);
+        _prevBossEncounterActive = bossEncounter.IsActive;
+        _prevBossEncounterEnded  = bossEncounter.IsEnded;
+
         // Visibility gating applies only to the overlay (the live window is a normal window).
         if (!_inWindowMode && _overlayWindow != null)
         {
@@ -369,6 +382,62 @@ public sealed class DpsOverlayPresenter : IDisposable
 
         DpsReportStore.Save(snap);
         AppendLog($"DpsOverlayPresenter: snapshot saved — id={id}, label='{label}'");
+    }
+
+    private void AutoSaveFight(
+        IReadOnlyList<DpsMeter.HeroShareEntry>? topHeroes,
+        DpsMeter.EncounterSnapshot encounter,
+        IReadOnlyList<DpsMeter.PowerBreakdownEntry>? powerBreakdown)
+    {
+        if (_bossMeter is null) return;
+        if (encounter.SelfTotal <= 0) return;  // no personal damage → skip
+
+        string heroName = _meter?.CurrentHeroDisplayName ?? "";
+        string label = string.IsNullOrEmpty(heroName)
+            ? "Boss Fight"
+            : $"Boss Fight — {heroName}";
+
+        var id   = DateTime.UtcNow.ToString("yyyyMMddTHHmmssZ");
+        var snap = new DpsSnapshot
+        {
+            Id                 = id,
+            SavedUtc           = DateTime.UtcNow,
+            Label              = label,
+            Mode               = "Boss Only",
+            HeroName           = heroName,
+            Dps                = _bossMeter.CurrentDps,
+            TotalDamage        = encounter.SelfTotal,
+            MaxSingleHit       = _meter?.MaxSingleHit ?? 0,
+            EncounterEnded     = true,
+            EncounterSelfTotal = encounter.SelfTotal,
+            IsAutoSave         = true,
+        };
+
+        if (topHeroes != null)
+            foreach (var r in topHeroes)
+                snap.Leaderboard.Add(new DpsSnapshot.HeroEntry
+                {
+                    Name       = r.Name,
+                    PlayerName = r.PlayerName,
+                    IsSelf     = r.IsSelf,
+                    Dps        = r.Dps,
+                    Total      = r.Total60s,
+                    Percent    = r.Percent,
+                });
+
+        if (powerBreakdown != null)
+            foreach (var p in powerBreakdown)
+                snap.PowerBreakdown.Add(new DpsSnapshot.PowerEntry
+                {
+                    Name        = p.Name,
+                    Hits        = p.Hits,
+                    TotalDamage = p.TotalDamage,
+                    Percent     = p.Percent,
+                });
+
+        DpsReportStore.Save(snap);
+        DpsReportStore.PruneOldAutoSaves(50);
+        AppendLog($"DpsOverlayPresenter: auto-saved fight — id={id}, label='{label}', selfTotal={encounter.SelfTotal}");
     }
 
     public void ClearDpsNow()
