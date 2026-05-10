@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Windows;
 using System.Windows.Threading;
 using MarvelHeroesComporator.NetworkSniffer;
@@ -39,6 +40,11 @@ public sealed class DpsOverlayPresenter : IDisposable
     // and trigger an auto-save exactly once per fight.
     private bool _prevBossEncounterActive;
     private bool _prevBossEncounterEnded;
+
+    // DPS sparkline: samples collected every 5s during the active boss encounter.
+    private readonly List<(int Second, float Dps)> _sparkSamples = new();
+    private DateTime _sparkEncounterStartUtc = DateTime.MinValue;
+    private DateTime _lastSparkSampleUtc     = DateTime.MinValue;
 
     public DpsOverlayPresenter(MhMissionSniffer sniffer, Dispatcher uiDispatcher)
     {
@@ -228,6 +234,9 @@ public sealed class DpsOverlayPresenter : IDisposable
             bossEncounter,
             powerBreakdown);
 
+        // Collect sparkline samples every 5s while encounter is live.
+        CollectSparklineSample(bossEncounter, bossDps);
+
         // Auto-save when a boss fight transitions from active → ended.
         // Guard: previous tick must have seen IsActive=true so we don't fire on a stale
         // "already ended" state left over from a previous fight or from startup.
@@ -385,6 +394,28 @@ public sealed class DpsOverlayPresenter : IDisposable
         AppendLog($"DpsOverlayPresenter: snapshot saved — id={id}, label='{label}'");
     }
 
+    private void CollectSparklineSample(DpsMeter.EncounterSnapshot enc, double bossDps)
+    {
+        if (!enc.IsActive) return;
+
+        // Clear if a new encounter started.
+        if (enc.StartUtc != _sparkEncounterStartUtc)
+        {
+            _sparkSamples.Clear();
+            _sparkEncounterStartUtc = enc.StartUtc;
+            _lastSparkSampleUtc     = DateTime.MinValue;
+        }
+
+        var now = DateTime.UtcNow;
+        if (_lastSparkSampleUtc != DateTime.MinValue &&
+            (now - _lastSparkSampleUtc).TotalSeconds < 5.0) return;
+
+        int second = enc.StartUtc != DateTime.MinValue
+            ? (int)(now - enc.StartUtc).TotalSeconds : 0;
+        _sparkSamples.Add((second, (float)bossDps));
+        _lastSparkSampleUtc = now;
+    }
+
     private void AutoSaveFight(
         IReadOnlyList<DpsMeter.HeroShareEntry>? topHeroes,
         DpsMeter.EncounterSnapshot encounter,
@@ -397,6 +428,9 @@ public sealed class DpsOverlayPresenter : IDisposable
         string label = string.IsNullOrEmpty(heroName)
             ? "Boss Fight"
             : $"Boss Fight — {heroName}";
+
+        int duration = encounter.StartUtc != DateTime.MinValue && encounter.EndUtc != DateTime.MinValue
+            ? (int)(encounter.EndUtc - encounter.StartUtc).TotalSeconds : 0;
 
         var id   = DateTime.UtcNow.ToString("yyyyMMddTHHmmssZ");
         var snap = new DpsSnapshot
@@ -412,6 +446,9 @@ public sealed class DpsOverlayPresenter : IDisposable
             EncounterEnded     = true,
             EncounterSelfTotal = encounter.SelfTotal,
             IsAutoSave         = true,
+            IsPersonalBest     = PersonalBestStore.CheckAndUpdate(heroName, _bossMeter.CurrentDps),
+            DurationSeconds    = duration,
+            DpsTimeline        = _sparkSamples.Select(s => new DpsSnapshot.SparkPoint { Second = s.Second, Dps = s.Dps }).ToList(),
         };
 
         if (topHeroes != null)

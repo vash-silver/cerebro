@@ -3,25 +3,27 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 
 namespace MarvelHeroes.DpsMeter.Models;
 
 public sealed class DpsSnapshot
 {
-    public string   Id            { get; set; } = "";
-    public DateTime SavedUtc      { get; set; }
-    public string   Label         { get; set; } = "";
-    public string   Mode          { get; set; } = "";
-    public string   HeroName      { get; set; } = "";
-    public double   Dps           { get; set; }
-    public long     TotalDamage   { get; set; }
-    public uint     MaxSingleHit  { get; set; }
-    public bool     EncounterEnded { get; set; }
+    public string   Id                 { get; set; } = "";
+    public DateTime SavedUtc           { get; set; }
+    public string   Label              { get; set; } = "";
+    public string   Mode               { get; set; } = "";
+    public string   HeroName           { get; set; } = "";
+    public double   Dps                { get; set; }
+    public long     TotalDamage        { get; set; }
+    public uint     MaxSingleHit       { get; set; }
+    public bool     EncounterEnded     { get; set; }
     public long     EncounterSelfTotal { get; set; }
-    public bool     IsAutoSave    { get; set; }
-    public List<HeroEntry>  Leaderboard     { get; set; } = new();
-    public List<PowerEntry> PowerBreakdown  { get; set; } = new();
+    public bool     IsAutoSave         { get; set; }
+    public bool     IsPersonalBest     { get; set; }
+    public int      DurationSeconds    { get; set; }
+    public List<HeroEntry>   Leaderboard    { get; set; } = new();
+    public List<PowerEntry>  PowerBreakdown { get; set; } = new();
+    public List<SparkPoint>  DpsTimeline    { get; set; } = new();
 
     public sealed class HeroEntry
     {
@@ -40,6 +42,12 @@ public sealed class DpsSnapshot
         public long   TotalDamage { get; set; }
         public double Percent     { get; set; }
         public long   MaxHit      { get; set; }
+    }
+
+    public sealed class SparkPoint
+    {
+        public int   Second { get; set; }
+        public float Dps    { get; set; }
     }
 }
 
@@ -94,6 +102,20 @@ public static class DpsReportStore
         catch { }
     }
 
+    public static void UpdateLabel(string id, string newLabel)
+    {
+        try
+        {
+            var file = Path.Combine(ReportsDirectory, $"dps-{id}.json");
+            if (!File.Exists(file)) return;
+            var snap = JsonSerializer.Deserialize<DpsSnapshot>(File.ReadAllText(file));
+            if (snap == null) return;
+            snap.Label = newLabel.Trim();
+            File.WriteAllText(file, JsonSerializer.Serialize(snap, s_opts));
+        }
+        catch { }
+    }
+
     /// <summary>Delete oldest auto-saves beyond <paramref name="maxCount"/> so the folder
     /// doesn't grow unbounded during long play sessions.</summary>
     public static void PruneOldAutoSaves(int maxCount = 50)
@@ -111,12 +133,48 @@ public static class DpsReportStore
                 }
                 catch { }
             }
-            // Sort oldest first (by SavedUtc), delete the excess.
             autoFiles.Sort((a, b) => a.snap.SavedUtc.CompareTo(b.snap.SavedUtc));
             int excess = autoFiles.Count - maxCount;
             for (int i = 0; i < excess; i++)
                 try { File.Delete(autoFiles[i].path); } catch { }
         }
         catch { }
+    }
+}
+
+public static class PersonalBestStore
+{
+    private static readonly string FilePath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "MarvelHeroesComporator", "personal_bests.json");
+
+    private static readonly JsonSerializerOptions s_opts = new() { WriteIndented = true };
+
+    /// <summary>Returns true if <paramref name="dps"/> beats the stored personal best for
+    /// <paramref name="heroName"/> and persists the updated record.</summary>
+    public static bool CheckAndUpdate(string heroName, double dps)
+    {
+        if (string.IsNullOrEmpty(heroName) || dps <= 0) return false;
+        var bests = LoadAll();
+        if (bests.TryGetValue(heroName, out double prev) && dps <= prev) return false;
+        bests[heroName] = dps;
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
+            File.WriteAllText(FilePath, JsonSerializer.Serialize(bests, s_opts));
+        }
+        catch { }
+        return true;
+    }
+
+    private static Dictionary<string, double> LoadAll()
+    {
+        try
+        {
+            if (!File.Exists(FilePath)) return new();
+            var json = File.ReadAllText(FilePath);
+            return JsonSerializer.Deserialize<Dictionary<string, double>>(json) ?? new();
+        }
+        catch { return new(); }
     }
 }
