@@ -244,10 +244,17 @@ public partial class ReportViewerWindow : Window
                 : !string.IsNullOrEmpty(r.Name) ? r.Name
                 : !string.IsNullOrEmpty(r.PlayerName) ? r.PlayerName
                 : r.IsSelf ? "you" : "?";
+
+            // Fallback DPS for older saves that only stored a non-zero Dps for the self row:
+            // derive it from total ÷ fight duration so every leaderboard row shows a number.
+            double effectiveDps = r.Dps > 0.1
+                ? r.Dps
+                : (s.DurationSeconds > 0 && r.Total > 0 ? (double)r.Total / s.DurationSeconds : 0.0);
+
             lbRows.Add(new LeaderboardRow
             {
                 DisplayName    = name,
-                DpsText        = r.Dps   > 0.1 ? FormatNum(r.Dps)   : "",
+                DpsText        = effectiveDps > 0.1 ? FormatNum(effectiveDps) : "",
                 TotalText      = r.Total > 0    ? FormatNum(r.Total) : "",
                 PctText        = $"{r.Percent:0}%",
                 BarWidth       = DetailTrackWidthPx * (r.Percent / maxPct),

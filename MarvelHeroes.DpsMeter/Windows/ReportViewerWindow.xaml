@@ -57,19 +57,119 @@
         </Style>
         <Style x:Key="DarkComboItem" TargetType="ComboBoxItem">
             <Setter Property="Background" Value="#1E1E1E"/>
-            <Setter Property="Foreground" Value="#CCFFFFFF"/>
+            <Setter Property="Foreground" Value="#EEFFFFFF"/>
             <Setter Property="FontFamily" Value="Segoe UI"/>
-            <Setter Property="Padding" Value="6,3"/>
-            <Style.Triggers>
-                <Trigger Property="IsHighlighted" Value="True">
-                    <Setter Property="Background" Value="#44FF6B00"/>
-                    <Setter Property="Foreground" Value="#FFFFFFFF"/>
-                </Trigger>
-                <Trigger Property="IsSelected" Value="True">
-                    <Setter Property="Background" Value="#22FF6B00"/>
-                    <Setter Property="Foreground" Value="#FFCC66"/>
-                </Trigger>
-            </Style.Triggers>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                Padding="{TemplateBinding Padding}" SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#44FF6B00"/>
+                                <Setter Property="Foreground" Value="#FFFFFFFF"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#22FF6B00"/>
+                                <Setter Property="Foreground" Value="#FFCC66"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- Custom ComboBox template — WPF's default toggle button paints a Windows-themed
+             white/gray surface that ignores our Background, so the closed combo looked washed
+             out on the dark theme.  This template draws everything ourselves: dark background,
+             bright foreground, themed chevron, themed popup. -->
+        <Style x:Key="DarkCombo" TargetType="ComboBox">
+            <Setter Property="Foreground" Value="#EEFFFFFF"/>
+            <Setter Property="Background" Value="#252525"/>
+            <Setter Property="BorderBrush" Value="#55FFFFFF"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="8,0,4,0"/>
+            <Setter Property="Height" Value="24"/>
+            <Setter Property="FontFamily" Value="Segoe UI"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="SnapsToDevicePixels" Value="True"/>
+            <Setter Property="ItemContainerStyle" Value="{StaticResource DarkComboItem}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Border x:Name="MainBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="2"
+                                SnapsToDevicePixels="True">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="18"/>
+                                </Grid.ColumnDefinitions>
+                                <ContentPresenter Grid.Column="0"
+                                                  Margin="{TemplateBinding Padding}"
+                                                  HorizontalAlignment="Left"
+                                                  VerticalAlignment="Center"
+                                                  Content="{TemplateBinding SelectionBoxItem}"
+                                                  ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                                  ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"
+                                                  TextElement.Foreground="{TemplateBinding Foreground}"
+                                                  IsHitTestVisible="False"/>
+                                <Path Grid.Column="1" x:Name="Chevron"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"
+                                      Data="M 0 0 L 8 0 L 4 5 Z"
+                                      Fill="#BBFFFFFF"
+                                      IsHitTestVisible="False"/>
+                                <ToggleButton Grid.ColumnSpan="2"
+                                              Background="Transparent" BorderThickness="0"
+                                              Focusable="False" ClickMode="Press"
+                                              IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                                    <ToggleButton.Template>
+                                        <ControlTemplate TargetType="ToggleButton">
+                                            <Border Background="Transparent"/>
+                                        </ControlTemplate>
+                                    </ToggleButton.Template>
+                                </ToggleButton>
+                                <Popup x:Name="PART_Popup"
+                                       Placement="Bottom"
+                                       IsOpen="{TemplateBinding IsDropDownOpen}"
+                                       AllowsTransparency="True"
+                                       Focusable="False"
+                                       PopupAnimation="Fade">
+                                    <Border MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}"
+                                            MaxHeight="{TemplateBinding MaxDropDownHeight}"
+                                            Background="#1E1E1E"
+                                            BorderBrush="#55FFFFFF"
+                                            BorderThickness="1"
+                                            Margin="0,2,0,0"
+                                            SnapsToDevicePixels="True">
+                                        <ScrollViewer SnapsToDevicePixels="True">
+                                            <StackPanel IsItemsHost="True"
+                                                        KeyboardNavigation.DirectionalNavigation="Contained"/>
+                                        </ScrollViewer>
+                                    </Border>
+                                </Popup>
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="MainBorder" Property="Background" Value="#2C2C2C"/>
+                                <Setter TargetName="MainBorder" Property="BorderBrush" Value="#88FFFFFF"/>
+                                <Setter TargetName="Chevron"    Property="Fill"        Value="#FFFFFFFF"/>
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                <Setter TargetName="MainBorder" Property="BorderBrush" Value="#88FFCC66"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style x:Key="InlineEdit" TargetType="TextBox">
             <Setter Property="Background" Value="Transparent"/>
@@ -109,27 +209,17 @@
 
             <!-- Sort + filter controls -->
             <StackPanel DockPanel.Dock="Top" Margin="0,0,0,5">
-                <ComboBox x:Name="SortCombo" Height="24" FontFamily="Segoe UI" FontSize="11"
-                          Foreground="#AAFFFFFF" Background="#1E1E1E" BorderBrush="#33FFFFFF"
+                <ComboBox x:Name="SortCombo"
+                          Style="{StaticResource DarkCombo}"
                           Margin="0,0,0,4"
-                          ItemContainerStyle="{StaticResource DarkComboItem}"
                           SelectionChanged="SortCombo_SelectionChanged">
-                    <ComboBox.Resources>
-                        <SolidColorBrush x:Key="{x:Static SystemColors.WindowBrushKey}"     Color="#1E1E1E"/>
-                        <SolidColorBrush x:Key="{x:Static SystemColors.WindowTextBrushKey}" Color="#CCFFFFFF"/>
-                    </ComboBox.Resources>
                     <ComboBoxItem Content="↓ Newest first"  Tag="date" IsSelected="True"/>
                     <ComboBoxItem Content="↓ Highest DPS"   Tag="dps"/>
                     <ComboBoxItem Content="Hero A → Z"      Tag="hero"/>
                 </ComboBox>
-                <ComboBox x:Name="FilterCombo" Height="24" FontFamily="Segoe UI" FontSize="11"
-                          Foreground="#AAFFFFFF" Background="#1E1E1E" BorderBrush="#33FFFFFF"
-                          ItemContainerStyle="{StaticResource DarkComboItem}"
+                <ComboBox x:Name="FilterCombo"
+                          Style="{StaticResource DarkCombo}"
                           SelectionChanged="FilterCombo_SelectionChanged">
-                    <ComboBox.Resources>
-                        <SolidColorBrush x:Key="{x:Static SystemColors.WindowBrushKey}"     Color="#1E1E1E"/>
-                        <SolidColorBrush x:Key="{x:Static SystemColors.WindowTextBrushKey}" Color="#CCFFFFFF"/>
-                    </ComboBox.Resources>
                     <ComboBoxItem Content="All heroes" IsSelected="True"/>
                 </ComboBox>
             </StackPanel>
