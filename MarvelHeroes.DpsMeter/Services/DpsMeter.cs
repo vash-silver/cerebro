@@ -666,6 +666,14 @@ public sealed class DpsMeter : IDisposable
     /// <see cref="HeroPowers.Names"/> when only a damage event is available.</summary>
     public string CurrentHeroDisplayName { get; private set; } = string.Empty;
 
+    /// <summary>Human-readable name of the primary boss in the current (or just-ended) boss
+    /// encounter, e.g. "Juggernaut", "Loki".  Set when the first engaged boss has a resolvable
+    /// name in <see cref="BossNames"/>; cleared on every encounter-reset path.  Empty string
+    /// when no encounter is active or when the boss's prototype index has no mapping
+    /// (unrecognised content, or the off-by-one fallback failed).  Surfaced in the overlay
+    /// title during an active fight and baked into snapshot labels on save.</summary>
+    public string CurrentBossName { get; private set; } = string.Empty;
+
     /// <summary>One row in the "heroes in AOI sorted by 60s damage" leaderboard surfaced on the
     /// overlay. <see cref="Percent"/> is the share of damage-done-by-heroes in the last
     /// <see cref="OwnerScoringWindow"/> (so all <c>Percent</c> fields in a snapshot sum to 100).
@@ -781,6 +789,7 @@ public sealed class DpsMeter : IDisposable
                 _encounterEndedUtc = DateTime.MinValue;
                 _lastEncounterDamageUtc = DateTime.MinValue;
                 MaxSingleHitEncounter = 0;
+                CurrentBossName = string.Empty;
             }
             Diagnostic?.Invoke($"DpsMeter: BossOnlyMode = {value} (scoring windows cleared)");
             DpsChanged?.Invoke(this, EventArgs.Empty);
@@ -1746,6 +1755,7 @@ public sealed class DpsMeter : IDisposable
             // visible on the overlay instead of going blank until a new hit beats the record.
             MaxSingleHitSession   = 0;
             MaxSingleHitEncounter = 0;
+            CurrentBossName       = string.Empty;
             uint seededRecord = 0;
             if (!string.IsNullOrEmpty(CurrentHeroDisplayName))
                 _maxHitByHeroName.TryGetValue(CurrentHeroDisplayName, out seededRecord);
@@ -2478,6 +2488,7 @@ public sealed class DpsMeter : IDisposable
                     _encounterEndedUtc = DateTime.MinValue;
                     _lastEncounterDamageUtc = DateTime.MinValue;
                     MaxSingleHitEncounter = 0;
+                    CurrentBossName = string.Empty;
                     Diagnostic?.Invoke($"DpsMeter: encounter cleared (new boss hit after frozen fight, {frozenOwners} owners discarded) — starting fresh");
                 }
 
@@ -2489,11 +2500,26 @@ public sealed class DpsMeter : IDisposable
 
                 if (e.TargetEntityId != 0)
                 {
+                    bool wasFirstBoss = _engagedBossEntityIds.Count == 0;
                     _engagedBossEntityIds.Add(e.TargetEntityId);
                     // Per-target last-hit timestamp drives the EngagedBossIdleEviction sweep
                     // in Tick — without this, missed kill events would let a long-dead boss
                     // sit in the engaged set indefinitely and prevent the next-fight clear.
                     _lastHitPerEngagedBoss[e.TargetEntityId] = now;
+
+                    // Cache the primary boss's display name for the overlay title and snapshot
+                    // label.  Stick with the FIRST engaged boss for the whole encounter — for
+                    // multi-boss raids this gives a stable "Surtur Raid → Brimstone" feel even
+                    // when adds and secondary bosses join the engaged set later.  If the lookup
+                    // misses we leave the name empty rather than back-fill from a later boss,
+                    // since the user's mental model is "the boss I started fighting".
+                    if (wasFirstBoss && string.IsNullOrEmpty(CurrentBossName)
+                        && _prototypeByEntityId.TryGetValue(e.TargetEntityId, out uint bossProto))
+                    {
+                        var name = BossNames.Get(bossProto);
+                        if (!string.IsNullOrEmpty(name))
+                            CurrentBossName = name;
+                    }
                 }
 
                 _encounterTotalsPerOwner.TryGetValue(scoringOwner, out long encPrev);
@@ -2793,6 +2819,7 @@ public sealed class DpsMeter : IDisposable
                             _encounterEndedUtc = DateTime.MinValue;
                             _lastEncounterDamageUtc = DateTime.MinValue;
                             MaxSingleHitEncounter = 0;
+                            CurrentBossName = string.Empty;
                             evictEndedAutoCleared = true;
                         }
                         else
@@ -2843,6 +2870,7 @@ public sealed class DpsMeter : IDisposable
                     _encounterEndedUtc = DateTime.MinValue;
                     _lastEncounterDamageUtc = DateTime.MinValue;
                     MaxSingleHitEncounter = 0;
+                    CurrentBossName = string.Empty;
                     stallEndedAutoCleared = true;
                 }
                 else
@@ -3179,6 +3207,7 @@ public sealed class DpsMeter : IDisposable
             _encounterEndedUtc = DateTime.MinValue;
             _lastEncounterDamageUtc = DateTime.MinValue;
             MaxSingleHitEncounter = 0;
+            CurrentBossName = string.Empty;
 
             // Nearby-AOI set rotates wholesale when we zone — every peer left our AOI and
             // we'll get fresh "nearby" broadcasts for whoever is in the new region within a
@@ -3332,6 +3361,7 @@ public sealed class DpsMeter : IDisposable
                     _encounterEndedUtc = DateTime.MinValue;
                     _lastEncounterDamageUtc = DateTime.MinValue;
                     MaxSingleHitEncounter = 0;
+                    CurrentBossName = string.Empty;
                     autoClearedNoSelf = true;
                 }
                 else

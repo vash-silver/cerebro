@@ -304,6 +304,11 @@
                         <Border Background="#22FF6B00" CornerRadius="3" Padding="7,3" Margin="0,0,6,4">
                             <TextBlock x:Name="DetailMode" FontSize="11" FontFamily="Segoe UI" Foreground="#BBFF6B00"/>
                         </Border>
+                        <Border x:Name="DetailBossBorder" Visibility="Collapsed"
+                                Background="#22D62A2A" CornerRadius="3" Padding="7,3" Margin="0,0,6,4">
+                            <TextBlock x:Name="DetailBoss" FontSize="11" FontFamily="Segoe UI"
+                                       FontWeight="SemiBold" Foreground="#FFCC8888"/>
+                        </Border>
                         <Border Background="#1AFFFFFF" CornerRadius="3" Padding="7,3" Margin="0,0,6,4">
                             <TextBlock x:Name="DetailHero" FontSize="11" FontFamily="Segoe UI" Foreground="#AAFFFFFF"/>
                         </Border>

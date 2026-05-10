@@ -13,6 +13,10 @@ public sealed class DpsSnapshot
     public string   Label              { get; set; } = "";
     public string   Mode               { get; set; } = "";
     public string   HeroName           { get; set; } = "";
+    /// <summary>Display name of the boss that was being fought, e.g. "Juggernaut" / "Loki".
+    /// Empty for session snapshots, non-boss-mode saves, and old reports written before this
+    /// field existed.  Resolved from <see cref="Services.BossNames"/> at save time.</summary>
+    public string   BossName           { get; set; } = "";
     public double   Dps                { get; set; }
     public long     TotalDamage        { get; set; }
     public uint     MaxSingleHit       { get; set; }

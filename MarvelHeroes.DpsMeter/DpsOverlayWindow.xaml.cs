@@ -53,6 +53,7 @@ public partial class DpsOverlayWindow : Window
         uint maxSingleHitSession,
         uint maxSingleHitEncounter,
         string heroDisplayName,
+        string bossDisplayName,
         bool bossOnlyMode,
         IReadOnlyList<DpsMeterClass.HeroShareEntry>? topHeroes,
         DpsMeterClass.EncounterSnapshot encounter,
@@ -67,13 +68,13 @@ public partial class DpsOverlayWindow : Window
             Dispatcher.BeginInvoke(new Action(() => UpdateDps(
                 dps, totalDamage60s, totalDamageSession, ownerEntityId,
                 maxSingleHit, maxSingleHitSession, maxSingleHitEncounter,
-                heroDisplayName, bossOnlyMode, topHeroes, encounter,
+                heroDisplayName, bossDisplayName, bossOnlyMode, topHeroes, encounter,
                 bossDps, bossTotalDamage60s, bossTopHeroes, bossEncounter, powerBreakdown)));
             return;
         }
         Panel.UpdateDps(dps, totalDamage60s, totalDamageSession, ownerEntityId,
             maxSingleHit, maxSingleHitSession, maxSingleHitEncounter,
-            heroDisplayName, bossOnlyMode, topHeroes, encounter,
+            heroDisplayName, bossDisplayName, bossOnlyMode, topHeroes, encounter,
             bossDps, bossTotalDamage60s, bossTopHeroes, bossEncounter, powerBreakdown);
     }
 

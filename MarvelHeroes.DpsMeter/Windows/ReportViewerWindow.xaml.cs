@@ -197,6 +197,18 @@ public partial class ReportViewerWindow : Window
         DetailLabel.Text     = s.Label;
         DetailDate.Text      = s.SavedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
         DetailMode.Text      = s.Mode;
+        // Boss badge: only shown when we know which boss this fight was against.  Older
+        // saves (and non-boss Session snapshots) leave BossName empty, so the badge stays
+        // collapsed and the layout falls back to the original Mode/Hero/... arrangement.
+        if (!string.IsNullOrEmpty(s.BossName))
+        {
+            DetailBoss.Text = s.BossName;
+            DetailBossBorder.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            DetailBossBorder.Visibility = Visibility.Collapsed;
+        }
         DetailHero.Text      = string.IsNullOrEmpty(s.HeroName) ? "unknown hero" : s.HeroName;
         DetailDps.Text       = $"DPS: {FormatNum(s.Dps)}";
         DetailDuration.Text  = s.DurationSeconds > 0 ? FormatDuration(s.DurationSeconds) : "";
@@ -477,6 +489,7 @@ public partial class ReportViewerWindow : Window
         var line2 = s.SavedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
         if (s.DurationSeconds > 0) line2 += $"  ·  {FormatDuration(s.DurationSeconds)}";
         if (!string.IsNullOrEmpty(s.Mode)) line2 += $"  ·  {s.Mode}";
+        if (!string.IsNullOrEmpty(s.BossName)) line2 += $"  ·  vs {s.BossName}";
         if (s.IsPersonalBest) line2 += "  ·  ★ Personal Best";
         sb.AppendLine(line2);
         sb.AppendLine();

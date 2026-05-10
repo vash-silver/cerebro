@@ -197,6 +197,7 @@ public sealed class DpsOverlayPresenter : IDisposable
         uint   maxHitSess   = _meter.MaxSingleHitSession;
         uint   maxHitEnc    = _meter.MaxSingleHitEncounter;
         string heroName     = _meter.CurrentHeroDisplayName;
+        string bossName     = CurrentBossNameOrEmpty();
         bool   bossOnly     = _meter.BossOnlyMode;
         var    encounter    = _meter.GetEncounterSnapshot();
         var    top5         = SelectTopHeroesForOverlay(_meter, bossOnly, encounter);
@@ -207,9 +208,18 @@ public sealed class DpsOverlayPresenter : IDisposable
         var powerBreakdown = _meter.GetSelfPowerBreakdown(8, bossOnly && (encounter.IsActive || encounter.IsEnded));
 
         PushUpdateToWindows(dps, total60s, sessionTotal, owner, maxHit, maxHitSess, maxHitEnc,
-            heroName, bossOnly, top5, encounter,
+            heroName, bossName, bossOnly, top5, encounter,
             bossDps, bossTotal60s, bossTop5, bossEncounter, powerBreakdown);
     }
+
+    // Boss name is independent of mode — the boss-only meter is the canonical source while a
+    // fight is active, but if the user toggled off boss-only mid-fight, the all-damage meter
+    // also still holds the name from when the fight started.  Prefer boss meter, fall back
+    // to all-damage, finally empty so the title degrades to plain "BOSS DPS".
+    private string CurrentBossNameOrEmpty()
+        => !string.IsNullOrEmpty(_bossMeter?.CurrentBossName)
+            ? _bossMeter!.CurrentBossName
+            : (_meter?.CurrentBossName ?? string.Empty);
 
     private void OnDecayTick(object? sender, EventArgs e)
     {
@@ -237,6 +247,7 @@ public sealed class DpsOverlayPresenter : IDisposable
             _meter.MaxSingleHitSession,
             _meter.MaxSingleHitEncounter,
             _meter.CurrentHeroDisplayName,
+            CurrentBossNameOrEmpty(),
             bossOnly,
             top5,
             encounter,
@@ -284,7 +295,7 @@ public sealed class DpsOverlayPresenter : IDisposable
     private void PushUpdateToWindows(
         double dps, long total60s, long sessionTotal,
         ulong owner, uint maxHit, uint maxHitSession, uint maxHitEncounter,
-        string heroName,
+        string heroName, string bossName,
         bool bossOnly,
         IReadOnlyList<DpsMeter.HeroShareEntry>? top5,
         DpsMeter.EncounterSnapshot encounter,
@@ -294,10 +305,10 @@ public sealed class DpsOverlayPresenter : IDisposable
         IReadOnlyList<DpsMeter.PowerBreakdownEntry>? powerBreakdown)
     {
         _overlayWindow?.UpdateDps(dps, total60s, sessionTotal, owner, maxHit, maxHitSession, maxHitEncounter,
-            heroName, bossOnly, top5, encounter,
+            heroName, bossName, bossOnly, top5, encounter,
             bossDps, bossTotal60s, bossTop5, bossEncounter, powerBreakdown);
         _liveWindow?.UpdateDps(dps, total60s, sessionTotal, owner, maxHit, maxHitSession, maxHitEncounter,
-            heroName, bossOnly, top5, encounter,
+            heroName, bossName, bossOnly, top5, encounter,
             bossDps, bossTotal60s, bossTop5, bossEncounter, powerBreakdown);
     }
 
@@ -361,11 +372,28 @@ public sealed class DpsOverlayPresenter : IDisposable
         double dps      = _meter.CurrentDps;
         long   total    = bossOnly ? encounter.SelfTotal : _meter.CurrentOwnerSessionTotal;
 
+        // Same boss-name lookup as AutoSaveFight — pulled from whichever meter knows the
+        // current encounter.  Stays empty for normal-mode (Session) saves so the label keeps
+        // its existing "Session — <hero>" shape.
+        bool bossEncounterActive = bossOnly && (encounter.IsActive || encounter.IsEnded);
+        string bossName = bossEncounterActive ? (_bossMeter?.CurrentBossName ?? _meter.CurrentBossName ?? "") : "";
+
         string label;
-        if (bossOnly && (encounter.IsActive || encounter.IsEnded))
-            label = string.IsNullOrEmpty(heroName) ? "Boss Fight" : $"Boss Fight — {heroName}";
+        if (bossEncounterActive)
+        {
+            if (!string.IsNullOrEmpty(bossName) && !string.IsNullOrEmpty(heroName))
+                label = $"{bossName} — {heroName}";
+            else if (!string.IsNullOrEmpty(bossName))
+                label = bossName;
+            else if (!string.IsNullOrEmpty(heroName))
+                label = $"Boss Fight — {heroName}";
+            else
+                label = "Boss Fight";
+        }
         else
+        {
             label = string.IsNullOrEmpty(heroName) ? "Session" : $"Session — {heroName}";
+        }
 
         var id = DateTime.UtcNow.ToString("yyyyMMddTHHmmssZ");
         var snap = new DpsSnapshot
@@ -375,6 +403,7 @@ public sealed class DpsOverlayPresenter : IDisposable
             Label              = label,
             Mode               = bossOnly ? "Boss Only" : "All Damage",
             HeroName           = heroName,
+            BossName           = bossName,
             Dps                = dps,
             TotalDamage        = total,
             MaxSingleHit       = _meter.MaxSingleHit,
@@ -445,9 +474,21 @@ public sealed class DpsOverlayPresenter : IDisposable
         if (string.IsNullOrEmpty(heroName) && topHeroes != null)
             heroName = topHeroes.FirstOrDefault(h => h.IsSelf).Name ?? "";
 
-        string label = string.IsNullOrEmpty(heroName)
-            ? "Boss Fight"
-            : $"Boss Fight — {heroName}";
+        // Boss name is resolved by the meter from the first engaged boss's prototype index.
+        // Empty when the prototype had no mapping in BossNames (unrecognised content, or the
+        // off-by-one fallback failed) — keep the legacy "Boss Fight" wording in that case.
+        // _bossMeter is already null-checked at the top of this method, so no ?. needed here.
+        string bossName = _bossMeter.CurrentBossName;
+
+        string label;
+        if (!string.IsNullOrEmpty(bossName) && !string.IsNullOrEmpty(heroName))
+            label = $"{bossName} — {heroName}";
+        else if (!string.IsNullOrEmpty(bossName))
+            label = bossName;
+        else if (!string.IsNullOrEmpty(heroName))
+            label = $"Boss Fight — {heroName}";
+        else
+            label = "Boss Fight";
 
         int duration = encounter.StartUtc != DateTime.MinValue && encounter.EndUtc != DateTime.MinValue
             ? (int)(encounter.EndUtc - encounter.StartUtc).TotalSeconds : 0;
@@ -470,6 +511,7 @@ public sealed class DpsOverlayPresenter : IDisposable
             Label              = label,
             Mode               = "Boss Only",
             HeroName           = heroName,
+            BossName           = bossName,
             Dps                = selfDps,
             TotalDamage        = encounter.SelfTotal,
             MaxSingleHit       = _meter?.MaxSingleHit ?? 0,

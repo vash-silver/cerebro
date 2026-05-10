@@ -298,6 +298,64 @@ public sealed class DpsMeterCoreTests : IDisposable
         Assert.Equal(0u, _meter.MaxSingleHit);
     }
 
+    // ── Current boss name tracking ────────────────────────────────────────────────────────
+
+    [Fact]
+    public void CurrentBossName_ResolvesFromBossNamesOnFirstEngage()
+    {
+        // BossProtoIdx (59u) = StarktechSentinelEnc1B in BossNames -> "Starktech Sentinel"
+        ulong self = 1, boss = 9001;
+        RegisterSelf(self);
+        _meter.TestRegisterEntity(boss, BossProtoIdx);
+
+        Assert.Equal(string.Empty, _meter.CurrentBossName);  // no fight yet
+
+        _meter.TestInjectDamage(boss, self, 1u, 10_000, T(0));
+
+        Assert.Equal("Starktech Sentinel", _meter.CurrentBossName);
+    }
+
+    [Fact]
+    public void CurrentBossName_StickyWithinAFight_DoesNotChangeWhenSecondaryBossJoins()
+    {
+        // Two distinct boss entity ids both pointing at the same proto -- the cache should
+        // commit to the first-engaged name and ignore later joins, even if the second engage
+        // happens to land before the cache has had time to refresh.
+        ulong self = 1, boss1 = 9001, boss2 = 9002;
+        RegisterSelf(self);
+        _meter.TestRegisterEntity(boss1, BossProtoIdx);
+        _meter.TestRegisterEntity(boss2, BossProtoIdx);
+
+        _meter.TestInjectDamage(boss1, self, 1u, 10_000, T(0));
+        Assert.Equal("Starktech Sentinel", _meter.CurrentBossName);
+
+        _meter.TestInjectDamage(boss2, self, 1u, 10_000, T(1));
+        Assert.Equal("Starktech Sentinel", _meter.CurrentBossName);  // sticky
+    }
+
+    [Fact]
+    public void CurrentBossName_ClearsBetweenFights()
+    {
+        ulong self = 1, boss1 = 9001;
+        RegisterSelf(self);
+        _meter.TestRegisterEntity(boss1, BossProtoIdx);
+
+        _meter.TestInjectDamage(boss1, self, 1u, 10_000, T(0));
+        Assert.Equal("Starktech Sentinel", _meter.CurrentBossName);
+
+        _meter.TestInjectEntityKilled(boss1, T(5));
+        // The kill itself just marks the encounter ended; the boss name persists for the
+        // frozen-display window until the NEXT engagement clears it.  Verify the persistence:
+        Assert.Equal("Starktech Sentinel", _meter.CurrentBossName);
+
+        // Now a new boss hit comes in -- the frozen-fight discard path runs and the next
+        // engaged boss's name (or empty if unknown) replaces the previous one.
+        ulong boss2 = 9002;
+        _meter.TestRegisterEntity(boss2, BossProtoIdx);
+        _meter.TestInjectDamage(boss2, self, 1u, 10_000, T(20));
+        Assert.Equal("Starktech Sentinel", _meter.CurrentBossName);  // same proto -> same name
+    }
+
     // ── Leaderboard is empty when encounter has no boss damage ──────────────────────────
 
     [Fact]

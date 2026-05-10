@@ -84,6 +84,7 @@ public partial class DpsDisplayPanel : UserControl
         uint maxSingleHitSession,
         uint maxSingleHitEncounter,
         string heroDisplayName,
+        string bossDisplayName,
         bool bossOnlyMode,
         IReadOnlyList<DpsMeterClass.HeroShareEntry>? topHeroes,
         DpsMeterClass.EncounterSnapshot encounter,
@@ -101,7 +102,20 @@ public partial class DpsDisplayPanel : UserControl
             finally { _suppressBossOnlyMenuEvents = false; }
         }
 
-        string titlePrefix = bossOnlyMode ? "BOSS DPS" : "DPS";
+        // Title format depends on three signals:
+        //   - mode (boss-only vs normal)
+        //   - whether we're in an active or just-ended boss fight
+        //   - whether the boss name resolved against BossNames
+        // Boss name takes priority when known — it answers "what am I hitting?" which beats
+        // "what mode is this meter in?" for at-a-glance value.  Hero name still appended so
+        // multi-hero sessions can tell rows apart from the title alone.
+        bool inBossFight = bossOnlyMode && (encounter.IsActive || encounter.IsEnded);
+        string titlePrefix;
+        if (inBossFight && !string.IsNullOrEmpty(bossDisplayName))
+            titlePrefix = $"BOSS: {bossDisplayName}";
+        else
+            titlePrefix = bossOnlyMode ? "BOSS DPS" : "DPS";
+
         string titleSuffix = heroDisplayName ?? string.Empty;
         if (string.IsNullOrEmpty(titleSuffix) && topHeroes != null)
         {
