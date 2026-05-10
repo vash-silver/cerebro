@@ -5,6 +5,8 @@ VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MarvelHeroes.DpsMeter", "MarvelHeroes.DpsMeter\MarvelHeroes.DpsMeter.csproj", "{A2805E05-263B-4669-8437-9288BF803FCB}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MarvelHeroes.DpsMeter.Tests", "MarvelHeroes.DpsMeter.Tests\MarvelHeroes.DpsMeter.Tests.csproj", "{B3C1D2E4-5F6A-7B8C-9D0E-1F2A3B4C5D6E}"
+EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "NetworkSniffer", "NetworkSniffer", "{ABF43296-A4CD-9896-42CD-19ECC68C65C3}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MarvelHeroesComporator.NetworkSniffer", "NetworkSniffer\MarvelHeroesComporator.NetworkSniffer.csproj", "{A2DAEAE9-9480-46F7-A709-D1F73EE1B8F7}"
@@ -33,6 +35,14 @@ Global
 		{A2805E05-263B-4669-8437-9288BF803FCB}.Release|x64.Build.0 = Release|Any CPU
 		{A2805E05-263B-4669-8437-9288BF803FCB}.Release|x86.ActiveCfg = Release|Any CPU
 		{A2805E05-263B-4669-8437-9288BF803FCB}.Release|x86.Build.0 = Release|Any CPU
+		{B3C1D2E4-5F6A-7B8C-9D0E-1F2A3B4C5D6E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B3C1D2E4-5F6A-7B8C-9D0E-1F2A3B4C5D6E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B3C1D2E4-5F6A-7B8C-9D0E-1F2A3B4C5D6E}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{B3C1D2E4-5F6A-7B8C-9D0E-1F2A3B4C5D6E}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{B3C1D2E4-5F6A-7B8C-9D0E-1F2A3B4C5D6E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B3C1D2E4-5F6A-7B8C-9D0E-1F2A3B4C5D6E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B3C1D2E4-5F6A-7B8C-9D0E-1F2A3B4C5D6E}.Release|x64.ActiveCfg = Release|Any CPU
+		{B3C1D2E4-5F6A-7B8C-9D0E-1F2A3B4C5D6E}.Release|x86.ActiveCfg = Release|Any CPU
 		{A2DAEAE9-9480-46F7-A709-D1F73EE1B8F7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{A2DAEAE9-9480-46F7-A709-D1F73EE1B8F7}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{A2DAEAE9-9480-46F7-A709-D1F73EE1B8F7}.Debug|x64.ActiveCfg = Debug|x64

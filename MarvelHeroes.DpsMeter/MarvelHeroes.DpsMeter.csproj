@@ -20,6 +20,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>MarvelHeroes.DpsMeter.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
     <!--
       The packet sniffer (PCAP capture, mux demux, protobuf decode, GazillionArchiveReader)
       lives next to us in this repo.  Vendored from the MarvelHeroesComporator project during

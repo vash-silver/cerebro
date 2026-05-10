@@ -45,6 +45,7 @@ public partial class App : Application
 
     private MhMissionSniffer? _sniffer;
     private DpsOverlayPresenter? _presenter;
+    private TestModeDataFeed? _testFeed;
 
     /// <summary>
     /// Wired up via <c>Startup="OnStartup"</c> in App.xaml.  Runs on the WPF UI thread before
@@ -69,6 +70,9 @@ public partial class App : Application
                 AppendLog(inner.StackTrace ?? "");
             }
         };
+
+        bool testMode = Array.IndexOf(e.Args, "--test-mode") >= 0;
+        if (testMode) ForceAppendLog("--test-mode active: sniffer not started, synthetic data feed will run.");
 
         AppendLog($"────── MarvelHeroes.DpsMeter standalone start ({DateTime.UtcNow:yyyy-MM-dd HH:mm:ss}Z) ──────");
 
@@ -133,12 +137,17 @@ public partial class App : Application
                 AdditionalCapturePorts = userNet.AdditionalTcpPorts,
                 AdapterFilter = userNet.NpcapAdapterFilter,
             };
-            // TryStart() is the soft-fail variant: returns false if Npcap isn't installed,
-            // no NIC could be opened, or another permissions issue blocks capture.  Throwing
-            // here gives us a uniform code path for "show the user a dialog and exit cleanly".
-            if (!_sniffer.TryStart())
-                throw new InvalidOperationException(
-                    $"Network sniffer failed to start: {_sniffer.StartFailureReason ?? "unknown reason"}");
+            // In test mode we deliberately skip TryStart() so Npcap is never opened — the
+            // TestModeDataFeed injects events directly into the meters instead.
+            if (!testMode)
+            {
+                // TryStart() is the soft-fail variant: returns false if Npcap isn't installed,
+                // no NIC could be opened, or another permissions issue blocks capture.  Throwing
+                // here gives us a uniform code path for "show the user a dialog and exit cleanly".
+                if (!_sniffer.TryStart())
+                    throw new InvalidOperationException(
+                        $"Network sniffer failed to start: {_sniffer.StartFailureReason ?? "unknown reason"}");
+            }
 
             // Presenter takes over from here: creates the meter, wires diagnostics, builds the
             // overlay window, starts the 4 Hz decay tick.  Its Start() is synchronous (Invoke,
@@ -154,6 +163,12 @@ public partial class App : Application
             _presenter.ShouldBeVisible = GameForegroundWatcher.IsGameOrSelfForeground;
 
             _presenter.Start();
+
+            if (testMode && _presenter.Meter != null && _presenter.BossMeter != null)
+            {
+                _testFeed = new TestModeDataFeed(_presenter.Meter, _presenter.BossMeter);
+                _testFeed.Start();
+            }
         }
         catch (Exception ex)
         {
@@ -185,8 +200,9 @@ public partial class App : Application
     /// </summary>
     private void OnExit(object sender, ExitEventArgs e)
     {
-        try { _presenter?.Stop(); } catch (Exception ex) { AppendLog($"Stop(presenter): {ex.Message}"); }
-        try { _sniffer?.Stop(); }    catch (Exception ex) { AppendLog($"Stop(sniffer): {ex.Message}"); }
+        try { _testFeed?.Dispose(); }   catch (Exception ex) { AppendLog($"Stop(testFeed): {ex.Message}"); }
+        try { _presenter?.Stop(); }     catch (Exception ex) { AppendLog($"Stop(presenter): {ex.Message}"); }
+        try { _sniffer?.Stop(); }       catch (Exception ex) { AppendLog($"Stop(sniffer): {ex.Message}"); }
         AppendLog($"────── MarvelHeroes.DpsMeter standalone exit (code={e.ApplicationExitCode}) ──────");
     }
 
