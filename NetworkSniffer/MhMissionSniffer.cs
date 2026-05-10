@@ -330,6 +330,38 @@ public sealed class InventoryMovedEvent
 }
 
 /// <summary>
+/// A loot item just spawned on the ground (server -> client <c>NetMessageLootEntity</c>).
+/// Fires for every dropped item the local client observes — credits piles, gear, currency
+/// stacks (including Eternity Splinter / Cube Shard / etc.), Cosmic prestige tokens, raid
+/// loot, the lot.  The <see cref="ItemProtoRef"/> is the canonical
+/// <c>NetStructItemSpec.itemProtoRef</c> — a 64-bit <c>PrototypeId</c> (DataRef), NOT the
+/// smaller enum index used elsewhere by this sniffer.  Cross-references with the
+/// PrototypeId constants embedded in the server (see
+/// <c>MHServerEmu.Games.dll → LootCooldownTable.EternitySplinterPrototypeRef</c> and
+/// <c>LootInstance.CombineCurrencyStacks(...)</c>) so a downstream listener can match on
+/// the exact item type that landed.
+/// </summary>
+public sealed class LootDroppedEvent
+{
+    /// <summary>Entity id of the on-ground loot instance.  Pair with a future
+    /// <c>NetMessageEntityDestroy</c> to detect when the item is picked up / despawns —
+    /// but consumers tracking drop counts (e.g. the Eternity Splinter tracker) only
+    /// need the spawn event.</summary>
+    public required ulong ItemId { get; init; }
+    /// <summary>Full 64-bit <c>PrototypeId</c> of the dropped item — same encoding the
+    /// server uses internally and the same value carried by <c>ItemSpec.itemProtoRef</c>
+    /// on the wire.  Stable per game build; safe to compare against hardcoded constants.</summary>
+    public required ulong ItemProtoRef { get; init; }
+    /// <summary>Item level rolled by the server.  Useful for filtering ("only level-70 drops")
+    /// but the splinter tracker doesn't care about this.</summary>
+    public uint ItemLevel { get; init; }
+    /// <summary>Rarity prototype reference rolled by the server.  Optional / often zero
+    /// for currency-style drops.</summary>
+    public ulong RarityProtoRef { get; init; }
+    public required DateTime UtcTime { get; init; }
+}
+
+/// <summary>
 /// Passive sniffer for the Marvel Heroes / MHServerEmu Mux protocol on the game frontend port (default 4306).
 ///
 /// Reads raw TCP frames via Npcap, reassembles each TCP flow, parses Mux frames + protobuf
@@ -429,6 +461,11 @@ public sealed class MhMissionSniffer : IDisposable
     /// even when the app was started mid-session.</summary>
     public event EventHandler<LocalAvatarObservedEvent>? LocalAvatarObserved;
     public event EventHandler<CommunityMemberUpdatedEvent>? CommunityMemberUpdated;
+    /// <summary>Fires for every <c>NetMessageLootEntity</c> -- a loot item just spawned on the
+    /// ground.  The <see cref="LootDroppedEvent.ItemProtoRef"/> is the full 64-bit PrototypeId
+    /// of the dropped item; downstream listeners (Eternity Splinter tracker, future loot
+    /// trackers) match it against hardcoded constants.</summary>
+    public event EventHandler<LootDroppedEvent>? LootDropped;
 
     private TcpReassembler? _reassembler;
     private readonly List<ICaptureDevice> _openDevices = new();
@@ -663,6 +700,7 @@ public sealed class MhMissionSniffer : IDisposable
                 case "NetMessagePowerResult":            ParsePowerResult(body); break;
                 case "NetMessageLocalPlayer":            ParseLocalPlayer(body); break;
                 case "NetMessageInventoryMove":          ParseInventoryMove(body); break;
+                case "NetMessageLootEntity":             ParseLootEntity(body); break;
                 case "NetMessageModifyCommunityMember":  ParseModifyCommunityMember(body); break;
                 case "NetMessageRegionChange":           ParseRegionChange(body); break;
                 case "NetMessageRegionDifficultyChange": ParseDifficultyChange(body); break;
@@ -819,6 +857,41 @@ public sealed class MhMissionSniffer : IDisposable
         catch (Exception ex)
         {
             Diagnostic?.Invoke($"InventoryMove parse failed: {ex.Message}");
+        }
+    }
+
+    // ───────────────────────── NetMessageLootEntity ─────────────────────────
+    // Fires every time the server spawns a visible loot entity on the ground in our AOI.
+    // The wire payload is `NetMessageLootEntity { ItemId, ItemSpec }`, where ItemSpec is a
+    // NetStructItemSpec carrying the full 64-bit PrototypeId (DataRef) of the item, its rolled
+    // level, rarity, affixes, etc.  We only forward the bits a downstream tracker actually
+    // needs (id + proto ref + level + rarity) so listeners stay decoupled from the protobuf.
+    //
+    // Used by Services.EternitySplinterTracker to detect Eternity Splinter drops -- matches
+    // ItemProtoRef against the hardcoded PrototypeId pulled from MHServerEmu's
+    // LootInstance.CombineCurrencyStacks call.  Any future "track when X drops" feature
+    // (Cube Shards, Worldstones, raid tokens) plugs into this same event without further
+    // sniffer changes.
+    private void ParseLootEntity(byte[] body)
+    {
+        if (LootDropped is null) return;
+        try
+        {
+            var msg  = NetMessageLootEntity.ParseFrom(body);
+            var spec = msg.ItemSpec;
+            if (spec is null) return;
+            LootDropped?.Invoke(this, new LootDroppedEvent
+            {
+                ItemId         = msg.ItemId,
+                ItemProtoRef   = spec.ItemProtoRef,
+                ItemLevel      = spec.HasItemLevel      ? spec.ItemLevel      : 0u,
+                RarityProtoRef = spec.HasRarityProtoRef ? spec.RarityProtoRef : 0uL,
+                UtcTime        = DateTime.UtcNow,
+            });
+        }
+        catch (Exception ex)
+        {
+            Diagnostic?.Invoke($"LootEntity parse failed: {ex.Message}");
         }
     }
 
