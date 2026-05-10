@@ -85,6 +85,7 @@ public partial class ReportViewerWindow : Window
 
     private void RefreshList()
     {
+        if (!IsLoaded) return;  // called during InitializeComponent before elements are ready
         string? selectedId = _selected?.Id;
         var all = DpsReportStore.LoadAll();
 
@@ -148,7 +149,6 @@ public partial class ReportViewerWindow : Window
 
     private void SortCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (FilterCombo == null) return; // fired during InitializeComponent before all fields assigned
         if (SortCombo.SelectedItem is ComboBoxItem ci)
             _sortMode = ci.Tag?.ToString() ?? "date";
         RefreshList();
@@ -156,7 +156,6 @@ public partial class ReportViewerWindow : Window
 
     private void FilterCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (SortCombo == null) return; // fired during InitializeComponent before all fields assigned
         if (FilterCombo.SelectedItem is ComboBoxItem ci)
         {
             string v = ci.Content?.ToString() ?? "";
