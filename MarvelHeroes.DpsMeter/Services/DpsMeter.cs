@@ -597,8 +597,8 @@ public sealed class DpsMeter : IDisposable
 
     // Per-power hit/damage tracking for the local player only.
     // Session dict accumulates for the whole region; encounter dict resets each boss fight.
-    private readonly Dictionary<uint, (int Hits, long Dmg)> _selfPowerHitsSession   = new();
-    private readonly Dictionary<uint, (int Hits, long Dmg)> _selfPowerHitsEncounter = new();
+    private readonly Dictionary<uint, (int Hits, long Dmg, long MaxHit)> _selfPowerHitsSession   = new();
+    private readonly Dictionary<uint, (int Hits, long Dmg, long MaxHit)> _selfPowerHitsEncounter = new();
 
     // Separate (shorter) queue for the instant 5 s DPS number.  We could derive this from
     // `_scoring` by scanning it on every tick, but keeping a dedicated queue avoids the scan
@@ -681,6 +681,7 @@ public sealed class DpsMeter : IDisposable
         public int    Hits        { get; init; }
         public long   TotalDamage { get; init; }
         public double Percent     { get; init; }
+        public long   MaxHit      { get; init; }
     }
 
     /// <summary>Fired every time <see cref="CurrentDps"/> changes. Fires from the sniffer's
@@ -2533,11 +2534,11 @@ public sealed class DpsMeter : IDisposable
             if (scoringOwner == _likelySelfOwnerId && e.PowerPrototypeEnumIndex != 0)
             {
                 _selfPowerHitsSession.TryGetValue(e.PowerPrototypeEnumIndex, out var sp);
-                _selfPowerHitsSession[e.PowerPrototypeEnumIndex] = (sp.Hits + 1, sp.Dmg + dmg);
+                _selfPowerHitsSession[e.PowerPrototypeEnumIndex] = (sp.Hits + 1, sp.Dmg + dmg, Math.Max(sp.MaxHit, dmg));
                 if (_bossOnlyMode)
                 {
                     _selfPowerHitsEncounter.TryGetValue(e.PowerPrototypeEnumIndex, out var ep);
-                    _selfPowerHitsEncounter[e.PowerPrototypeEnumIndex] = (ep.Hits + 1, ep.Dmg + dmg);
+                    _selfPowerHitsEncounter[e.PowerPrototypeEnumIndex] = (ep.Hits + 1, ep.Dmg + dmg, Math.Max(ep.MaxHit, dmg));
                 }
             }
 
@@ -3451,6 +3452,7 @@ public sealed class DpsMeter : IDisposable
                     Hits        = kv.Value.Hits,
                     TotalDamage = kv.Value.Dmg,
                     Percent     = kv.Value.Dmg * 100.0 / grandTotal,
+                    MaxHit      = kv.Value.MaxHit,
                 });
             }
             rows.Sort((a, b) => b.TotalDamage.CompareTo(a.TotalDamage));

@@ -294,7 +294,7 @@
                 <Grid Width="280" Height="22" Margin="0,2,0,0" HorizontalAlignment="Left">
                     <Rectangle x:Name="Pwr1Bar" HorizontalAlignment="Left" Width="0" Height="22" RadiusX="3" RadiusY="3"/>
                     <Grid VerticalAlignment="Center" Margin="4,0,4,0">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="36"/><ColumnDefinition Width="50"/><ColumnDefinition Width="38"/></Grid.ColumnDefinitions>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="50"/><ColumnDefinition Width="50"/><ColumnDefinition Width="38"/></Grid.ColumnDefinitions>
                         <TextBlock x:Name="Pwr1Name"  Grid.Column="0" Text="" TextTrimming="CharacterEllipsis" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="12" Foreground="#CCFFFFFF" VerticalAlignment="Center"/>
                         <TextBlock x:Name="Pwr1Hits"  Grid.Column="1" Text="" TextAlignment="Right" HorizontalAlignment="Right" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="11" Foreground="#88FFFFFF" VerticalAlignment="Center"/>
                         <TextBlock x:Name="Pwr1Total" Grid.Column="2" Text="" TextAlignment="Right" HorizontalAlignment="Right" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="11" Foreground="#88FFFFFF" VerticalAlignment="Center" Margin="0,0,4,0"/>
@@ -304,7 +304,7 @@
                 <Grid Width="280" Height="22" Margin="0,2,0,0" HorizontalAlignment="Left">
                     <Rectangle x:Name="Pwr2Bar" HorizontalAlignment="Left" Width="0" Height="22" RadiusX="3" RadiusY="3"/>
                     <Grid VerticalAlignment="Center" Margin="4,0,4,0">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="36"/><ColumnDefinition Width="50"/><ColumnDefinition Width="38"/></Grid.ColumnDefinitions>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="50"/><ColumnDefinition Width="50"/><ColumnDefinition Width="38"/></Grid.ColumnDefinitions>
                         <TextBlock x:Name="Pwr2Name"  Grid.Column="0" Text="" TextTrimming="CharacterEllipsis" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="12" Foreground="#CCFFFFFF" VerticalAlignment="Center"/>
                         <TextBlock x:Name="Pwr2Hits"  Grid.Column="1" Text="" TextAlignment="Right" HorizontalAlignment="Right" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="11" Foreground="#88FFFFFF" VerticalAlignment="Center"/>
                         <TextBlock x:Name="Pwr2Total" Grid.Column="2" Text="" TextAlignment="Right" HorizontalAlignment="Right" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="11" Foreground="#88FFFFFF" VerticalAlignment="Center" Margin="0,0,4,0"/>
@@ -314,7 +314,7 @@
                 <Grid Width="280" Height="22" Margin="0,2,0,0" HorizontalAlignment="Left">
                     <Rectangle x:Name="Pwr3Bar" HorizontalAlignment="Left" Width="0" Height="22" RadiusX="3" RadiusY="3"/>
                     <Grid VerticalAlignment="Center" Margin="4,0,4,0">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="36"/><ColumnDefinition Width="50"/><ColumnDefinition Width="38"/></Grid.ColumnDefinitions>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="50"/><ColumnDefinition Width="50"/><ColumnDefinition Width="38"/></Grid.ColumnDefinitions>
                         <TextBlock x:Name="Pwr3Name"  Grid.Column="0" Text="" TextTrimming="CharacterEllipsis" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="12" Foreground="#CCFFFFFF" VerticalAlignment="Center"/>
                         <TextBlock x:Name="Pwr3Hits"  Grid.Column="1" Text="" TextAlignment="Right" HorizontalAlignment="Right" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="11" Foreground="#88FFFFFF" VerticalAlignment="Center"/>
                         <TextBlock x:Name="Pwr3Total" Grid.Column="2" Text="" TextAlignment="Right" HorizontalAlignment="Right" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="11" Foreground="#88FFFFFF" VerticalAlignment="Center" Margin="0,0,4,0"/>
@@ -324,7 +324,7 @@
                 <Grid Width="280" Height="22" Margin="0,2,0,0" HorizontalAlignment="Left">
                     <Rectangle x:Name="Pwr4Bar" HorizontalAlignment="Left" Width="0" Height="22" RadiusX="3" RadiusY="3"/>
                     <Grid VerticalAlignment="Center" Margin="4,0,4,0">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="36"/><ColumnDefinition Width="50"/><ColumnDefinition Width="38"/></Grid.ColumnDefinitions>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="50"/><ColumnDefinition Width="50"/><ColumnDefinition Width="38"/></Grid.ColumnDefinitions>
                         <TextBlock x:Name="Pwr4Name"  Grid.Column="0" Text="" TextTrimming="CharacterEllipsis" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="12" Foreground="#CCFFFFFF" VerticalAlignment="Center"/>
                         <TextBlock x:Name="Pwr4Hits"  Grid.Column="1" Text="" TextAlignment="Right" HorizontalAlignment="Right" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="11" Foreground="#88FFFFFF" VerticalAlignment="Center"/>
                         <TextBlock x:Name="Pwr4Total" Grid.Column="2" Text="" TextAlignment="Right" HorizontalAlignment="Right" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="11" Foreground="#88FFFFFF" VerticalAlignment="Center" Margin="0,0,4,0"/>
@@ -334,7 +334,7 @@
                 <Grid Width="280" Height="22" Margin="0,2,0,0" HorizontalAlignment="Left">
                     <Rectangle x:Name="Pwr5Bar" HorizontalAlignment="Left" Width="0" Height="22" RadiusX="3" RadiusY="3"/>
                     <Grid VerticalAlignment="Center" Margin="4,0,4,0">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="36"/><ColumnDefinition Width="50"/><ColumnDefinition Width="38"/></Grid.ColumnDefinitions>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="50"/><ColumnDefinition Width="50"/><ColumnDefinition Width="38"/></Grid.ColumnDefinitions>
                         <TextBlock x:Name="Pwr5Name"  Grid.Column="0" Text="" TextTrimming="CharacterEllipsis" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="12" Foreground="#CCFFFFFF" VerticalAlignment="Center"/>
                         <TextBlock x:Name="Pwr5Hits"  Grid.Column="1" Text="" TextAlignment="Right" HorizontalAlignment="Right" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="11" Foreground="#88FFFFFF" VerticalAlignment="Center"/>
                         <TextBlock x:Name="Pwr5Total" Grid.Column="2" Text="" TextAlignment="Right" HorizontalAlignment="Right" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="11" Foreground="#88FFFFFF" VerticalAlignment="Center" Margin="0,0,4,0"/>
@@ -344,7 +344,7 @@
                 <Grid Width="280" Height="22" Margin="0,2,0,0" HorizontalAlignment="Left">
                     <Rectangle x:Name="Pwr6Bar" HorizontalAlignment="Left" Width="0" Height="22" RadiusX="3" RadiusY="3"/>
                     <Grid VerticalAlignment="Center" Margin="4,0,4,0">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="36"/><ColumnDefinition Width="50"/><ColumnDefinition Width="38"/></Grid.ColumnDefinitions>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="50"/><ColumnDefinition Width="50"/><ColumnDefinition Width="38"/></Grid.ColumnDefinitions>
                         <TextBlock x:Name="Pwr6Name"  Grid.Column="0" Text="" TextTrimming="CharacterEllipsis" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="12" Foreground="#CCFFFFFF" VerticalAlignment="Center"/>
                         <TextBlock x:Name="Pwr6Hits"  Grid.Column="1" Text="" TextAlignment="Right" HorizontalAlignment="Right" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="11" Foreground="#88FFFFFF" VerticalAlignment="Center"/>
                         <TextBlock x:Name="Pwr6Total" Grid.Column="2" Text="" TextAlignment="Right" HorizontalAlignment="Right" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="11" Foreground="#88FFFFFF" VerticalAlignment="Center" Margin="0,0,4,0"/>
@@ -354,7 +354,7 @@
                 <Grid Width="280" Height="22" Margin="0,2,0,0" HorizontalAlignment="Left">
                     <Rectangle x:Name="Pwr7Bar" HorizontalAlignment="Left" Width="0" Height="22" RadiusX="3" RadiusY="3"/>
                     <Grid VerticalAlignment="Center" Margin="4,0,4,0">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="36"/><ColumnDefinition Width="50"/><ColumnDefinition Width="38"/></Grid.ColumnDefinitions>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="50"/><ColumnDefinition Width="50"/><ColumnDefinition Width="38"/></Grid.ColumnDefinitions>
                         <TextBlock x:Name="Pwr7Name"  Grid.Column="0" Text="" TextTrimming="CharacterEllipsis" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="12" Foreground="#CCFFFFFF" VerticalAlignment="Center"/>
                         <TextBlock x:Name="Pwr7Hits"  Grid.Column="1" Text="" TextAlignment="Right" HorizontalAlignment="Right" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="11" Foreground="#88FFFFFF" VerticalAlignment="Center"/>
                         <TextBlock x:Name="Pwr7Total" Grid.Column="2" Text="" TextAlignment="Right" HorizontalAlignment="Right" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="11" Foreground="#88FFFFFF" VerticalAlignment="Center" Margin="0,0,4,0"/>
@@ -364,7 +364,7 @@
                 <Grid Width="280" Height="22" Margin="0,2,0,0" HorizontalAlignment="Left">
                     <Rectangle x:Name="Pwr8Bar" HorizontalAlignment="Left" Width="0" Height="22" RadiusX="3" RadiusY="3"/>
                     <Grid VerticalAlignment="Center" Margin="4,0,4,0">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="36"/><ColumnDefinition Width="50"/><ColumnDefinition Width="38"/></Grid.ColumnDefinitions>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="50"/><ColumnDefinition Width="50"/><ColumnDefinition Width="38"/></Grid.ColumnDefinitions>
                         <TextBlock x:Name="Pwr8Name"  Grid.Column="0" Text="" TextTrimming="CharacterEllipsis" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="12" Foreground="#CCFFFFFF" VerticalAlignment="Center"/>
                         <TextBlock x:Name="Pwr8Hits"  Grid.Column="1" Text="" TextAlignment="Right" HorizontalAlignment="Right" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="11" Foreground="#88FFFFFF" VerticalAlignment="Center"/>
                         <TextBlock x:Name="Pwr8Total" Grid.Column="2" Text="" TextAlignment="Right" HorizontalAlignment="Right" FontFamily="{StaticResource MarvelFontSecondary}" FontSize="11" Foreground="#88FFFFFF" VerticalAlignment="Center" Margin="0,0,4,0"/>

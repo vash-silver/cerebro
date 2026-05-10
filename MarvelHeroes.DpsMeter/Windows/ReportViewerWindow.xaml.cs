@@ -1,14 +1,16 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Windows;
 using System.Windows.Media;
+using System.Windows.Threading;
 using MarvelHeroes.DpsMeter.Models;
 
 namespace MarvelHeroes.DpsMeter.Windows;
 
 public partial class ReportViewerWindow : Window
 {
-    private const double DetailTrackWidthPx = 360.0;
+    private const double DetailTrackWidthPx = 420.0;
 
     private static readonly Color[] s_pwrColors =
     {
@@ -25,20 +27,69 @@ public partial class ReportViewerWindow : Window
     private List<SnapshotListItem> _items = new();
     private DpsSnapshot? _selected;
 
+    private FileSystemWatcher? _watcher;
+    private DispatcherTimer?   _refreshDebounce;
+
     public ReportViewerWindow()
     {
         InitializeComponent();
-        Loaded += (_, _) => RefreshList();
+        Loaded += (_, _) =>
+        {
+            InitWatcher();
+            RefreshList();
+        };
+    }
+
+    private void InitWatcher()
+    {
+        _refreshDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+        _refreshDebounce.Tick += (_, _) => { _refreshDebounce.Stop(); RefreshList(); };
+
+        try
+        {
+            Directory.CreateDirectory(DpsReportStore.ReportsDirectory);
+            _watcher = new FileSystemWatcher(DpsReportStore.ReportsDirectory, "dps-*.json")
+            {
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite,
+                EnableRaisingEvents = true,
+            };
+            _watcher.Created += OnReportsChanged;
+            _watcher.Deleted += OnReportsChanged;
+        }
+        catch { }
+    }
+
+    private void OnReportsChanged(object sender, FileSystemEventArgs e)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            _refreshDebounce?.Stop();
+            _refreshDebounce?.Start();
+        });
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        base.OnClosed(e);
+        _refreshDebounce?.Stop();
+        _watcher?.Dispose();
     }
 
     private void RefreshList()
     {
+        string? selectedId = _selected?.Id;
         var snaps = DpsReportStore.LoadAll();
         _items.Clear();
         foreach (var s in snaps)
             _items.Add(new SnapshotListItem(s));
         SnapshotList.ItemsSource = null;
         SnapshotList.ItemsSource = _items;
+
+        if (selectedId != null)
+        {
+            int idx = _items.FindIndex(i => i.Snapshot.Id == selectedId);
+            if (idx >= 0) { SnapshotList.SelectedIndex = idx; return; }
+        }
         if (_items.Count > 0)
             SnapshotList.SelectedIndex = 0;
         else
@@ -70,14 +121,14 @@ public partial class ReportViewerWindow : Window
     {
         DetailPanel.Visibility = Visibility.Visible;
 
-        DetailLabel.Text = s.Label;
-        DetailDate.Text  = s.SavedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
-        DetailMode.Text  = s.Mode;
-        DetailHero.Text  = string.IsNullOrEmpty(s.HeroName) ? "unknown hero" : s.HeroName;
-        DetailDps.Text   = $"DPS: {FormatNum(s.Dps)}";
-        DetailMaxHit.Text = s.MaxSingleHit > 0 ? $"Max hit: {FormatNum(s.MaxSingleHit)}" : "";
+        DetailLabel.Text    = s.Label;
+        DetailDate.Text     = s.SavedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+        DetailMode.Text     = s.Mode;
+        DetailHero.Text     = string.IsNullOrEmpty(s.HeroName) ? "unknown hero" : s.HeroName;
+        DetailDps.Text      = $"DPS: {FormatNum(s.Dps)}";
+        DetailMaxHit.Text   = s.MaxSingleHit > 0 ? $"Max hit: {FormatNum(s.MaxSingleHit)}" : "";
 
-        // Leaderboard rows
+        // Leaderboard
         double maxPct = 0;
         foreach (var r in s.Leaderboard) if (r.Percent > maxPct) maxPct = r.Percent;
         if (maxPct <= 0) maxPct = 100;
@@ -108,7 +159,7 @@ public partial class ReportViewerWindow : Window
         }
         LeaderboardItems.ItemsSource = lbRows;
 
-        // Power breakdown
+        // Ability breakdown
         if (s.PowerBreakdown.Count > 0)
         {
             PowerSectionHeader.Visibility = Visibility.Visible;
@@ -123,13 +174,15 @@ public partial class ReportViewerWindow : Window
                 var c = s_pwrColors[i % s_pwrColors.Length];
                 pwrRows.Add(new PowerRow
                 {
-                    Name      = p.Name,
-                    HitsText  = p.Hits + "x",
-                    TotalText = FormatNum(p.TotalDamage),
-                    PctText   = $"{p.Percent:0}%",
-                    BarWidth  = DetailTrackWidthPx * (p.Percent / pctSum),
-                    BarFill   = new SolidColorBrush(Color.FromArgb(0x44, c.R, c.G, c.B)),
-                    TextColor = new SolidColorBrush(Color.FromArgb(0xCC, c.R, c.G, c.B)),
+                    Name       = p.Name,
+                    HitsText   = p.Hits + "x",
+                    AvgHitText = p.Hits > 0 ? FormatNum((double)p.TotalDamage / p.Hits) : "",
+                    MaxHitText = p.MaxHit > 0 ? FormatNum(p.MaxHit) : "",
+                    TotalText  = FormatNum(p.TotalDamage),
+                    PctText    = $"{p.Percent:0}%",
+                    BarWidth   = DetailTrackWidthPx * (p.Percent / pctSum),
+                    BarFill    = new SolidColorBrush(Color.FromArgb(0x44, c.R, c.G, c.B)),
+                    TextColor  = new SolidColorBrush(Color.FromArgb(0xCC, c.R, c.G, c.B)),
                 });
             }
             PowerItems.ItemsSource = pwrRows;
@@ -149,6 +202,7 @@ public partial class ReportViewerWindow : Window
             "Delete snapshot", MessageBoxButton.YesNo, MessageBoxImage.Question);
         if (result != MessageBoxResult.Yes) return;
         DpsReportStore.Delete(_selected.Id);
+        _selected = null;
         RefreshList();
     }
 
@@ -166,10 +220,10 @@ public partial class ReportViewerWindow : Window
 
     private sealed class SnapshotListItem(DpsSnapshot s)
     {
-        public DpsSnapshot Snapshot           { get; } = s;
-        public string      Label              { get; } = s.Label;
-        public string      SavedLocal         { get; } = s.SavedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
-        public Visibility  AutoBadgeVisibility{ get; } = s.IsAutoSave ? Visibility.Visible : Visibility.Collapsed;
+        public DpsSnapshot Snapshot            { get; } = s;
+        public string      Label               { get; } = s.Label;
+        public string      SavedLocal          { get; } = s.SavedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+        public Visibility  AutoBadgeVisibility { get; } = s.IsAutoSave ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private sealed class LeaderboardRow
@@ -185,12 +239,14 @@ public partial class ReportViewerWindow : Window
 
     private sealed class PowerRow
     {
-        public string Name      { get; init; } = "";
-        public string HitsText  { get; init; } = "";
-        public string TotalText { get; init; } = "";
-        public string PctText   { get; init; } = "";
-        public double BarWidth  { get; init; }
-        public Brush  BarFill   { get; init; } = Brushes.Transparent;
-        public Brush  TextColor { get; init; } = Brushes.White;
+        public string Name       { get; init; } = "";
+        public string HitsText   { get; init; } = "";
+        public string AvgHitText { get; init; } = "";
+        public string MaxHitText { get; init; } = "";
+        public string TotalText  { get; init; } = "";
+        public string PctText    { get; init; } = "";
+        public double BarWidth   { get; init; }
+        public Brush  BarFill    { get; init; } = Brushes.Transparent;
+        public Brush  TextColor  { get; init; } = Brushes.White;
     }
 }

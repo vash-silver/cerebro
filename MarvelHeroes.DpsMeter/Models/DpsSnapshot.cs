@@ -39,6 +39,7 @@ public sealed class DpsSnapshot
         public int    Hits        { get; set; }
         public long   TotalDamage { get; set; }
         public double Percent     { get; set; }
+        public long   MaxHit      { get; set; }
     }
 }
 

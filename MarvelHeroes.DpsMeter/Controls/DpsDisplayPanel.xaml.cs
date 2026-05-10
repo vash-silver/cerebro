@@ -263,7 +263,8 @@ public partial class DpsDisplayPanel : UserControl
             if (rows != null && i < rows.Count)
             {
                 var r = rows[i]; var brush = _pwrBrushes[i]; bool top = i == 0;
-                _pwrNames[i].Text = r.Name; _pwrHits[i].Text = r.Hits.ToString("N0") + "x";
+                long avg = r.Hits > 0 ? r.TotalDamage / r.Hits : 0;
+                _pwrNames[i].Text = r.Name; _pwrHits[i].Text = FormatRowTotalCompact(avg) + " avg";
                 _pwrTotals[i].Text = FormatRowTotalCompact(r.TotalDamage); _pwrPcts[i].Text = $"{r.Percent:0}%";
                 _pwrNames[i].Foreground = brush; _pwrNames[i].FontWeight = top ? FontWeights.SemiBold : FontWeights.Normal;
                 _pwrPcts[i].Foreground  = brush; _pwrPcts[i].FontWeight  = top ? FontWeights.SemiBold : FontWeights.Normal;

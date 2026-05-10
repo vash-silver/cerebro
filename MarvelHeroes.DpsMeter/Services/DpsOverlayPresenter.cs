@@ -378,6 +378,7 @@ public sealed class DpsOverlayPresenter : IDisposable
                     Hits        = p.Hits,
                     TotalDamage = p.TotalDamage,
                     Percent     = p.Percent,
+                    MaxHit      = p.MaxHit,
                 });
 
         DpsReportStore.Save(snap);
@@ -433,6 +434,7 @@ public sealed class DpsOverlayPresenter : IDisposable
                     Hits        = p.Hits,
                     TotalDamage = p.TotalDamage,
                     Percent     = p.Percent,
+                    MaxHit      = p.MaxHit,
                 });
 
         DpsReportStore.Save(snap);
