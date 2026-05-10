@@ -119,6 +119,7 @@ public sealed class DpsOverlayPresenter : IDisposable
         w.SwitchModeRequested  += ToggleWindowMode;
         w.SaveSnapshotRequested += (h, enc, p) => SaveSnapshotNow(h, enc, p);
         w.ClearDpsRequested    += ClearDpsNow;
+        w.ResetMaxHitRecordRequested += ResetMaxHitRecordNow;
         w.ViewReportsRequested += OpenReportViewer;
     }
 
@@ -128,6 +129,7 @@ public sealed class DpsOverlayPresenter : IDisposable
         w.SwitchModeRequested  += ToggleWindowMode;
         w.SaveSnapshotRequested += (h, enc, p) => SaveSnapshotNow(h, enc, p);
         w.ClearDpsRequested    += ClearDpsNow;
+        w.ResetMaxHitRecordRequested += ResetMaxHitRecordNow;
         w.ViewReportsRequested += OpenReportViewer;
     }
 
@@ -192,6 +194,8 @@ public sealed class DpsOverlayPresenter : IDisposable
         long   sessionTotal = _meter.CurrentOwnerSessionTotal;
         ulong  owner        = _meter.LikelySelfOwnerId;
         uint   maxHit       = _meter.MaxSingleHit;
+        uint   maxHitSess   = _meter.MaxSingleHitSession;
+        uint   maxHitEnc    = _meter.MaxSingleHitEncounter;
         string heroName     = _meter.CurrentHeroDisplayName;
         bool   bossOnly     = _meter.BossOnlyMode;
         var    encounter    = _meter.GetEncounterSnapshot();
@@ -202,7 +206,8 @@ public sealed class DpsOverlayPresenter : IDisposable
 
         var powerBreakdown = _meter.GetSelfPowerBreakdown(8, bossOnly && (encounter.IsActive || encounter.IsEnded));
 
-        PushUpdateToWindows(dps, total60s, sessionTotal, owner, maxHit, heroName, bossOnly, top5, encounter,
+        PushUpdateToWindows(dps, total60s, sessionTotal, owner, maxHit, maxHitSess, maxHitEnc,
+            heroName, bossOnly, top5, encounter,
             bossDps, bossTotal60s, bossTop5, bossEncounter, powerBreakdown);
     }
 
@@ -229,6 +234,8 @@ public sealed class DpsOverlayPresenter : IDisposable
             _meter.CurrentOwnerSessionTotal,
             _meter.LikelySelfOwnerId,
             _meter.MaxSingleHit,
+            _meter.MaxSingleHitSession,
+            _meter.MaxSingleHitEncounter,
             _meter.CurrentHeroDisplayName,
             bossOnly,
             top5,
@@ -276,7 +283,8 @@ public sealed class DpsOverlayPresenter : IDisposable
 
     private void PushUpdateToWindows(
         double dps, long total60s, long sessionTotal,
-        ulong owner, uint maxHit, string heroName,
+        ulong owner, uint maxHit, uint maxHitSession, uint maxHitEncounter,
+        string heroName,
         bool bossOnly,
         IReadOnlyList<DpsMeter.HeroShareEntry>? top5,
         DpsMeter.EncounterSnapshot encounter,
@@ -285,10 +293,12 @@ public sealed class DpsOverlayPresenter : IDisposable
         DpsMeter.EncounterSnapshot bossEncounter,
         IReadOnlyList<DpsMeter.PowerBreakdownEntry>? powerBreakdown)
     {
-        _overlayWindow?.UpdateDps(dps, total60s, sessionTotal, owner, maxHit, heroName, bossOnly,
-            top5, encounter, bossDps, bossTotal60s, bossTop5, bossEncounter, powerBreakdown);
-        _liveWindow?.UpdateDps(dps, total60s, sessionTotal, owner, maxHit, heroName, bossOnly,
-            top5, encounter, bossDps, bossTotal60s, bossTop5, bossEncounter, powerBreakdown);
+        _overlayWindow?.UpdateDps(dps, total60s, sessionTotal, owner, maxHit, maxHitSession, maxHitEncounter,
+            heroName, bossOnly, top5, encounter,
+            bossDps, bossTotal60s, bossTop5, bossEncounter, powerBreakdown);
+        _liveWindow?.UpdateDps(dps, total60s, sessionTotal, owner, maxHit, maxHitSession, maxHitEncounter,
+            heroName, bossOnly, top5, encounter,
+            bossDps, bossTotal60s, bossTop5, bossEncounter, powerBreakdown);
     }
 
     private void SnapshotBossMeter(
@@ -518,6 +528,16 @@ public sealed class DpsOverlayPresenter : IDisposable
         _meter?.ResetSession();
         _bossMeter?.ResetSession();
         AppendLog("DpsOverlayPresenter: DPS cleared by user request");
+    }
+
+    /// <summary>Wipe the all-time max-hit record for the currently identified hero.  Routed
+    /// through both meters so the persisted file stays in sync regardless of which one happens
+    /// to fire next.  No-op when no hero is identified yet.</summary>
+    public void ResetMaxHitRecordNow()
+    {
+        _meter?.ResetSelfMaxHitRecord();
+        _bossMeter?.ResetSelfMaxHitRecord();
+        AppendLog("DpsOverlayPresenter: max-hit record cleared by user request");
     }
 
     public void OpenReportViewer()

@@ -208,6 +208,96 @@ public sealed class DpsMeterCoreTests : IDisposable
         Assert.Equal(200_000L, breakdown.Sum(p => p.TotalDamage));
     }
 
+    // ── Max-hit scopes (session / fight / record) ────────────────────────────────────────
+
+    [Fact]
+    public void MaxSingleHitSession_TracksBiggestHitAcrossAllEvents()
+    {
+        ulong self = 1, boss = 9001;
+        RegisterSelf(self);
+        _meter.TestRegisterEntity(boss, BossProtoIdx);
+
+        _meter.TestInjectDamage(boss, self, 1u, 10_000, T(0));
+        _meter.TestInjectDamage(boss, self, 1u, 25_000, T(1));   // <- biggest
+        _meter.TestInjectDamage(boss, self, 1u, 18_000, T(2));
+
+        Assert.Equal(25_000u, _meter.MaxSingleHitSession);
+    }
+
+    [Fact]
+    public void MaxSingleHitEncounter_TracksFightLocalMaximum_AndResetsBetweenFights()
+    {
+        ulong self = 1, boss1 = 9001, boss2 = 9002;
+        RegisterSelf(self);
+        _meter.TestRegisterEntity(boss1, BossProtoIdx);
+        _meter.TestRegisterEntity(boss2, BossProtoIdx);
+
+        // Fight 1: peak 25k.
+        _meter.TestInjectDamage(boss1, self, 1u, 10_000, T(0));
+        _meter.TestInjectDamage(boss1, self, 1u, 25_000, T(1));
+        Assert.Equal(25_000u, _meter.MaxSingleHitEncounter);
+        Assert.Equal(25_000u, _meter.MaxSingleHitSession);
+
+        _meter.TestInjectEntityKilled(boss1, T(2));
+
+        // Re-register boss2 (kill purged the prototype cache for boss1).
+        _meter.TestRegisterEntity(boss2, BossProtoIdx);
+
+        // Fight 2: peak 15k — encounter scope must reset to 0 first, session must keep 25k.
+        _meter.TestInjectDamage(boss2, self, 1u, 15_000, T(10));
+        Assert.Equal(15_000u, _meter.MaxSingleHitEncounter);
+        Assert.Equal(25_000u, _meter.MaxSingleHitSession);
+    }
+
+    [Fact]
+    public void ResetSession_ClearsSessionAndEncounter_PreservesRecord()
+    {
+        ulong self = 1, boss = 9001;
+        RegisterSelf(self);
+        _meter.TestRegisterEntity(boss, BossProtoIdx);
+
+        // Land a hit that becomes both the session high AND the all-time record.
+        _meter.TestInjectDamage(boss, self, 1u, 50_000, T(0));
+        Assert.Equal(50_000u, _meter.MaxSingleHit);
+        Assert.Equal(50_000u, _meter.MaxSingleHitSession);
+        Assert.Equal(50_000u, _meter.MaxSingleHitEncounter);
+
+        _meter.ResetSession();
+
+        // Session + encounter scopes wiped; persisted record re-seeded from disk so the
+        // displayed PB doesn't go blank just because the user cleared the session.
+        Assert.Equal(0u, _meter.MaxSingleHitSession);
+        Assert.Equal(0u, _meter.MaxSingleHitEncounter);
+        Assert.Equal(50_000u, _meter.MaxSingleHit);
+    }
+
+    [Fact]
+    public void ResetSelfMaxHitRecord_ClearsRecordWithoutAffectingOtherScopes()
+    {
+        ulong self = 1, boss = 9001;
+        RegisterSelf(self);
+        _meter.TestRegisterEntity(boss, BossProtoIdx);
+
+        _meter.TestInjectDamage(boss, self, 1u, 50_000, T(0));
+        Assert.Equal(50_000u, _meter.MaxSingleHit);
+
+        _meter.ResetSelfMaxHitRecord();
+
+        Assert.Equal(0u, _meter.MaxSingleHit);
+        // Runtime scopes survive — only the persisted PB was wiped.
+        Assert.Equal(50_000u, _meter.MaxSingleHitSession);
+        Assert.Equal(50_000u, _meter.MaxSingleHitEncounter);
+    }
+
+    [Fact]
+    public void ResetSelfMaxHitRecord_NoHero_IsNoOp()
+    {
+        // No RegisterSelf — CurrentHeroDisplayName stays empty.  The method must short-circuit
+        // and not touch the dictionary, fire events, or throw.
+        _meter.ResetSelfMaxHitRecord();
+        Assert.Equal(0u, _meter.MaxSingleHit);
+    }
+
     // ── Leaderboard is empty when encounter has no boss damage ──────────────────────────
 
     [Fact]

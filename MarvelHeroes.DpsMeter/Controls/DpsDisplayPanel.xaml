@@ -41,9 +41,10 @@
                     <MenuItem x:Name="Scale200MenuItem" Header="200%" IsCheckable="True" Click="ScaleMenuItem_Click" Tag="2"/>
                 </MenuItem>
                 <Separator/>
-                <MenuItem Header="Save snapshot" Click="SaveSnapshotMenuItem_OnClick"/>
-                <MenuItem Header="Clear DPS"     Click="ClearDpsMenuItem_OnClick"/>
-                <MenuItem Header="View reports"  Click="ViewReportsMenuItem_OnClick"/>
+                <MenuItem Header="Save snapshot"           Click="SaveSnapshotMenuItem_OnClick"/>
+                <MenuItem Header="Clear DPS (session)"     Click="ClearDpsMenuItem_OnClick"/>
+                <MenuItem Header="Reset hero max-hit record…" Click="ResetMaxHitRecordMenuItem_OnClick"/>
+                <MenuItem Header="View reports"            Click="ViewReportsMenuItem_OnClick"/>
                 <Separator/>
                 <MenuItem x:Name="SwitchModeMenuItem" Header="Switch to window mode" Click="SwitchModeMenuItem_OnClick"/>
                 <Separator/>
@@ -106,6 +107,13 @@
                        Foreground="#FFFFE0A8"
                        HorizontalAlignment="Center"
                        Margin="0,4,0,0"/>
+            <TextBlock x:Name="MaxHitDetailText"
+                       Text=""
+                       FontFamily="{StaticResource MarvelFontSecondary}"
+                       FontSize="10"
+                       Foreground="#99FFE0A8"
+                       HorizontalAlignment="Center"
+                       Margin="0,1,0,0"/>
             <TextBlock x:Name="DetailText"
                        Text=""
                        FontFamily="{StaticResource MarvelFontSecondary}"

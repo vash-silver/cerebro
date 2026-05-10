@@ -31,6 +31,7 @@ public partial class DpsDisplayPanel : UserControl
                         DpsMeterClass.EncounterSnapshot,
                         IReadOnlyList<DpsMeterClass.PowerBreakdownEntry>?>? SaveSnapshotRequested;
     public event Action? ClearDpsRequested;
+    public event Action? ResetMaxHitRecordRequested;
     public event Action? ViewReportsRequested;
 
     public void Initialize(DpsOverlaySettingsFile settings, bool isOverlayMode)
@@ -80,6 +81,8 @@ public partial class DpsDisplayPanel : UserControl
         long totalDamageSession,
         ulong ownerEntityId,
         uint maxSingleHit,
+        uint maxSingleHitSession,
+        uint maxSingleHitEncounter,
         string heroDisplayName,
         bool bossOnlyMode,
         IReadOnlyList<DpsMeterClass.HeroShareEntry>? topHeroes,
@@ -113,7 +116,7 @@ public partial class DpsDisplayPanel : UserControl
         bool liveActive = dps > 0.1;
         double displayDps = liveActive ? dps : (totalDamage60s > 0 ? totalDamage60s / 60.0 : 0.0);
         DpsText.Text = displayDps <= 0.1 ? "—" : FormatDps(displayDps);
-        MaxHitText.Text = maxSingleHit == 0 ? "" : $"Max hit: {FormatTotal(maxSingleHit)}";
+        RenderMaxHits(maxSingleHit, maxSingleHitSession, maxSingleHitEncounter, encounter);
 
         string modeTag;
         if (ownerEntityId == 0)
@@ -456,11 +459,70 @@ public partial class DpsDisplayPanel : UserControl
             ApplyScale(scale);
     }
 
+    // ── Max-hit display ───────────────────────────────────────────────────────────────────────
+    // Three scopes coming from DpsMeter:
+    //   record    — all-time PB for this hero (persisted to dps-max-hits.json)
+    //   session   — biggest hit since last "Clear DPS" / app start
+    //   encounter — biggest hit in the current (or just-ended) boss fight
+    // Primary line uses whichever value the user most likely cares about RIGHT NOW (active fight
+    // beats session beats record).  Detail line lists the others when they meaningfully differ —
+    // skips redundancy so the overlay doesn't say "session 6.27M · record 6.27M" right after the
+    // first hit.
+    private void RenderMaxHits(uint record, uint sessionMax, uint encounterMax,
+        DpsMeterClass.EncounterSnapshot enc)
+    {
+        bool encActive = enc.IsActive || enc.IsEnded;
+        bool any = record > 0 || sessionMax > 0 || (encActive && encounterMax > 0);
+        if (!any)
+        {
+            MaxHitText.Text = "";
+            MaxHitDetailText.Text = "";
+            return;
+        }
+
+        uint primary;
+        string primaryLabel;
+        if (encActive && encounterMax > 0)
+        {
+            primary = encounterMax; primaryLabel = "fight";
+        }
+        else if (sessionMax > 0)
+        {
+            primary = sessionMax;   primaryLabel = "session";
+        }
+        else
+        {
+            primary = record;       primaryLabel = "record";
+        }
+        MaxHitText.Text = $"Max hit ({primaryLabel}): {FormatTotal(primary)}";
+
+        var details = new List<string>(2);
+        if (primaryLabel != "session" && sessionMax > 0 && sessionMax != primary)
+            details.Add($"session {FormatTotal(sessionMax)}");
+        if (primaryLabel != "record" && record > 0 && record != primary && record != sessionMax)
+            details.Add($"record {FormatTotal(record)}");
+        MaxHitDetailText.Text = details.Count > 0 ? string.Join("  ·  ", details) : "";
+    }
+
     // ── Menu actions ──────────────────────────────────────────────────────────────────────────
     private void SaveSnapshotMenuItem_OnClick(object sender, RoutedEventArgs e)
         => SaveSnapshotRequested?.Invoke(_lastTopHeroes, _lastEncounter, _lastPowerBreakdown);
     private void ClearDpsMenuItem_OnClick(object sender, RoutedEventArgs e)
         => ClearDpsRequested?.Invoke();
+    private void ResetMaxHitRecordMenuItem_OnClick(object sender, RoutedEventArgs e)
+    {
+        // The other reset paths (Clear DPS, encounter end) are non-destructive — they freeze /
+        // wipe in-memory state but never touch the persisted PB file.  This one DOES, so confirm
+        // before nuking the user's per-hero record.
+        var result = MessageBox.Show(
+            "Erase the saved max-hit record for the current hero?\n\nThis cannot be undone. " +
+            "Session and fight max-hit values are not affected.",
+            "Reset max-hit record",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+        if (result == MessageBoxResult.Yes)
+            ResetMaxHitRecordRequested?.Invoke();
+    }
     private void ViewReportsMenuItem_OnClick(object sender, RoutedEventArgs e)
         => ViewReportsRequested?.Invoke();
     private void SwitchModeMenuItem_OnClick(object sender, RoutedEventArgs e)

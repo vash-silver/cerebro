@@ -19,6 +19,7 @@ public partial class DpsOverlayWindow : Window
                         DpsMeterClass.EncounterSnapshot,
                         IReadOnlyList<DpsMeterClass.PowerBreakdownEntry>?>? SaveSnapshotRequested;
     public event Action?         ClearDpsRequested;
+    public event Action?         ResetMaxHitRecordRequested;
     public event Action?         ViewReportsRequested;
 
     public DpsOverlayWindow(DpsOverlaySettingsFile settings)
@@ -35,6 +36,7 @@ public partial class DpsOverlayWindow : Window
         Panel.BossOnlyToggled      += v  => BossOnlyToggled?.Invoke(v);
         Panel.SaveSnapshotRequested += (h, enc, p) => SaveSnapshotRequested?.Invoke(h, enc, p);
         Panel.ClearDpsRequested    += () => ClearDpsRequested?.Invoke();
+        Panel.ResetMaxHitRecordRequested += () => ResetMaxHitRecordRequested?.Invoke();
         Panel.ViewReportsRequested += () => ViewReportsRequested?.Invoke();
 
         SourceInitialized += OnSourceInitialized;
@@ -48,6 +50,8 @@ public partial class DpsOverlayWindow : Window
         long totalDamageSession,
         ulong ownerEntityId,
         uint maxSingleHit,
+        uint maxSingleHitSession,
+        uint maxSingleHitEncounter,
         string heroDisplayName,
         bool bossOnlyMode,
         IReadOnlyList<DpsMeterClass.HeroShareEntry>? topHeroes,
@@ -61,12 +65,14 @@ public partial class DpsOverlayWindow : Window
         if (!Dispatcher.CheckAccess())
         {
             Dispatcher.BeginInvoke(new Action(() => UpdateDps(
-                dps, totalDamage60s, totalDamageSession, ownerEntityId, maxSingleHit,
+                dps, totalDamage60s, totalDamageSession, ownerEntityId,
+                maxSingleHit, maxSingleHitSession, maxSingleHitEncounter,
                 heroDisplayName, bossOnlyMode, topHeroes, encounter,
                 bossDps, bossTotalDamage60s, bossTopHeroes, bossEncounter, powerBreakdown)));
             return;
         }
-        Panel.UpdateDps(dps, totalDamage60s, totalDamageSession, ownerEntityId, maxSingleHit,
+        Panel.UpdateDps(dps, totalDamage60s, totalDamageSession, ownerEntityId,
+            maxSingleHit, maxSingleHitSession, maxSingleHitEncounter,
             heroDisplayName, bossOnlyMode, topHeroes, encounter,
             bossDps, bossTotalDamage60s, bossTopHeroes, bossEncounter, powerBreakdown);
     }

@@ -643,8 +643,22 @@ public sealed class DpsMeter : IDisposable
     /// <summary>All-time personal-best single hit for <see cref="CurrentHeroDisplayName"/>.
     /// Reads from <see cref="_maxHitByHeroName"/>.  When the hero is not yet identified this
     /// stays 0 and rises the first time the avatar lands a hit we can attribute (either via
-    /// entity-proto or via power-proto — see the two-channel comment on the field block).</summary>
+    /// entity-proto or via power-proto — see the two-channel comment on the field block).
+    /// Preserved across <see cref="ResetSession"/>; only cleared by an explicit
+    /// <see cref="ResetSelfMaxHitRecord"/> call.</summary>
     public uint MaxSingleHit { get; private set; }
+
+    /// <summary>Biggest single hit by the local player since the last <see cref="ResetSession"/>
+    /// or app start.  Runtime-only — not persisted and not re-seeded from disk — so the user
+    /// gets a clean "this session's biggest hit" number that ignores the all-time record.</summary>
+    public uint MaxSingleHitSession { get; private set; }
+
+    /// <summary>Biggest single hit by the local player in the current boss encounter.  Updated
+    /// only when the hit is admitted to the encounter accumulator (boss-only mode, boss target).
+    /// Cleared on each new encounter start and on every encounter-discard path (region change,
+    /// stall timeout, frozen-fight discard, <see cref="ResetSession"/>).  Stays frozen at the
+    /// last value while an ended encounter is still being displayed.</summary>
+    public uint MaxSingleHitEncounter { get; private set; }
 
     /// <summary>Human-readable display name of the currently-credited avatar ("Iron Man", "Blade",
     /// …).  Empty string until identified. Populated from <see cref="HeroPrototypes.Names"/> when
@@ -766,6 +780,7 @@ public sealed class DpsMeter : IDisposable
                 _encounterStartUtc = DateTime.MinValue;
                 _encounterEndedUtc = DateTime.MinValue;
                 _lastEncounterDamageUtc = DateTime.MinValue;
+                MaxSingleHitEncounter = 0;
             }
             Diagnostic?.Invoke($"DpsMeter: BossOnlyMode = {value} (scoring windows cleared)");
             DpsChanged?.Invoke(this, EventArgs.Empty);
@@ -1726,7 +1741,15 @@ public sealed class DpsMeter : IDisposable
             CurrentDps = 0;
             CurrentOwnerTotal60s = 0;
             CurrentOwnerSessionTotal = 0;
-            MaxSingleHit = 0;
+            // Session / encounter max-hit are wiped (those scopes are defined by "since this
+            // reset").  All-time record is preserved: re-seed MaxSingleHit from disk so it stays
+            // visible on the overlay instead of going blank until a new hit beats the record.
+            MaxSingleHitSession   = 0;
+            MaxSingleHitEncounter = 0;
+            uint seededRecord = 0;
+            if (!string.IsNullOrEmpty(CurrentHeroDisplayName))
+                _maxHitByHeroName.TryGetValue(CurrentHeroDisplayName, out seededRecord);
+            MaxSingleHit = seededRecord;
 
             _encounterTotalsPerOwner.Clear();
             _engagedBossEntityIds.Clear();
@@ -1737,6 +1760,33 @@ public sealed class DpsMeter : IDisposable
         }
         DpsChanged?.Invoke(this, EventArgs.Empty);
         Diagnostic?.Invoke("DpsMeter: session reset by user request");
+    }
+
+    /// <summary>Erase the all-time max-hit record for <see cref="CurrentHeroDisplayName"/> —
+    /// both the in-memory entry in <see cref="_maxHitByHeroName"/> and the on-disk record in
+    /// <c>dps-max-hits.json</c>.  Other heroes' records are preserved.  No-op when no hero is
+    /// currently identified.  Destructive — there is no undo; the next big hit will start a new
+    /// record from scratch.  Session and encounter max-hit scopes are left alone.</summary>
+    public void ResetSelfMaxHitRecord()
+    {
+        string clearedHero = string.Empty;
+        bool   cleared     = false;
+        lock (_sync)
+        {
+            if (string.IsNullOrEmpty(CurrentHeroDisplayName)) return;
+            if (_maxHitByHeroName.Remove(CurrentHeroDisplayName))
+            {
+                clearedHero  = CurrentHeroDisplayName;
+                MaxSingleHit = 0;
+                cleared      = true;
+            }
+        }
+        if (cleared)
+        {
+            SaveMaxHits();
+            DpsChanged?.Invoke(this, EventArgs.Empty);
+            Diagnostic?.Invoke($"DpsMeter: max-hit record cleared for hero '{clearedHero}' by user request");
+        }
     }
 
     /// <summary>Load the persisted self-dbId from <see cref="SelfIdentityPath"/>, if any.
@@ -2018,6 +2068,8 @@ public sealed class DpsMeter : IDisposable
 
         bool changed;
         bool newRecord = false;
+        bool sessMaxHitChanged = false;
+        bool encMaxHitChanged  = false;
         double newDps;
         ulong newOwner;
         long newOwnerTotal;
@@ -2425,6 +2477,7 @@ public sealed class DpsMeter : IDisposable
                     _encounterStartUtc = DateTime.MinValue;
                     _encounterEndedUtc = DateTime.MinValue;
                     _lastEncounterDamageUtc = DateTime.MinValue;
+                    MaxSingleHitEncounter = 0;
                     Diagnostic?.Invoke($"DpsMeter: encounter cleared (new boss hit after frozen fight, {frozenOwners} owners discarded) — starting fresh");
                 }
 
@@ -2445,6 +2498,15 @@ public sealed class DpsMeter : IDisposable
 
                 _encounterTotalsPerOwner.TryGetValue(scoringOwner, out long encPrev);
                 _encounterTotalsPerOwner[scoringOwner] = encPrev + dmg;
+
+                // Encounter-scope max-hit (self only).  We're inside the boss-admit gate so by
+                // definition this hit counts toward the current fight; ownerIsSelf filters out
+                // peer / pet hits so the "Fight: X" number on the overlay stays personal.
+                if (ownerIsSelf && dmg > MaxSingleHitEncounter)
+                {
+                    MaxSingleHitEncounter = dmg;
+                    encMaxHitChanged = true;
+                }
 
                 // Record each owner's first hit so active-time DPS can be computed.
                 if (!_encounterFirstHitByOwner.ContainsKey(scoringOwner))
@@ -2569,6 +2631,15 @@ public sealed class DpsMeter : IDisposable
                 }
             }
 
+            // Session-scope max-hit (self only).  Runtime-only — reset by ResetSession,
+            // never reloaded from disk.  Tracked across any mode so the overlay can show
+            // a "since-clear biggest hit" number even when boss-only mode is off.
+            if (ownerIsSelf && dmg > MaxSingleHitSession)
+            {
+                MaxSingleHitSession = dmg;
+                sessMaxHitChanged = true;
+            }
+
             // Power breakdown tracking — self only, non-zero index.
             if (scoringOwner == _likelySelfOwnerId && e.PowerPrototypeEnumIndex != 0)
             {
@@ -2585,7 +2656,8 @@ public sealed class DpsMeter : IDisposable
                 ? sessTotal
                 : 0;
 
-            changed = Math.Abs(newDps - CurrentDps) > 0.5 || newOwner != prevSelfOwner || maxChanged || heroChanged;
+            changed = Math.Abs(newDps - CurrentDps) > 0.5 || newOwner != prevSelfOwner
+                || maxChanged || sessMaxHitChanged || encMaxHitChanged || heroChanged;
             CurrentDps = newDps;
             CurrentOwnerTotal60s = newOwnerTotal;
             CurrentOwnerSessionTotal = newOwnerSessionTotal;
@@ -2720,6 +2792,7 @@ public sealed class DpsMeter : IDisposable
                             _encounterStartUtc = DateTime.MinValue;
                             _encounterEndedUtc = DateTime.MinValue;
                             _lastEncounterDamageUtc = DateTime.MinValue;
+                            MaxSingleHitEncounter = 0;
                             evictEndedAutoCleared = true;
                         }
                         else
@@ -2769,6 +2842,7 @@ public sealed class DpsMeter : IDisposable
                     _encounterStartUtc = DateTime.MinValue;
                     _encounterEndedUtc = DateTime.MinValue;
                     _lastEncounterDamageUtc = DateTime.MinValue;
+                    MaxSingleHitEncounter = 0;
                     stallEndedAutoCleared = true;
                 }
                 else
@@ -3104,6 +3178,7 @@ public sealed class DpsMeter : IDisposable
             _encounterStartUtc = DateTime.MinValue;
             _encounterEndedUtc = DateTime.MinValue;
             _lastEncounterDamageUtc = DateTime.MinValue;
+            MaxSingleHitEncounter = 0;
 
             // Nearby-AOI set rotates wholesale when we zone — every peer left our AOI and
             // we'll get fresh "nearby" broadcasts for whoever is in the new region within a
@@ -3256,6 +3331,7 @@ public sealed class DpsMeter : IDisposable
                     _encounterStartUtc = DateTime.MinValue;
                     _encounterEndedUtc = DateTime.MinValue;
                     _lastEncounterDamageUtc = DateTime.MinValue;
+                    MaxSingleHitEncounter = 0;
                     autoClearedNoSelf = true;
                 }
                 else
