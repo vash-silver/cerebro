@@ -4,7 +4,7 @@
         xmlns:controls="clr-namespace:MarvelHeroes.DpsMeter.Controls"
         Title="DPS Meter"
         SizeToContent="WidthAndHeight"
-        ResizeMode="CanMinimize"
+        ResizeMode="CanResizeWithGrip"
         ShowInTaskbar="True"
         WindowStartupLocation="CenterScreen">
     <controls:DpsDisplayPanel x:Name="Panel"/>

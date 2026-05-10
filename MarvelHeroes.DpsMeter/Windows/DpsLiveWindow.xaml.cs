@@ -26,6 +26,10 @@ public partial class DpsLiveWindow : Window
         InitializeComponent();
         Panel.Initialize(settings, isOverlayMode: false);
 
+        // Let the window auto-size to content on first show, then hand control back
+        // to the user so they can resize freely.
+        Loaded += (_, _) => SizeToContent = SizeToContent.Manual;
+
         Panel.DragStarted          += () => { };  // window chrome handles dragging
         Panel.CloseRequested       += () => { };  // close button hidden in window mode
         Panel.SwitchModeRequested  += () => SwitchModeRequested?.Invoke();
