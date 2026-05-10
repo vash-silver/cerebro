@@ -13,6 +13,11 @@ namespace MarvelHeroes.DpsMeter.Controls;
 
 public partial class DpsDisplayPanel : UserControl
 {
+    public DpsDisplayPanel()
+    {
+        InitializeComponent();
+    }
+
     private DpsOverlaySettingsFile _settings = new();
 
     public bool InitialBossOnlyPreference { get; private set; }
