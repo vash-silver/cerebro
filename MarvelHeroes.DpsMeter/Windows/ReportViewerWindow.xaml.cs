@@ -27,6 +27,7 @@ public partial class ReportViewerWindow : Window
 
     private List<SnapshotListItem> _items = new();
     private DpsSnapshot? _selected;
+    private int          _selectedHeroIndex = -1;  // index into _selected.Leaderboard
 
     private FileSystemWatcher? _watcher;
     private DispatcherTimer?   _refreshDebounce;
@@ -234,8 +235,10 @@ public partial class ReportViewerWindow : Window
         var peerFg       = new SolidColorBrush(Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF));
 
         var lbRows = new List<LeaderboardRow>();
-        foreach (var r in s.Leaderboard)
+        int selfLbIndex = -1;
+        for (int i = 0; i < s.Leaderboard.Count; i++)
         {
+            var r = s.Leaderboard[i];
             string name = !string.IsNullOrEmpty(r.Name) && !string.IsNullOrEmpty(r.PlayerName)
                 ? $"{r.Name} ({r.PlayerName})"
                 : !string.IsNullOrEmpty(r.Name) ? r.Name
@@ -243,29 +246,76 @@ public partial class ReportViewerWindow : Window
                 : r.IsSelf ? "you" : "?";
             lbRows.Add(new LeaderboardRow
             {
-                DisplayName = name,
-                DpsText     = r.Dps   > 0.1 ? FormatNum(r.Dps)   : "",
-                TotalText   = r.Total > 0    ? FormatNum(r.Total) : "",
-                PctText     = $"{r.Percent:0}%",
-                BarWidth    = DetailTrackWidthPx * (r.Percent / maxPct),
-                BarFill     = r.IsSelf ? selfBarBrush : peerBarBrush,
-                TextColor   = r.IsSelf ? selfFg : peerFg,
+                DisplayName    = name,
+                DpsText        = r.Dps   > 0.1 ? FormatNum(r.Dps)   : "",
+                TotalText      = r.Total > 0    ? FormatNum(r.Total) : "",
+                PctText        = $"{r.Percent:0}%",
+                BarWidth       = DetailTrackWidthPx * (r.Percent / maxPct),
+                BarFill        = r.IsSelf ? selfBarBrush : peerBarBrush,
+                TextColor      = r.IsSelf ? selfFg : peerFg,
+                LeaderboardIdx = i,
             });
+            if (r.IsSelf && selfLbIndex < 0) selfLbIndex = i;
         }
+        LeaderboardItems.SelectionChanged -= LeaderboardItems_SelectionChanged;
         LeaderboardItems.ItemsSource = lbRows;
+        LeaderboardItems.SelectionChanged += LeaderboardItems_SelectionChanged;
 
-        // Ability breakdown
-        if (s.PowerBreakdown.Count > 0)
+        // Default selection: self row, or first row if no self entry.
+        _selectedHeroIndex = selfLbIndex >= 0 ? selfLbIndex : (s.Leaderboard.Count > 0 ? 0 : -1);
+        if (_selectedHeroIndex >= 0 && _selectedHeroIndex < lbRows.Count)
+            LeaderboardItems.SelectedIndex = _selectedHeroIndex;
+
+        // Ability breakdown — show the selected leaderboard player's abilities.
+        ShowPowerBreakdownForHero(s, _selectedHeroIndex);
+    }
+
+    private void LeaderboardItems_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_selected == null) return;
+        if (LeaderboardItems.SelectedItem is LeaderboardRow row)
+        {
+            _selectedHeroIndex = row.LeaderboardIdx;
+            ShowPowerBreakdownForHero(_selected, _selectedHeroIndex);
+        }
+    }
+
+    private void ShowPowerBreakdownForHero(DpsSnapshot s, int heroIndex)
+    {
+        // Find which hero's breakdown to show; fall back to the top-level snapshot breakdown
+        // (pre-per-player-tracking saves) when no per-hero data is available.
+        List<DpsSnapshot.PowerEntry>? powers = null;
+        string playerLabel = "MY";
+
+        if (heroIndex >= 0 && heroIndex < s.Leaderboard.Count)
+        {
+            var hero = s.Leaderboard[heroIndex];
+            if (hero.PowerBreakdown.Count > 0)
+            {
+                powers = hero.PowerBreakdown;
+                string displayName = !string.IsNullOrEmpty(hero.Name) ? hero.Name
+                    : !string.IsNullOrEmpty(hero.PlayerName) ? hero.PlayerName
+                    : hero.IsSelf ? "MY" : "?";
+                playerLabel = hero.IsSelf ? "MY" : displayName.ToUpperInvariant();
+            }
+        }
+
+        // Fallback for old saves that stored breakdown at snapshot level.
+        if (powers == null && s.PowerBreakdown.Count > 0)
+            powers = s.PowerBreakdown;
+
+        if (powers != null && powers.Count > 0)
         {
             PowerSectionHeader.Visibility = Visibility.Visible;
-            double pctSum = 0;
-            foreach (var p in s.PowerBreakdown) pctSum += p.Percent;
+            PowerSectionTitle.Text = $"{playerLabel} ABILITIES";
+
+            double pctSum = powers.Sum(p => p.Percent);
             if (pctSum <= 0) pctSum = 100;
 
             var pwrRows = new List<PowerRow>();
-            for (int i = 0; i < s.PowerBreakdown.Count; i++)
+            for (int i = 0; i < powers.Count; i++)
             {
-                var p = s.PowerBreakdown[i];
+                var p = powers[i];
                 var c = s_pwrColors[i % s_pwrColors.Length];
                 pwrRows.Add(new PowerRow
                 {
@@ -282,10 +332,9 @@ public partial class ReportViewerWindow : Window
             }
             PowerItems.ItemsSource = pwrRows;
 
-            // Totals row
-            int   totalHits  = s.PowerBreakdown.Sum(p => p.Hits);
-            long  totalDmg   = s.PowerBreakdown.Sum(p => p.TotalDamage);
-            long  maxHitAll  = s.PowerBreakdown.Max(p => p.MaxHit);
+            int   totalHits  = powers.Sum(p => p.Hits);
+            long  totalDmg   = powers.Sum(p => p.TotalDamage);
+            long  maxHitAll  = powers.Max(p => p.MaxHit);
             long  avgAll     = totalHits > 0 ? totalDmg / totalHits : 0;
             TotalsHits.Text  = totalHits + "x";
             TotalsAvg.Text   = avgAll > 0 ? FormatNum(avgAll) : "";
@@ -316,24 +365,52 @@ public partial class ReportViewerWindow : Window
         double maxDps = points.Max(p => p.Dps);
         if (maxDps <= 0) return;
 
-        int    n    = points.Count;
-        double barW = canvasW / n;
-        double gap  = barW > 3 ? 1 : 0;
+        int n = points.Count;
+        double step = canvasW / Math.Max(n - 1, 1);
+
+        var linePoints   = new PointCollection(n);
+        var filledPoints = new PointCollection(n + 2);
+        filledPoints.Add(new Point(0, canvasH));
 
         for (int i = 0; i < n; i++)
         {
-            double h = (points[i].Dps / maxDps) * canvasH;
-            h = Math.Max(1, h);
-            var rect = new Rectangle
+            double x = i == n - 1 ? canvasW : i * step;
+            double y = canvasH - (points[i].Dps / maxDps) * (canvasH - 2);
+            y = Math.Max(0, Math.Min(canvasH, y));
+            linePoints.Add(new Point(x, y));
+            filledPoints.Add(new Point(x, y));
+        }
+        filledPoints.Add(new Point(canvasW, canvasH));
+
+        // Filled area
+        SparkCanvas.Children.Add(new Polygon
+        {
+            Points          = filledPoints,
+            Fill            = new SolidColorBrush(Color.FromArgb(0x28, 0xFF, 0x6B, 0x00)),
+            StrokeThickness = 0,
+        });
+
+        // Line
+        SparkCanvas.Children.Add(new Polyline
+        {
+            Points          = linePoints,
+            Stroke          = new SolidColorBrush(Color.FromArgb(0xCC, 0xFF, 0x6B, 0x00)),
+            StrokeThickness = 1.5,
+            StrokeLineJoin  = PenLineJoin.Round,
+        });
+
+        // Dots at each sample
+        foreach (var pt in linePoints)
+        {
+            var dot = new Ellipse
             {
-                Width   = Math.Max(1, barW - gap),
-                Height  = h,
-                RadiusX = 1, RadiusY = 1,
-                Fill    = new SolidColorBrush(Color.FromArgb(0xAA, 0xFF, 0x6B, 0x00)),
+                Width  = 3,
+                Height = 3,
+                Fill   = new SolidColorBrush(Color.FromArgb(0xDD, 0xFF, 0x6B, 0x00)),
             };
-            Canvas.SetLeft(rect, i * barW);
-            Canvas.SetTop(rect, canvasH - h);
-            SparkCanvas.Children.Add(rect);
+            Canvas.SetLeft(dot, pt.X - 1.5);
+            Canvas.SetTop(dot, pt.Y - 1.5);
+            SparkCanvas.Children.Add(dot);
         }
     }
 
@@ -487,13 +564,14 @@ public partial class ReportViewerWindow : Window
 
     private sealed class LeaderboardRow
     {
-        public string DisplayName { get; init; } = "";
-        public string DpsText     { get; init; } = "";
-        public string TotalText   { get; init; } = "";
-        public string PctText     { get; init; } = "";
-        public double BarWidth    { get; init; }
-        public Brush  BarFill     { get; init; } = Brushes.Transparent;
-        public Brush  TextColor   { get; init; } = Brushes.White;
+        public string DisplayName    { get; init; } = "";
+        public string DpsText        { get; init; } = "";
+        public string TotalText      { get; init; } = "";
+        public string PctText        { get; init; } = "";
+        public double BarWidth       { get; init; }
+        public Brush  BarFill        { get; init; } = Brushes.Transparent;
+        public Brush  TextColor      { get; init; } = Brushes.White;
+        public int    LeaderboardIdx { get; init; }
     }
 
     private sealed class PowerRow

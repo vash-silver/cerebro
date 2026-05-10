@@ -33,6 +33,7 @@ public sealed class DpsSnapshot
         public double Dps        { get; set; }
         public long   Total      { get; set; }
         public double Percent    { get; set; }
+        public List<PowerEntry> PowerBreakdown { get; set; } = new();
     }
 
     public sealed class PowerEntry

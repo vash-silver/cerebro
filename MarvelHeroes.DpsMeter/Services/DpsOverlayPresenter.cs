@@ -54,6 +54,11 @@ public sealed class DpsOverlayPresenter : IDisposable
 
     public bool IsRunning => _meter != null;
 
+    /// <summary>Exposed for <see cref="TestModeDataFeed"/> so the feed can inject synthetic events
+    /// directly into the running meters without going through the sniffer.  Non-null after <see cref="Start"/>.</summary>
+    internal DpsMeter? Meter     => _meter;
+    internal DpsMeter? BossMeter => _bossMeter;
+
     /// <summary>Optional predicate polled at ~4 Hz. When it returns <c>false</c>, the overlay
     /// hides itself; ignored when in window mode. Safe to touch WPF directly inside the delegate.</summary>
     public Func<bool>? ShouldBeVisible { get; set; }
@@ -424,13 +429,28 @@ public sealed class DpsOverlayPresenter : IDisposable
         if (_bossMeter is null) return;
         if (encounter.SelfTotal <= 0) return;  // no personal damage → skip
 
+        // Hero name: prefer the normal meter; fall back to the self entry in the leaderboard
+        // so short fights where _meter hasn't yet identified the player still get a name.
         string heroName = _meter?.CurrentHeroDisplayName ?? "";
+        if (string.IsNullOrEmpty(heroName) && topHeroes != null)
+            heroName = topHeroes.FirstOrDefault(h => h.IsSelf).Name ?? "";
+
         string label = string.IsNullOrEmpty(heroName)
             ? "Boss Fight"
             : $"Boss Fight — {heroName}";
 
         int duration = encounter.StartUtc != DateTime.MinValue && encounter.EndUtc != DateTime.MinValue
             ? (int)(encounter.EndUtc - encounter.StartUtc).TotalSeconds : 0;
+
+        // Self DPS comes from the self entry in the leaderboard (active-time DPS computed by
+        // the meter); fall back to simple total/duration if the self row isn't in the list.
+        double selfDps = 0;
+        if (topHeroes != null)
+        {
+            foreach (var h in topHeroes) if (h.IsSelf) { selfDps = h.Dps; break; }
+        }
+        if (selfDps <= 0 && duration > 0)
+            selfDps = (double)encounter.SelfTotal / duration;
 
         var id   = DateTime.UtcNow.ToString("yyyyMMddTHHmmssZ");
         var snap = new DpsSnapshot
@@ -440,28 +460,42 @@ public sealed class DpsOverlayPresenter : IDisposable
             Label              = label,
             Mode               = "Boss Only",
             HeroName           = heroName,
-            Dps                = _bossMeter.CurrentDps,
+            Dps                = selfDps,
             TotalDamage        = encounter.SelfTotal,
             MaxSingleHit       = _meter?.MaxSingleHit ?? 0,
             EncounterEnded     = true,
             EncounterSelfTotal = encounter.SelfTotal,
             IsAutoSave         = true,
-            IsPersonalBest     = PersonalBestStore.CheckAndUpdate(heroName, _bossMeter.CurrentDps),
+            IsPersonalBest     = PersonalBestStore.CheckAndUpdate(heroName, selfDps),
             DurationSeconds    = duration,
             DpsTimeline        = _sparkSamples.Select(s => new DpsSnapshot.SparkPoint { Second = s.Second, Dps = s.Dps }).ToList(),
         };
 
         if (topHeroes != null)
             foreach (var r in topHeroes)
-                snap.Leaderboard.Add(new DpsSnapshot.HeroEntry
+            {
+                var heroEntry = new DpsSnapshot.HeroEntry
                 {
                     Name       = r.Name,
                     PlayerName = r.PlayerName,
                     IsSelf     = r.IsSelf,
-                    Dps        = r.Dps,
+                    Dps        = r.Dps,  // active-time DPS already computed by the meter
                     Total      = r.Total60s,
                     Percent    = r.Percent,
-                });
+                };
+                // Per-player power breakdown (up to 20 abilities per player).
+                var ownerBreakdown = _bossMeter.GetPowerBreakdownForOwner(r.OwnerId, 20);
+                foreach (var p in ownerBreakdown)
+                    heroEntry.PowerBreakdown.Add(new DpsSnapshot.PowerEntry
+                    {
+                        Name        = p.Name,
+                        Hits        = p.Hits,
+                        TotalDamage = p.TotalDamage,
+                        Percent     = p.Percent,
+                        MaxHit      = p.MaxHit,
+                    });
+                snap.Leaderboard.Add(heroEntry);
+            }
 
         if (powerBreakdown != null)
             foreach (var p in powerBreakdown)

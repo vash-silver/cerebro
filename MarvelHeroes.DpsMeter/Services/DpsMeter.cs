@@ -116,7 +116,8 @@ public sealed class DpsMeter : IDisposable
     // kill leaves the breakdown on screen — the user can dismiss it by toggling boss
     // mode or zoning, but most of the time they WANT to keep reading it.
 
-    private readonly MhMissionSniffer _sniffer;
+    private readonly MhMissionSniffer? _sniffer;
+    private readonly bool _isTestInstance;
     private readonly object _sync = new();
 
     // ── Hero identification & per-hero max-hit tracker ──────────────────────────────────────────
@@ -600,6 +601,15 @@ public sealed class DpsMeter : IDisposable
     private readonly Dictionary<uint, (int Hits, long Dmg, long MaxHit)> _selfPowerHitsSession   = new();
     private readonly Dictionary<uint, (int Hits, long Dmg, long MaxHit)> _selfPowerHitsEncounter = new();
 
+    // Per-owner first-hit UTC for the current boss encounter — used to compute active-time DPS
+    // (encounter_total / (fight_end - owner_first_hit)), which is fairer than
+    // fight_total / fight_duration when players joined the fight at different times.
+    private readonly Dictionary<ulong, DateTime> _encounterFirstHitByOwner = new();
+
+    // Per-power hit tracking for ALL scoring owners during the current boss encounter.
+    // Cleared on the same lifecycle as _encounterTotalsPerOwner.
+    private readonly Dictionary<ulong, Dictionary<uint, (int Hits, long Dmg, long MaxHit)>> _powerHitsByOwnerEncounter = new();
+
     // Separate (shorter) queue for the instant 5 s DPS number.  We could derive this from
     // `_scoring` by scanning it on every tick, but keeping a dedicated queue avoids the scan
     // and lets the scoring queue stay decoupled (different window size, different semantics).
@@ -749,6 +759,8 @@ public sealed class DpsMeter : IDisposable
                 // user toggles modes (mode flip is a manual UI act, not a kill event).
                 _encounterTotalsPerOwner.Clear();
                 _selfPowerHitsEncounter.Clear();
+                _encounterFirstHitByOwner.Clear();
+                _powerHitsByOwnerEncounter.Clear();
                 _engagedBossEntityIds.Clear();
                 _lastHitPerEngagedBoss.Clear();
                 _encounterStartUtc = DateTime.MinValue;
@@ -878,6 +890,15 @@ public sealed class DpsMeter : IDisposable
         LoadMaxHits();
         LoadPlayerIndex();
         LoadSelfIdentity();
+    }
+
+    /// <summary>Test-only constructor. No sniffer subscription, no disk I/O.
+    /// Use <c>TestInject*</c> / <c>TestRegister*</c> / <c>TestSet*</c> methods to drive state.</summary>
+    internal DpsMeter(bool forTestingOnly)
+    {
+        _ = forTestingOnly;
+        _sniffer = null;
+        _isTestInstance = true;
     }
 
     private void OnCommunityMemberUpdated(object? sender, CommunityMemberUpdatedEvent e)
@@ -1699,6 +1720,8 @@ public sealed class DpsMeter : IDisposable
             _sessionTotalsPerOwner.Clear();
             _selfPowerHitsSession.Clear();
             _selfPowerHitsEncounter.Clear();
+            _encounterFirstHitByOwner.Clear();
+            _powerHitsByOwnerEncounter.Clear();
             _instant.Clear();
             CurrentDps = 0;
             CurrentOwnerTotal60s = 0;
@@ -2395,6 +2418,8 @@ public sealed class DpsMeter : IDisposable
                     int frozenOwners = _encounterTotalsPerOwner.Count;
                     _encounterTotalsPerOwner.Clear();
                     _selfPowerHitsEncounter.Clear();
+                    _encounterFirstHitByOwner.Clear();
+                    _powerHitsByOwnerEncounter.Clear();
                     _engagedBossEntityIds.Clear();
                     _lastHitPerEngagedBoss.Clear();
                     _encounterStartUtc = DateTime.MinValue;
@@ -2420,6 +2445,20 @@ public sealed class DpsMeter : IDisposable
 
                 _encounterTotalsPerOwner.TryGetValue(scoringOwner, out long encPrev);
                 _encounterTotalsPerOwner[scoringOwner] = encPrev + dmg;
+
+                // Record each owner's first hit so active-time DPS can be computed.
+                if (!_encounterFirstHitByOwner.ContainsKey(scoringOwner))
+                    _encounterFirstHitByOwner[scoringOwner] = now;
+
+                // Track per-power breakdown for all scoring owners (not just self).
+                if (e.PowerPrototypeEnumIndex != 0)
+                {
+                    if (!_powerHitsByOwnerEncounter.TryGetValue(scoringOwner, out var ownerPowers))
+                        _powerHitsByOwnerEncounter[scoringOwner] = ownerPowers = new();
+                    ownerPowers.TryGetValue(e.PowerPrototypeEnumIndex, out var op);
+                    ownerPowers[e.PowerPrototypeEnumIndex] = (op.Hits + 1, op.Dmg + dmg, Math.Max(op.MaxHit, dmg));
+                }
+
                 // Bump the stall watchdog — Tick uses this to declare the fight over if
                 // EVERY player goes silent for EncounterStallTimeout (boss despawn, AOI
                 // exit, kill-event lost in transit, etc.).  Any-owner timestamp on purpose;
@@ -2674,6 +2713,8 @@ public sealed class DpsMeter : IDisposable
                         if (evictSelfTotal == 0)
                         {
                             _encounterTotalsPerOwner.Clear();
+                            _encounterFirstHitByOwner.Clear();
+                            _powerHitsByOwnerEncounter.Clear();
                             _engagedBossEntityIds.Clear();
                             _lastHitPerEngagedBoss.Clear();
                             _encounterStartUtc = DateTime.MinValue;
@@ -2721,6 +2762,8 @@ public sealed class DpsMeter : IDisposable
                 if (stallSelfTotal == 0)
                 {
                     _encounterTotalsPerOwner.Clear();
+                    _encounterFirstHitByOwner.Clear();
+                    _powerHitsByOwnerEncounter.Clear();
                     _engagedBossEntityIds.Clear();
                     _lastHitPerEngagedBoss.Clear();
                     _encounterStartUtc = DateTime.MinValue;
@@ -2972,6 +3015,8 @@ public sealed class DpsMeter : IDisposable
             _sessionTotalsPerOwner.Clear();
             _selfPowerHitsSession.Clear();
             _selfPowerHitsEncounter.Clear();
+            _encounterFirstHitByOwner.Clear();
+            _powerHitsByOwnerEncounter.Clear();
             _instant.Clear();
             _likelySelfOwnerId = 0;
             _likelySelfChosenAt = default;
@@ -3336,7 +3381,12 @@ public sealed class DpsMeter : IDisposable
             var boundDbIds = new HashSet<ulong>(_dbIdByAvatarId.Values);
             foreach (var cv in _dbIdByPlayerEntityId.Values) boundDbIds.Add(cv);
 
-            var dpsMap = BuildInstantDpsMapLocked();
+            // Active-time DPS: use the fight-end time (or now if still live) minus each
+            // owner's first hit rather than the noisy 5s instant window.  Players who join
+            // late or deal bursts at different times get an accurate per-player rate.
+            DateTime encEffectiveEnd = _encounterEndedUtc != DateTime.MinValue
+                ? _encounterEndedUtc : DateTime.UtcNow;
+
             var rows = new List<HeroShareEntry>(_encounterTotalsPerOwner.Count);
             foreach (var kv in _encounterTotalsPerOwner)
             {
@@ -3354,7 +3404,7 @@ public sealed class DpsMeter : IDisposable
                     IsSelf     = isSelf,
                     PlayerName = nickname,
                     OwnerId    = kv.Key,
-                    Dps        = dpsMap.TryGetValue(kv.Key, out double d) ? d : 0.0,
+                    // Dps computed after coalescing — do not set here.
                 });
             }
 
@@ -3385,6 +3435,37 @@ public sealed class DpsMeter : IDisposable
                 return c != 0 ? c : string.CompareOrdinal(a.Name, b.Name);
             });
             if (rows.Count > max) rows.RemoveRange(max, rows.Count - max);
+
+            // Compute active-time DPS AFTER coalescing so merged rows (pets folded into owner,
+            // same-player swaps summed, etc.) get the correct rate based on their combined
+            // total.  Computing before coalescing loses the merged damage; computing after means
+            // OwnerId may have shifted to a high-damage summon whose first-hit is in the dict —
+            // fall back to fight duration when the first-hit lookup misses.
+            for (int i = 0; i < rows.Count; i++)
+            {
+                var r = rows[i];
+                double activeDps;
+                if (_encounterFirstHitByOwner.TryGetValue(r.OwnerId, out DateTime ownerFirst)
+                    && ownerFirst < encEffectiveEnd)
+                {
+                    double secs = Math.Max(1.0, (encEffectiveEnd - ownerFirst).TotalSeconds);
+                    activeDps = r.Total60s / secs;
+                }
+                else
+                {
+                    // OwnerId changed during coalescing — use fight duration as denominator.
+                    double secs = _encounterStartUtc != DateTime.MinValue
+                        ? Math.Max(1.0, (encEffectiveEnd - _encounterStartUtc).TotalSeconds)
+                        : 1.0;
+                    activeDps = r.Total60s / secs;
+                }
+                rows[i] = new HeroShareEntry
+                {
+                    Name = r.Name, Total60s = r.Total60s, Percent = r.Percent,
+                    IsSelf = r.IsSelf, PlayerName = r.PlayerName, OwnerId = r.OwnerId,
+                    Dps = activeDps,
+                };
+            }
 
             // Same anonymous-tag pass as the 60s variant — peers without resolved nicknames
             // get a stable per-owner #XXXX hash so the user can distinguish unnamed players.
@@ -3455,6 +3536,37 @@ public sealed class DpsMeter : IDisposable
                     MaxHit      = kv.Value.MaxHit,
                 });
             }
+            rows.Sort((a, b) => b.TotalDamage.CompareTo(a.TotalDamage));
+            if (rows.Count > max) rows.RemoveRange(max, rows.Count - max);
+            return rows;
+        }
+    }
+
+    /// <summary>Returns the top <paramref name="max"/> powers by total damage for any scoring
+    /// owner during the current or last-frozen boss encounter.  Empty when the owner has no
+    /// recorded hits or boss-only mode was never active.</summary>
+    public IReadOnlyList<PowerBreakdownEntry> GetPowerBreakdownForOwner(ulong ownerId, int max)
+    {
+        if (max <= 0 || ownerId == 0) return Array.Empty<PowerBreakdownEntry>();
+        lock (_sync)
+        {
+            if (!_powerHitsByOwnerEncounter.TryGetValue(ownerId, out var source) || source.Count == 0)
+                return Array.Empty<PowerBreakdownEntry>();
+            long grandTotal = 0;
+            foreach (var kv in source) grandTotal += kv.Value.Dmg;
+            if (grandTotal <= 0) return Array.Empty<PowerBreakdownEntry>();
+
+            var rows = new List<PowerBreakdownEntry>(source.Count);
+            foreach (var kv in source)
+                rows.Add(new PowerBreakdownEntry
+                {
+                    PowerIndex  = kv.Key,
+                    Name        = PowerNames.Get(kv.Key) ?? $"#{kv.Key}",
+                    Hits        = kv.Value.Hits,
+                    TotalDamage = kv.Value.Dmg,
+                    Percent     = kv.Value.Dmg * 100.0 / grandTotal,
+                    MaxHit      = kv.Value.MaxHit,
+                });
             rows.Sort((a, b) => b.TotalDamage.CompareTo(a.TotalDamage));
             if (rows.Count > max) rows.RemoveRange(max, rows.Count - max);
             return rows;
@@ -4351,17 +4463,82 @@ public sealed class DpsMeter : IDisposable
 
     public void Dispose()
     {
-        _sniffer.DamageDealt -= OnDamageDealt;
-        _sniffer.RegionChanged -= OnRegionChanged;
-        _sniffer.EntityCreated -= OnEntityCreated;
-        _sniffer.LocalPlayerIdentified -= OnLocalPlayerIdentified;
-        _sniffer.InventoryMoved -= OnInventoryMoved;
-        _sniffer.LocalAvatarObserved -= OnLocalAvatarObserved;
-        _sniffer.CommunityMemberUpdated -= OnCommunityMemberUpdated;
-        _sniffer.EntityKilled -= OnEntityKilled;
-        _sniffer.EntityDestroyed -= OnEntityDestroyed;
-        // Final flush on shutdown — picks up any record set since the last write that didn't
-        // trigger an intra-session save (belt-and-braces; the in-flight saves already cover it).
-        SaveMaxHits();
+        if (_sniffer != null)
+        {
+            _sniffer.DamageDealt -= OnDamageDealt;
+            _sniffer.RegionChanged -= OnRegionChanged;
+            _sniffer.EntityCreated -= OnEntityCreated;
+            _sniffer.LocalPlayerIdentified -= OnLocalPlayerIdentified;
+            _sniffer.InventoryMoved -= OnInventoryMoved;
+            _sniffer.LocalAvatarObserved -= OnLocalAvatarObserved;
+            _sniffer.CommunityMemberUpdated -= OnCommunityMemberUpdated;
+            _sniffer.EntityKilled -= OnEntityKilled;
+            _sniffer.EntityDestroyed -= OnEntityDestroyed;
+        }
+        // Final flush — skip in test mode so tests don't dirty the user's max-hits file.
+        if (!_isTestInstance)
+            SaveMaxHits();
+    }
+
+    // ── Test injection hooks (accessible to MarvelHeroes.DpsMeter.Tests via InternalsVisibleTo) ──
+    // Also used by TestModeDataFeed for the --test-mode live feed.
+
+    /// <summary>Pin the entity id that <see cref="GetTopHeroesByEncounterShare"/> marks as the
+    /// local player.  Must be called before injecting damage events to get a self-row.</summary>
+    internal void TestSetSelfOwner(ulong ownerId)
+    {
+        lock (_sync) { _likelySelfOwnerId = ownerId; }
+    }
+
+    /// <summary>Register a hero display name for an owner entity id so leaderboard rows resolve
+    /// to a named hero rather than being filtered out as anonymous.</summary>
+    internal void TestRegisterHero(ulong ownerId, string heroName)
+    {
+        lock (_sync) { _heroNameByOwnerId[ownerId] = heroName; }
+    }
+
+    /// <summary>Pre-populate the entity→prototype cache so boss-mode admission works without
+    /// a real <c>NetMessageEntityCreate</c> packet.</summary>
+    internal void TestRegisterEntity(ulong entityId, uint protoIndex)
+    {
+        _prototypeByEntityId[entityId] = protoIndex;
+    }
+
+    /// <summary>Simulate a damage event as if the sniffer observed it.  Calls <see cref="OnDamageDealt"/>
+    /// directly.  Both power-owner and ultimate-owner are set to <paramref name="ultimateOwnerId"/>
+    /// (no pet chain); use the overload with separate <c>powerOwnerId</c> when you need to test pet folding.</summary>
+    internal void TestInjectDamage(ulong targetEntityId, ulong ultimateOwnerId, uint powerIndex, uint damage, DateTime ts)
+        => TestInjectDamage(targetEntityId, ultimateOwnerId, ultimateOwnerId, powerIndex, damage, ts);
+
+    /// <summary>Simulate a damage event where <paramref name="powerOwnerId"/> (direct attacker, e.g. a pet)
+    /// differs from <paramref name="ultimateOwnerId"/> (the credit owner, e.g. the summoner).
+    /// Use this to exercise the pet-chain coalescing path.</summary>
+    internal void TestInjectDamage(ulong targetEntityId, ulong powerOwnerId, ulong ultimateOwnerId, uint powerIndex, uint damage, DateTime ts)
+    {
+        OnDamageDealt(null, new DamageDealtEvent
+        {
+            TargetEntityId           = targetEntityId,
+            PowerOwnerEntityId       = powerOwnerId,
+            UltimateOwnerEntityId    = ultimateOwnerId,
+            DamagePhysical           = damage,
+            DamageEnergy             = 0,
+            DamageMental             = 0,
+            Healing                  = 0,
+            ResultFlags              = 0,
+            PowerPrototypeEnumIndex  = powerIndex,
+            UtcTime                  = ts,
+        });
+    }
+
+    /// <summary>Simulate an entity-kill event (boss death) so the encounter transitions to frozen.</summary>
+    internal void TestInjectEntityKilled(ulong entityId, DateTime ts)
+    {
+        OnEntityKilled(null, new EntityKillEvent
+        {
+            EntityId       = entityId,
+            KillerEntityId = 0,
+            KillFlags      = 0,
+            UtcTime        = ts,
+        });
     }
 }

@@ -55,6 +55,22 @@
             <Setter Property="HorizontalAlignment" Value="Right"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
         </Style>
+        <Style x:Key="DarkComboItem" TargetType="ComboBoxItem">
+            <Setter Property="Background" Value="#1E1E1E"/>
+            <Setter Property="Foreground" Value="#CCFFFFFF"/>
+            <Setter Property="FontFamily" Value="Segoe UI"/>
+            <Setter Property="Padding" Value="6,3"/>
+            <Style.Triggers>
+                <Trigger Property="IsHighlighted" Value="True">
+                    <Setter Property="Background" Value="#44FF6B00"/>
+                    <Setter Property="Foreground" Value="#FFFFFFFF"/>
+                </Trigger>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="#22FF6B00"/>
+                    <Setter Property="Foreground" Value="#FFCC66"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
         <Style x:Key="InlineEdit" TargetType="TextBox">
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="BorderThickness" Value="0"/>
@@ -96,14 +112,24 @@
                 <ComboBox x:Name="SortCombo" Height="24" FontFamily="Segoe UI" FontSize="11"
                           Foreground="#AAFFFFFF" Background="#1E1E1E" BorderBrush="#33FFFFFF"
                           Margin="0,0,0,4"
+                          ItemContainerStyle="{StaticResource DarkComboItem}"
                           SelectionChanged="SortCombo_SelectionChanged">
+                    <ComboBox.Resources>
+                        <SolidColorBrush x:Key="{x:Static SystemColors.WindowBrushKey}"     Color="#1E1E1E"/>
+                        <SolidColorBrush x:Key="{x:Static SystemColors.WindowTextBrushKey}" Color="#CCFFFFFF"/>
+                    </ComboBox.Resources>
                     <ComboBoxItem Content="↓ Newest first"  Tag="date" IsSelected="True"/>
                     <ComboBoxItem Content="↓ Highest DPS"   Tag="dps"/>
                     <ComboBoxItem Content="Hero A → Z"      Tag="hero"/>
                 </ComboBox>
                 <ComboBox x:Name="FilterCombo" Height="24" FontFamily="Segoe UI" FontSize="11"
                           Foreground="#AAFFFFFF" Background="#1E1E1E" BorderBrush="#33FFFFFF"
+                          ItemContainerStyle="{StaticResource DarkComboItem}"
                           SelectionChanged="FilterCombo_SelectionChanged">
+                    <ComboBox.Resources>
+                        <SolidColorBrush x:Key="{x:Static SystemColors.WindowBrushKey}"     Color="#1E1E1E"/>
+                        <SolidColorBrush x:Key="{x:Static SystemColors.WindowTextBrushKey}" Color="#CCFFFFFF"/>
+                    </ComboBox.Resources>
                     <ComboBoxItem Content="All heroes" IsSelected="True"/>
                 </ComboBox>
             </StackPanel>
@@ -219,6 +245,9 @@
                     <TextBlock Text="LEADERBOARD" Margin="0,14,0,4"
                                FontSize="10" Foreground="#88FF6B00"
                                FontFamily="Segoe UI" FontWeight="SemiBold"/>
+                    <TextBlock Text="Click a player to see their abilities"
+                               FontSize="9" FontFamily="Segoe UI" Foreground="#44FFFFFF"
+                               Margin="0,0,0,4"/>
                     <Grid Margin="4,0,4,2">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -232,10 +261,36 @@
                         <TextBlock Grid.Column="2" Text="TOTAL" Style="{StaticResource ColHeader}"/>
                         <TextBlock Grid.Column="3" Text="%"     Style="{StaticResource ColHeader}"/>
                     </Grid>
-                    <ItemsControl x:Name="LeaderboardItems">
-                        <ItemsControl.ItemTemplate>
+                    <ListBox x:Name="LeaderboardItems"
+                             Background="Transparent" BorderThickness="0"
+                             SelectionChanged="LeaderboardItems_SelectionChanged">
+                        <ListBox.ItemContainerStyle>
+                            <Style TargetType="ListBoxItem">
+                                <Setter Property="Padding" Value="0"/>
+                                <Setter Property="Margin" Value="0"/>
+                                <Setter Property="Background" Value="Transparent"/>
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="ListBoxItem">
+                                            <Border x:Name="Bd" Background="Transparent">
+                                                <ContentPresenter/>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsSelected" Value="True">
+                                                    <Setter TargetName="Bd" Property="Background" Value="#18FF6B00"/>
+                                                </Trigger>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="Bd" Property="Background" Value="#10FFFFFF"/>
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </ListBox.ItemContainerStyle>
+                        <ListBox.ItemTemplate>
                             <DataTemplate>
-                                <Grid Height="24" Margin="0,1">
+                                <Grid Height="24" Margin="0,1" Cursor="Hand">
                                     <Rectangle HorizontalAlignment="Left"
                                                Height="24" RadiusX="3" RadiusY="3"
                                                Width="{Binding BarWidth}" Fill="{Binding BarFill}"/>
@@ -265,12 +320,12 @@
                                     </Grid>
                                 </Grid>
                             </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
 
                     <!-- Ability breakdown section (collapsed when no data) -->
                     <StackPanel x:Name="PowerSectionHeader" Visibility="Collapsed">
-                        <TextBlock Text="MY ABILITIES" Margin="0,16,0,4"
+                        <TextBlock x:Name="PowerSectionTitle" Text="MY ABILITIES" Margin="0,16,0,4"
                                    FontSize="10" Foreground="#88FF6B00"
                                    FontFamily="Segoe UI" FontWeight="SemiBold"/>
                         <Grid Margin="4,0,4,2">
