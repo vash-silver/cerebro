@@ -18,6 +18,7 @@ public partial class DpsLiveWindow : Window
                         IReadOnlyList<DpsMeterClass.PowerBreakdownEntry>?>? SaveSnapshotRequested;
     public event Action?         ClearDpsRequested;
     public event Action?         ResetMaxHitRecordRequested;
+    public event Action?         ResetSplinterCooldownRequested;
     public event Action?         ViewReportsRequested;
 
     private bool _closingByPresenter;
@@ -38,6 +39,7 @@ public partial class DpsLiveWindow : Window
         Panel.SaveSnapshotRequested += (h, enc, p) => SaveSnapshotRequested?.Invoke(h, enc, p);
         Panel.ClearDpsRequested    += () => ClearDpsRequested?.Invoke();
         Panel.ResetMaxHitRecordRequested += () => ResetMaxHitRecordRequested?.Invoke();
+        Panel.ResetSplinterCooldownRequested += () => ResetSplinterCooldownRequested?.Invoke();
         Panel.ViewReportsRequested += () => ViewReportsRequested?.Invoke();
 
         // Closing via the title-bar X switches back to overlay rather than closing the app.
@@ -51,6 +53,17 @@ public partial class DpsLiveWindow : Window
             e.Cancel = true;
             SwitchModeRequested?.Invoke();
         };
+    }
+
+    public void UpdateSplinterStatus(bool cooldownActive, TimeSpan remaining, int dropCount, bool justDropped)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(() =>
+                Panel.UpdateSplinterStatus(cooldownActive, remaining, dropCount, justDropped)));
+            return;
+        }
+        Panel.UpdateSplinterStatus(cooldownActive, remaining, dropCount, justDropped);
     }
 
     public void CloseByPresenter()

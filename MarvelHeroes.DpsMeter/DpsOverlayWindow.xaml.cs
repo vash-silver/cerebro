@@ -20,6 +20,7 @@ public partial class DpsOverlayWindow : Window
                         IReadOnlyList<DpsMeterClass.PowerBreakdownEntry>?>? SaveSnapshotRequested;
     public event Action?         ClearDpsRequested;
     public event Action?         ResetMaxHitRecordRequested;
+    public event Action?         ResetSplinterCooldownRequested;
     public event Action?         ViewReportsRequested;
 
     public DpsOverlayWindow(DpsOverlaySettingsFile settings)
@@ -37,6 +38,7 @@ public partial class DpsOverlayWindow : Window
         Panel.SaveSnapshotRequested += (h, enc, p) => SaveSnapshotRequested?.Invoke(h, enc, p);
         Panel.ClearDpsRequested    += () => ClearDpsRequested?.Invoke();
         Panel.ResetMaxHitRecordRequested += () => ResetMaxHitRecordRequested?.Invoke();
+        Panel.ResetSplinterCooldownRequested += () => ResetSplinterCooldownRequested?.Invoke();
         Panel.ViewReportsRequested += () => ViewReportsRequested?.Invoke();
 
         SourceInitialized += OnSourceInitialized;
@@ -76,6 +78,17 @@ public partial class DpsOverlayWindow : Window
             maxSingleHit, maxSingleHitSession, maxSingleHitEncounter,
             heroDisplayName, bossDisplayName, bossOnlyMode, topHeroes, encounter,
             bossDps, bossTotalDamage60s, bossTopHeroes, bossEncounter, powerBreakdown);
+    }
+
+    public void UpdateSplinterStatus(bool cooldownActive, TimeSpan remaining, int dropCount, bool justDropped)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(() =>
+                Panel.UpdateSplinterStatus(cooldownActive, remaining, dropCount, justDropped)));
+            return;
+        }
+        Panel.UpdateSplinterStatus(cooldownActive, remaining, dropCount, justDropped);
     }
 
     public void ShowWithoutActivating()

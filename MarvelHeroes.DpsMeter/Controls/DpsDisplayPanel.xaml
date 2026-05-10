@@ -30,6 +30,11 @@
                           IsCheckable="True"
                           Checked="ShowPowerBreakdownMenuItem_OnChecked"
                           Unchecked="ShowPowerBreakdownMenuItem_OnUnchecked"/>
+                <MenuItem x:Name="ShowSplinterTrackerMenuItem"
+                          Header="Show Eternity Splinter tracker"
+                          IsCheckable="True"
+                          Checked="ShowSplinterTrackerMenuItem_OnChecked"
+                          Unchecked="ShowSplinterTrackerMenuItem_OnUnchecked"/>
                 <MenuItem Header="Scale">
                     <MenuItem x:Name="Scale25MenuItem"  Header="25%"  IsCheckable="True" Click="ScaleMenuItem_Click" Tag="0.25"/>
                     <MenuItem x:Name="Scale50MenuItem"  Header="50%"  IsCheckable="True" Click="ScaleMenuItem_Click" Tag="0.5"/>
@@ -44,6 +49,7 @@
                 <MenuItem Header="Save snapshot"           Click="SaveSnapshotMenuItem_OnClick"/>
                 <MenuItem Header="Clear DPS (session)"     Click="ClearDpsMenuItem_OnClick"/>
                 <MenuItem Header="Reset hero max-hit record…" Click="ResetMaxHitRecordMenuItem_OnClick"/>
+                <MenuItem Header="Reset Splinter cooldown" Click="ResetSplinterCooldownMenuItem_OnClick"/>
                 <MenuItem Header="View reports"            Click="ViewReportsMenuItem_OnClick"/>
                 <Separator/>
                 <MenuItem x:Name="SwitchModeMenuItem" Header="Switch to window mode" Click="SwitchModeMenuItem_OnClick"/>
@@ -121,6 +127,24 @@
                        Foreground="#80FFFFFF"
                        HorizontalAlignment="Center"
                        Margin="0,2,0,0"/>
+
+            <!-- ── Eternity Splinter tracker (toggleable via right-click menu) ─────── -->
+            <Border x:Name="SplinterPanel"
+                    HorizontalAlignment="Center"
+                    Margin="0,6,0,0"
+                    Padding="8,2"
+                    CornerRadius="4"
+                    Background="#332E7FFF"
+                    BorderBrush="#552E7FFF"
+                    BorderThickness="1"
+                    Visibility="Collapsed">
+                <TextBlock x:Name="SplinterText"
+                           FontFamily="{StaticResource MarvelFontSecondary}"
+                           FontSize="12"
+                           FontWeight="SemiBold"
+                           Foreground="#FFB0CDFF"
+                           Text="ES: ready"/>
+            </Border>
 
             <Border Margin="0,8,0,4" BorderBrush="#33FF6B00" BorderThickness="0,0,0,1"/>
 

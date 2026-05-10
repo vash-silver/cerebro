@@ -67,6 +67,13 @@ public sealed class DpsOverlaySettingsFile
     /// top powers by damage with hit counts for proc identification.</summary>
     public bool ShowPowerBreakdown { get; set; } = false;
 
+    /// <summary>When <c>true</c> the Eternity Splinter tracker status line is shown beneath the
+    /// main DPS number.  Tracks the 7-minute server-side cooldown between splinter drops so the
+    /// user knows when killing another mob has a chance of yielding a splinter.  Default
+    /// <c>true</c> in release -- the tracker is small, useful, and inactive (no visible state)
+    /// until a splinter drops, so there's no downside to having it on out of the box.</summary>
+    public bool ShowEternitySplinterTracker { get; set; } = true;
+
     /// <summary>When <c>true</c> the DPS data is shown in a regular titled window instead of the
     /// transparent borderless overlay.  Toggled via the right-click "Switch to window mode" menu
     /// item; persists across sessions.</summary>

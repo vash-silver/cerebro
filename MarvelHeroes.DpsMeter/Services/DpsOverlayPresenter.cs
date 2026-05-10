@@ -27,6 +27,7 @@ public sealed class DpsOverlayPresenter : IDisposable
 
     private DpsMeter? _meter;
     private DpsMeter? _bossMeter;
+    private EternitySplinterTracker? _splinterTracker;
     private DpsOverlayWindow? _overlayWindow;
     private DpsLiveWindow? _liveWindow;
     private DpsOverlaySettingsFile? _sharedSettings;
@@ -58,6 +59,12 @@ public sealed class DpsOverlayPresenter : IDisposable
     /// directly into the running meters without going through the sniffer.  Non-null after <see cref="Start"/>.</summary>
     internal DpsMeter? Meter     => _meter;
     internal DpsMeter? BossMeter => _bossMeter;
+    internal EternitySplinterTracker? SplinterTracker => _splinterTracker;
+
+    /// <summary>How long the overlay stays in the bright "ES: dropped!" flash state after a
+    /// splinter is detected.  Short enough that it doesn't crowd out the countdown, long
+    /// enough to catch the user's eye on a single decay-tick frame.</summary>
+    private static readonly TimeSpan JustDroppedFlashDuration = TimeSpan.FromSeconds(3);
 
     /// <summary>Optional predicate polled at ~4 Hz. When it returns <c>false</c>, the overlay
     /// hides itself; ignored when in window mode. Safe to touch WPF directly inside the delegate.</summary>
@@ -73,6 +80,15 @@ public sealed class DpsOverlayPresenter : IDisposable
         _bossMeter = new DpsMeter(_sniffer) { Diagnostic = AppendLog };
         _bossMeter.BossOnlyMode = true;
         _bossMeter.DpsChanged += OnDpsChanged;
+
+        // Eternity Splinter tracker -- subscribes to the sniffer's LootDropped events for
+        // a 7-minute cooldown ticker.  Independent of the DPS meters and unaffected by
+        // boss-only mode / encounter lifecycle.
+        _splinterTracker = new EternitySplinterTracker(_sniffer) { Diagnostic = AppendLog };
+        _splinterTracker.SplinterDropped += (_, args) =>
+            AppendLog($"DpsOverlayPresenter: splinter dropped at {args.Utc:HH:mm:ss} -- 7 min cooldown armed");
+        _splinterTracker.CooldownExpired += (_, _) =>
+            AppendLog("DpsOverlayPresenter: splinter cooldown expired -- next drop eligible");
 
         {
             var prior = _sniffer.Diagnostic;
@@ -120,6 +136,7 @@ public sealed class DpsOverlayPresenter : IDisposable
         w.SaveSnapshotRequested += (h, enc, p) => SaveSnapshotNow(h, enc, p);
         w.ClearDpsRequested    += ClearDpsNow;
         w.ResetMaxHitRecordRequested += ResetMaxHitRecordNow;
+        w.ResetSplinterCooldownRequested += ResetSplinterCooldownNow;
         w.ViewReportsRequested += OpenReportViewer;
     }
 
@@ -130,6 +147,7 @@ public sealed class DpsOverlayPresenter : IDisposable
         w.SaveSnapshotRequested += (h, enc, p) => SaveSnapshotNow(h, enc, p);
         w.ClearDpsRequested    += ClearDpsNow;
         w.ResetMaxHitRecordRequested += ResetMaxHitRecordNow;
+        w.ResetSplinterCooldownRequested += ResetSplinterCooldownNow;
         w.ViewReportsRequested += OpenReportViewer;
     }
 
@@ -174,6 +192,12 @@ public sealed class DpsOverlayPresenter : IDisposable
             _bossMeter.DpsChanged -= OnDpsChanged;
             _bossMeter.Dispose();
             _bossMeter = null;
+        }
+
+        if (_splinterTracker != null)
+        {
+            _splinterTracker.Dispose();
+            _splinterTracker = null;
         }
 
         if (_meter != null)
@@ -256,6 +280,30 @@ public sealed class DpsOverlayPresenter : IDisposable
             bossTop5,
             bossEncounter,
             powerBreakdown);
+
+        // Tick the splinter tracker so its cooldown-expired event lands on the UI dispatcher,
+        // then push the resulting state to the overlay so the countdown ticks down visibly.
+        // We track a short post-drop "flash" window (the JustDroppedFlashDuration window after
+        // LastDropUtc) so the UI can render an attention-grabbing "ES: dropped!" state for a
+        // second or two before settling into the regular countdown.
+        if (_splinterTracker != null)
+        {
+            _splinterTracker.Tick();
+            var splinterNowUtc = DateTime.UtcNow;
+            var lastDropUtc = _splinterTracker.LastDropUtc;
+            bool justDropped = lastDropUtc != DateTime.MinValue
+                && (splinterNowUtc - lastDropUtc) < JustDroppedFlashDuration;
+            _overlayWindow?.UpdateSplinterStatus(
+                _splinterTracker.IsCooldownActive,
+                _splinterTracker.RemainingCooldown,
+                _splinterTracker.DropCount,
+                justDropped);
+            _liveWindow?.UpdateSplinterStatus(
+                _splinterTracker.IsCooldownActive,
+                _splinterTracker.RemainingCooldown,
+                _splinterTracker.DropCount,
+                justDropped);
+        }
 
         // Collect sparkline samples every 5s while encounter is live.
         CollectSparklineSample(bossEncounter, bossDps);
@@ -580,6 +628,16 @@ public sealed class DpsOverlayPresenter : IDisposable
         _meter?.ResetSelfMaxHitRecord();
         _bossMeter?.ResetSelfMaxHitRecord();
         AppendLog("DpsOverlayPresenter: max-hit record cleared by user request");
+    }
+
+    /// <summary>Clear the Eternity Splinter cooldown timer.  Useful when the server-side
+    /// throttle is known to have been reset (relog, zone change, the user picked up a splinter
+    /// before launching the meter) so the visible countdown can be brought back in sync with
+    /// what the server thinks.</summary>
+    public void ResetSplinterCooldownNow()
+    {
+        _splinterTracker?.Reset();
+        AppendLog("DpsOverlayPresenter: splinter cooldown cleared by user request");
     }
 
     public void OpenReportViewer()

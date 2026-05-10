@@ -32,6 +32,7 @@ public partial class DpsDisplayPanel : UserControl
                         IReadOnlyList<DpsMeterClass.PowerBreakdownEntry>?>? SaveSnapshotRequested;
     public event Action? ClearDpsRequested;
     public event Action? ResetMaxHitRecordRequested;
+    public event Action? ResetSplinterCooldownRequested;
     public event Action? ViewReportsRequested;
 
     public void Initialize(DpsOverlaySettingsFile settings, bool isOverlayMode)
@@ -55,6 +56,12 @@ public partial class DpsDisplayPanel : UserControl
         try { ShowPowerBreakdownMenuItem.IsChecked = settings.ShowPowerBreakdown; }
         finally { _suppressShowPowerBreakdownMenuEvents = false; }
         PowerBreakdownPanel.Visibility = settings.ShowPowerBreakdown ? Visibility.Visible : Visibility.Collapsed;
+
+        _showSplinterTracker = settings.ShowEternitySplinterTracker;
+        _suppressShowSplinterTrackerMenuEvents = true;
+        try { ShowSplinterTrackerMenuItem.IsChecked = settings.ShowEternitySplinterTracker; }
+        finally { _suppressShowSplinterTrackerMenuEvents = false; }
+        SplinterPanel.Visibility = settings.ShowEternitySplinterTracker ? Visibility.Visible : Visibility.Collapsed;
 
         ApplyScale(settings.Scale, save: false);
 
@@ -394,10 +401,11 @@ public partial class DpsDisplayPanel : UserControl
     {
         if (left.HasValue) _settings.Left = left.Value;
         if (top.HasValue)  _settings.Top  = top.Value;
-        _settings.Scale              = _scale;
-        _settings.BossDpsOnly        = _bossOnlyMode;
-        _settings.ShowBossSection    = _showBossSection;
-        _settings.ShowPowerBreakdown = _showPowerBreakdown;
+        _settings.Scale                       = _scale;
+        _settings.BossDpsOnly                 = _bossOnlyMode;
+        _settings.ShowBossSection             = _showBossSection;
+        _settings.ShowPowerBreakdown          = _showPowerBreakdown;
+        _settings.ShowEternitySplinterTracker = _showSplinterTracker;
         DpsOverlaySettingsFile.Save(_settings);
     }
 
@@ -445,6 +453,78 @@ public partial class DpsDisplayPanel : UserControl
         if (_suppressShowPowerBreakdownMenuEvents) return;
         _showPowerBreakdown = false; PowerBreakdownPanel.Visibility = Visibility.Collapsed; SaveAll();
     }
+
+    // ── Eternity Splinter tracker visibility ─────────────────────────────────────────────────
+    private bool _showSplinterTracker;
+    private bool _suppressShowSplinterTrackerMenuEvents;
+
+    private void ShowSplinterTrackerMenuItem_OnChecked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressShowSplinterTrackerMenuEvents) return;
+        _showSplinterTracker = true; SplinterPanel.Visibility = Visibility.Visible; SaveAll();
+    }
+    private void ShowSplinterTrackerMenuItem_OnUnchecked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressShowSplinterTrackerMenuEvents) return;
+        _showSplinterTracker = false; SplinterPanel.Visibility = Visibility.Collapsed; SaveAll();
+    }
+
+    /// <summary>Updates the splinter tracker status line.  Called from the presenter's decay
+    /// timer alongside the regular DPS push -- decoupled from <see cref="UpdateDps"/> so the
+    /// presenter can keep the tracker live even when no DPS changes have happened recently
+    /// (e.g. while idle waiting for the cooldown to elapse).
+    ///
+    /// Three visual states, color-coded via cached brushes:
+    ///   <list type="bullet">
+    ///     <item>READY  -- no cooldown active, splinter eligible to drop now (blue).</item>
+    ///     <item>COUNT  -- cooldown active, shows mm:ss until next drop is eligible (amber).</item>
+    ///     <item>FLASH  -- a drop was just detected; brief bright orange highlight (~3 s).</item>
+    ///   </list></summary>
+    public void UpdateSplinterStatus(bool cooldownActive, TimeSpan remaining, int dropCount, bool justDropped)
+    {
+        if (!_showSplinterTracker) return;
+
+        _splinterReadyBrush ??= FreezeBrush(new SolidColorBrush(Color.FromArgb(0xFF, 0xB0, 0xCD, 0xFF)));
+        _splinterCountBrush ??= FreezeBrush(new SolidColorBrush(Color.FromArgb(0xFF, 0xFF, 0xCC, 0x66)));
+        _splinterFlashBrush ??= FreezeBrush(new SolidColorBrush(Color.FromArgb(0xFF, 0xFF, 0x9A, 0x3C)));
+        _splinterReadyBg    ??= FreezeBrush(new SolidColorBrush(Color.FromArgb(0x33, 0x2E, 0x7F, 0xFF)));
+        _splinterReadyBd    ??= FreezeBrush(new SolidColorBrush(Color.FromArgb(0x55, 0x2E, 0x7F, 0xFF)));
+        _splinterCountBg    ??= FreezeBrush(new SolidColorBrush(Color.FromArgb(0x33, 0xFF, 0xB3, 0x47)));
+        _splinterCountBd    ??= FreezeBrush(new SolidColorBrush(Color.FromArgb(0x66, 0xFF, 0xB3, 0x47)));
+        _splinterFlashBg    ??= FreezeBrush(new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0x6B, 0x00)));
+        _splinterFlashBd    ??= FreezeBrush(new SolidColorBrush(Color.FromArgb(0x99, 0xFF, 0x6B, 0x00)));
+
+        string suffix = dropCount > 0 ? $"  ({dropCount} today)" : string.Empty;
+
+        if (justDropped)
+        {
+            SplinterText.Text = "ES: dropped!" + suffix;
+            SplinterText.Foreground = _splinterFlashBrush;
+            SplinterPanel.Background  = _splinterFlashBg;
+            SplinterPanel.BorderBrush = _splinterFlashBd;
+        }
+        else if (cooldownActive)
+        {
+            // mm:ss -- truncate fractional seconds so the number ticks down predictably.
+            int totalSec = (int)Math.Ceiling(remaining.TotalSeconds);
+            int mm = totalSec / 60;
+            int ss = totalSec % 60;
+            SplinterText.Text = $"ES: {mm}:{ss:00}" + suffix;
+            SplinterText.Foreground = _splinterCountBrush;
+            SplinterPanel.Background  = _splinterCountBg;
+            SplinterPanel.BorderBrush = _splinterCountBd;
+        }
+        else
+        {
+            SplinterText.Text = "ES: ready" + suffix;
+            SplinterText.Foreground = _splinterReadyBrush;
+            SplinterPanel.Background  = _splinterReadyBg;
+            SplinterPanel.BorderBrush = _splinterReadyBd;
+        }
+    }
+
+    private SolidColorBrush? _splinterReadyBrush, _splinterCountBrush, _splinterFlashBrush;
+    private SolidColorBrush? _splinterReadyBg, _splinterReadyBd, _splinterCountBg, _splinterCountBd, _splinterFlashBg, _splinterFlashBd;
 
     // ── Scale ─────────────────────────────────────────────────────────────────────────────────
     private double _scale = 1.0;
@@ -523,6 +603,8 @@ public partial class DpsDisplayPanel : UserControl
         => SaveSnapshotRequested?.Invoke(_lastTopHeroes, _lastEncounter, _lastPowerBreakdown);
     private void ClearDpsMenuItem_OnClick(object sender, RoutedEventArgs e)
         => ClearDpsRequested?.Invoke();
+    private void ResetSplinterCooldownMenuItem_OnClick(object sender, RoutedEventArgs e)
+        => ResetSplinterCooldownRequested?.Invoke();
     private void ResetMaxHitRecordMenuItem_OnClick(object sender, RoutedEventArgs e)
     {
         // The other reset paths (Clear DPS, encounter end) are non-destructive — they freeze /
