@@ -595,6 +595,11 @@ public sealed class DpsMeter : IDisposable
     // which is mode-agnostic and never wants the cumulative totals.
     private readonly Dictionary<ulong, long> _sessionTotalsPerOwner = new();
 
+    // Per-power hit/damage tracking for the local player only.
+    // Session dict accumulates for the whole region; encounter dict resets each boss fight.
+    private readonly Dictionary<uint, (int Hits, long Dmg)> _selfPowerHitsSession   = new();
+    private readonly Dictionary<uint, (int Hits, long Dmg)> _selfPowerHitsEncounter = new();
+
     // Separate (shorter) queue for the instant 5 s DPS number.  We could derive this from
     // `_scoring` by scanning it on every tick, but keeping a dedicated queue avoids the scan
     // and lets the scoring queue stay decoupled (different window size, different semantics).
@@ -662,6 +667,20 @@ public sealed class DpsMeter : IDisposable
         /// hero, both nickname-less.  Not meant for display on its own; keep it out of the
         /// overlay unless you need a debug readout.</summary>
         public ulong OwnerId   { get; init; }
+
+        /// <summary>Instantaneous damage rate over the last 5 s for this owner.
+        /// Zero when the owner has no hits in the instant window.</summary>
+        public double Dps      { get; init; }
+    }
+
+    /// <summary>Per-power damage summary for the local player, sorted by total damage descending.</summary>
+    public readonly struct PowerBreakdownEntry
+    {
+        public uint   PowerIndex  { get; init; }
+        public string Name        { get; init; }
+        public int    Hits        { get; init; }
+        public long   TotalDamage { get; init; }
+        public double Percent     { get; init; }
     }
 
     /// <summary>Fired every time <see cref="CurrentDps"/> changes. Fires from the sniffer's
@@ -728,6 +747,7 @@ public sealed class DpsMeter : IDisposable
                 // and the previous fight's totals are necessarily stale by the time the
                 // user toggles modes (mode flip is a manual UI act, not a kill event).
                 _encounterTotalsPerOwner.Clear();
+                _selfPowerHitsEncounter.Clear();
                 _engagedBossEntityIds.Clear();
                 _lastHitPerEngagedBoss.Clear();
                 _encounterStartUtc = DateTime.MinValue;
@@ -1662,6 +1682,39 @@ public sealed class DpsMeter : IDisposable
     /// when the host app is closing within a few seconds of the last community broadcast.</summary>
     public void FlushPlayerIndexNow() => SavePlayerIndex(force: true);
 
+    /// <summary>Reset all in-session accumulators so the overlay starts from zero without
+    /// requiring a zone change.  Clears the sliding windows, session totals, encounter state,
+    /// and power-hit maps.  Entity-id maps (entity↔prototype, pet↔root, etc.), the player
+    /// nickname index, and <see cref="_maxHitByHeroName"/> are intentionally preserved — they
+    /// are keyed by stable server-side ids and would require a fresh zone to repopulate.
+    /// <see cref="LikelySelfOwnerId"/> and <see cref="CurrentHeroDisplayName"/> are also kept
+    /// since the user is still in the same region playing the same hero.</summary>
+    public void ResetSession()
+    {
+        lock (_sync)
+        {
+            _scoring.Clear();
+            _totalsPerOwner.Clear();
+            _sessionTotalsPerOwner.Clear();
+            _selfPowerHitsSession.Clear();
+            _selfPowerHitsEncounter.Clear();
+            _instant.Clear();
+            CurrentDps = 0;
+            CurrentOwnerTotal60s = 0;
+            CurrentOwnerSessionTotal = 0;
+            MaxSingleHit = 0;
+
+            _encounterTotalsPerOwner.Clear();
+            _engagedBossEntityIds.Clear();
+            _lastHitPerEngagedBoss.Clear();
+            _encounterStartUtc      = DateTime.MinValue;
+            _encounterEndedUtc      = DateTime.MinValue;
+            _lastEncounterDamageUtc = DateTime.MinValue;
+        }
+        DpsChanged?.Invoke(this, EventArgs.Empty);
+        Diagnostic?.Invoke("DpsMeter: session reset by user request");
+    }
+
     /// <summary>Load the persisted self-dbId from <see cref="SelfIdentityPath"/>, if any.
     /// Failures are silent — a missing or corrupt file is no different from "first run on this
     /// box", which is a normal state on day one. The file is one-shot per session: we read it
@@ -2340,6 +2393,7 @@ public sealed class DpsMeter : IDisposable
                 {
                     int frozenOwners = _encounterTotalsPerOwner.Count;
                     _encounterTotalsPerOwner.Clear();
+                    _selfPowerHitsEncounter.Clear();
                     _engagedBossEntityIds.Clear();
                     _lastHitPerEngagedBoss.Clear();
                     _encounterStartUtc = DateTime.MinValue;
@@ -2472,6 +2526,18 @@ public sealed class DpsMeter : IDisposable
                     MaxSingleHit = dmg;
                     maxChanged = true;
                     newRecord = true;   // flushed to disk after we drop the lock, see below
+                }
+            }
+
+            // Power breakdown tracking — self only, non-zero index.
+            if (scoringOwner == _likelySelfOwnerId && e.PowerPrototypeEnumIndex != 0)
+            {
+                _selfPowerHitsSession.TryGetValue(e.PowerPrototypeEnumIndex, out var sp);
+                _selfPowerHitsSession[e.PowerPrototypeEnumIndex] = (sp.Hits + 1, sp.Dmg + dmg);
+                if (_bossOnlyMode)
+                {
+                    _selfPowerHitsEncounter.TryGetValue(e.PowerPrototypeEnumIndex, out var ep);
+                    _selfPowerHitsEncounter[e.PowerPrototypeEnumIndex] = (ep.Hits + 1, ep.Dmg + dmg);
                 }
             }
 
@@ -2903,6 +2969,8 @@ public sealed class DpsMeter : IDisposable
             // unconditionally so the next region starts from zero (matches the encounter
             // accumulator's region-change wipe in boss mode for symmetry).
             _sessionTotalsPerOwner.Clear();
+            _selfPowerHitsSession.Clear();
+            _selfPowerHitsEncounter.Clear();
             _instant.Clear();
             _likelySelfOwnerId = 0;
             _likelySelfChosenAt = default;
@@ -3216,6 +3284,25 @@ public sealed class DpsMeter : IDisposable
         }
     }
 
+    /// <summary>Computes a per-owner instant-DPS map from <see cref="_instant"/>.
+    /// Caller MUST hold <see cref="_sync"/>.  Returns an empty dict when fewer than 2
+    /// entries exist (can't derive a meaningful time range).</summary>
+    private Dictionary<ulong, double> BuildInstantDpsMapLocked()
+    {
+        var map = new Dictionary<ulong, double>();
+        if (_instant.Count < 2) return map;
+        double range = Math.Max(0.25, (DateTime.UtcNow - _instant.Peek().Ts).TotalSeconds);
+        var sums = new Dictionary<ulong, long>();
+        foreach (var h in _instant)
+        {
+            sums.TryGetValue(h.Owner, out long s);
+            sums[h.Owner] = s + h.Damage;
+        }
+        foreach (var kv in sums)
+            map[kv.Key] = kv.Value / range;
+        return map;
+    }
+
     /// <summary>Top-N rows by encounter total (boss-only mode), ranked by absolute damage with
     /// percent computed against the sum of admitted owners in the current encounter.  Same
     /// row shape as <see cref="GetTopHeroesBy60sShare"/> so the overlay can render either
@@ -3248,6 +3335,7 @@ public sealed class DpsMeter : IDisposable
             var boundDbIds = new HashSet<ulong>(_dbIdByAvatarId.Values);
             foreach (var cv in _dbIdByPlayerEntityId.Values) boundDbIds.Add(cv);
 
+            var dpsMap = BuildInstantDpsMapLocked();
             var rows = new List<HeroShareEntry>(_encounterTotalsPerOwner.Count);
             foreach (var kv in _encounterTotalsPerOwner)
             {
@@ -3265,6 +3353,7 @@ public sealed class DpsMeter : IDisposable
                     IsSelf     = isSelf,
                     PlayerName = nickname,
                     OwnerId    = kv.Key,
+                    Dps        = dpsMap.TryGetValue(kv.Key, out double d) ? d : 0.0,
                 });
             }
 
@@ -3313,6 +3402,7 @@ public sealed class DpsMeter : IDisposable
                     IsSelf     = r.IsSelf,
                     OwnerId    = r.OwnerId,
                     PlayerName = tag,
+                    Dps        = r.Dps,
                 };
             }
             return rows;
@@ -3337,6 +3427,38 @@ public sealed class DpsMeter : IDisposable
     /// resolution fails (mid-session attach + custom-server hero whose powers aren't in the
     /// static HeroPowers index — same regression that motivated the equivalent guard on the
     /// 60 s and encounter variants).</para></summary>
+    /// <summary>Returns the local player's top powers by total damage for the current scope.
+    /// <paramref name="useEncounter"/> selects encounter totals (boss fight) vs session totals
+    /// (all damage since last region change). Thread-safe; snapshot is taken under the lock.</summary>
+    public IReadOnlyList<PowerBreakdownEntry> GetSelfPowerBreakdown(int max, bool useEncounter)
+    {
+        if (max <= 0) return Array.Empty<PowerBreakdownEntry>();
+        lock (_sync)
+        {
+            var source = useEncounter ? _selfPowerHitsEncounter : _selfPowerHitsSession;
+            if (source.Count == 0) return Array.Empty<PowerBreakdownEntry>();
+            long grandTotal = 0;
+            foreach (var kv in source) grandTotal += kv.Value.Dmg;
+            if (grandTotal <= 0) return Array.Empty<PowerBreakdownEntry>();
+
+            var rows = new List<PowerBreakdownEntry>(source.Count);
+            foreach (var kv in source)
+            {
+                rows.Add(new PowerBreakdownEntry
+                {
+                    PowerIndex  = kv.Key,
+                    Name        = PowerNames.Get(kv.Key) ?? $"#{kv.Key}",
+                    Hits        = kv.Value.Hits,
+                    TotalDamage = kv.Value.Dmg,
+                    Percent     = kv.Value.Dmg * 100.0 / grandTotal,
+                });
+            }
+            rows.Sort((a, b) => b.TotalDamage.CompareTo(a.TotalDamage));
+            if (rows.Count > max) rows.RemoveRange(max, rows.Count - max);
+            return rows;
+        }
+    }
+
     public IReadOnlyList<HeroShareEntry> GetTopHeroesBySessionShare(int max)
     {
         if (max <= 0) return Array.Empty<HeroShareEntry>();
@@ -3359,6 +3481,7 @@ public sealed class DpsMeter : IDisposable
             var boundDbIds = new HashSet<ulong>(_dbIdByAvatarId.Values);
             foreach (var cv in _dbIdByPlayerEntityId.Values) boundDbIds.Add(cv);
 
+            var dpsMap = BuildInstantDpsMapLocked();
             var rows = new List<HeroShareEntry>(_sessionTotalsPerOwner.Count);
             foreach (var kv in _sessionTotalsPerOwner)
             {
@@ -3376,6 +3499,7 @@ public sealed class DpsMeter : IDisposable
                     IsSelf     = isSelf,
                     PlayerName = nickname,
                     OwnerId    = kv.Key,
+                    Dps        = dpsMap.TryGetValue(kv.Key, out double d) ? d : 0.0,
                 });
             }
 
@@ -3410,6 +3534,7 @@ public sealed class DpsMeter : IDisposable
                     IsSelf     = r.IsSelf,
                     OwnerId    = r.OwnerId,
                     PlayerName = tag,
+                    Dps        = r.Dps,
                 };
             }
             return rows;
@@ -3459,6 +3584,7 @@ public sealed class DpsMeter : IDisposable
             var boundDbIds = new HashSet<ulong>(_dbIdByAvatarId.Values);
             foreach (var cv in _dbIdByPlayerEntityId.Values) boundDbIds.Add(cv);
 
+            var dpsMap = BuildInstantDpsMapLocked();
             var rows = new List<HeroShareEntry>(_totalsPerOwner.Count);
             foreach (var kv in _totalsPerOwner)
             {
@@ -3482,6 +3608,7 @@ public sealed class DpsMeter : IDisposable
                     IsSelf     = isSelf,
                     PlayerName = nickname,
                     OwnerId    = kv.Key,
+                    Dps        = dpsMap.TryGetValue(kv.Key, out double d) ? d : 0.0,
                 });
             }
             // First: fold pet/summon rows into their chain-root player avatar row using the
@@ -3543,6 +3670,7 @@ public sealed class DpsMeter : IDisposable
                     IsSelf     = r.IsSelf,
                     OwnerId    = r.OwnerId,
                     PlayerName = tag,
+                    Dps        = r.Dps,
                 };
             }
             return rows;

@@ -72,6 +72,13 @@ public partial class App : Application
 
         AppendLog($"────── MarvelHeroes.DpsMeter standalone start ({DateTime.UtcNow:yyyy-MM-dd HH:mm:ss}Z) ──────");
 
+        // Let Ctrl+C in the terminal shut the app down cleanly instead of crashing the process.
+        Console.CancelKeyPress += (_, args) =>
+        {
+            args.Cancel = true;
+            Dispatcher.BeginInvoke(() => Shutdown(0));
+        };
+
         try
         {
             // First-run materialization: if the user has never opened this app on this

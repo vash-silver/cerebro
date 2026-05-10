@@ -1,0 +1,11 @@
+<Window x:Class="MarvelHeroes.DpsMeter.Windows.DpsLiveWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:MarvelHeroes.DpsMeter.Controls"
+        Title="DPS Meter"
+        SizeToContent="WidthAndHeight"
+        ResizeMode="CanMinimize"
+        ShowInTaskbar="True"
+        WindowStartupLocation="CenterScreen">
+    <controls:DpsDisplayPanel x:Name="Panel"/>
+</Window>

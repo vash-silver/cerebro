@@ -46,6 +46,7 @@ public sealed class DpsOverlaySettingsFile
 
     public double Left { get; set; } = 40;
     public double Top { get; set; } = 40;
+    public double Scale { get; set; } = 1.0;
 
     /// <summary>
     /// Boss-only filter — when <c>true</c> the leaderboard only credits damage against
@@ -57,6 +58,19 @@ public sealed class DpsOverlaySettingsFile
     /// restart, and the toggle persists back to <c>dps-overlay.json</c> via <see cref="Save"/>.
     /// </summary>
     public bool BossDpsOnly { get; set; } = true;
+
+    /// <summary>When <c>true</c> a second "BOSS FIGHT" panel is shown below the main leaderboard,
+    /// always tracking boss-only encounter damage independently of the main section's filter.</summary>
+    public bool ShowBossSection { get; set; } = false;
+
+    /// <summary>When <c>true</c> the power breakdown panel is shown, listing the local player's
+    /// top powers by damage with hit counts for proc identification.</summary>
+    public bool ShowPowerBreakdown { get; set; } = false;
+
+    /// <summary>When <c>true</c> the DPS data is shown in a regular titled window instead of the
+    /// transparent borderless overlay.  Toggled via the right-click "Switch to window mode" menu
+    /// item; persists across sessions.</summary>
+    public bool WindowMode { get; set; } = false;
 
     /// <summary>Primary game mux / frontend TCP port (default 4306 when missing or invalid).</summary>
     public int GameTcpPort { get; set; }
@@ -211,9 +225,12 @@ public sealed class DpsOverlaySettingsFile
         }
     }
 
-    /// <summary>Clamp ports and trim adapter filter so capture and serialization stay consistent.</summary>
+    /// <summary>Clamp ports, scale, and trim adapter filter so capture and serialization stay consistent.</summary>
     public static void Normalize(DpsOverlaySettingsFile s)
     {
+        if (s.Scale < 0.25 || s.Scale > 3.0 || double.IsNaN(s.Scale))
+            s.Scale = 1.0;
+
         if (s.GameTcpPort < 1 || s.GameTcpPort > 65535)
             s.GameTcpPort = DefaultGameTcpPort;
 
