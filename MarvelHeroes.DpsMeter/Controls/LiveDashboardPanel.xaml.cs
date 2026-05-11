@@ -72,6 +72,14 @@ public partial class LiveDashboardPanel : UserControl
     private static readonly SolidColorBrush s_splFlashBg   = Freeze(new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0x6B, 0x00)));
     private static readonly SolidColorBrush s_splFlashBd   = Freeze(new SolidColorBrush(Color.FromArgb(0x99, 0xFF, 0x6B, 0x00)));
 
+    // Mode pill -- neutral grey for "all damage", orange-tinted for "boss damage only".
+    private static readonly SolidColorBrush s_modePillNeutralBg = Freeze(new SolidColorBrush(Color.FromArgb(0x22, 0xFF, 0xFF, 0xFF)));
+    private static readonly SolidColorBrush s_modePillNeutralBd = Freeze(new SolidColorBrush(Color.FromArgb(0x44, 0xFF, 0xFF, 0xFF)));
+    private static readonly SolidColorBrush s_modePillNeutralFg = Freeze(new SolidColorBrush(Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF)));
+    private static readonly SolidColorBrush s_modePillBossBg    = Freeze(new SolidColorBrush(Color.FromArgb(0x33, 0xFF, 0x6B, 0x00)));
+    private static readonly SolidColorBrush s_modePillBossBd    = Freeze(new SolidColorBrush(Color.FromArgb(0x88, 0xFF, 0x6B, 0x00)));
+    private static readonly SolidColorBrush s_modePillBossFg    = Freeze(new SolidColorBrush(Color.FromArgb(0xFF, 0xFF, 0xCC, 0x66)));
+
     private static SolidColorBrush Freeze(SolidColorBrush b) { if (b.CanFreeze) b.Freeze(); return b; }
 
     // ── Main update entry ─────────────────────────────────────────────────────────────────────
@@ -102,20 +110,49 @@ public partial class LiveDashboardPanel : UserControl
         _lastPowerBreakdown = powerBreakdown;
 
         // ── Header / title text ──────────────────────────────────────────────────────────────
+        // The mode pill (set below) carries the "what damage am I counting" info on its
+        // own, so the title strips the redundant "DPS" / "BOSS DPS" prefix the compact
+        // panel uses -- the huge 42-pt number IS the DPS, the label was just doubling up.
+        // When we're inside a known boss fight we surface that on top:
+        //   "vs Juggernaut  ·  Cyclops"     (boss known, in fight)
+        //   "Cyclops  (Vash)"               (no fight or unmapped boss, hero known)
+        //   "DPS Meter"                     (nothing known yet)
         bool inBossFight = bossOnlyMode && (encounter.IsActive || encounter.IsEnded);
-        string titlePrefix = inBossFight && !string.IsNullOrEmpty(bossDisplayName)
-            ? $"BOSS: {bossDisplayName}"
-            : (bossOnlyMode ? "BOSS DPS" : "DPS");
-        string titleSuffix = heroDisplayName ?? string.Empty;
-        if (string.IsNullOrEmpty(titleSuffix) && topHeroes != null)
+        string heroOrPlayer = heroDisplayName ?? string.Empty;
+        if (string.IsNullOrEmpty(heroOrPlayer) && topHeroes != null)
         {
             for (int i = 0; i < topHeroes.Count; i++)
             {
                 var r = topHeroes[i];
-                if (r.IsSelf && !string.IsNullOrEmpty(r.PlayerName)) { titleSuffix = r.PlayerName; break; }
+                if (r.IsSelf && !string.IsNullOrEmpty(r.PlayerName)) { heroOrPlayer = r.PlayerName; break; }
             }
         }
-        HeroTitleText.Text = string.IsNullOrEmpty(titleSuffix) ? titlePrefix : $"{titlePrefix} · {titleSuffix}";
+        if (inBossFight && !string.IsNullOrEmpty(bossDisplayName))
+            HeroTitleText.Text = string.IsNullOrEmpty(heroOrPlayer)
+                ? $"vs {bossDisplayName}"
+                : $"vs {bossDisplayName}  ·  {heroOrPlayer}";
+        else if (!string.IsNullOrEmpty(heroOrPlayer))
+            HeroTitleText.Text = heroOrPlayer;
+        else
+            HeroTitleText.Text = "DPS Meter";
+
+        // ── Mode pill ────────────────────────────────────────────────────────────────────────
+        // Explicit "what damage am I looking at" badge -- the leaderboard numbers depend
+        // entirely on this, and the difference was invisible at-a-glance before.
+        if (bossOnlyMode)
+        {
+            ModeText.Text = "BOSS DAMAGE ONLY";
+            ModePill.Background  = s_modePillBossBg;
+            ModePill.BorderBrush = s_modePillBossBd;
+            ModeText.Foreground  = s_modePillBossFg;
+        }
+        else
+        {
+            ModeText.Text = "ALL DAMAGE";
+            ModePill.Background  = s_modePillNeutralBg;
+            ModePill.BorderBrush = s_modePillNeutralBd;
+            ModeText.Foreground  = s_modePillNeutralFg;
+        }
 
         // ── Big DPS number ───────────────────────────────────────────────────────────────────
         bool liveActive = dps > 0.1;

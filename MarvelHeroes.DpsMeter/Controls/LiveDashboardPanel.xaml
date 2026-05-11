@@ -77,16 +77,41 @@
                                SnapsToDevicePixels="True"/>
                     </Border>
 
-                    <!-- Centre column: hero name, DPS, mode -->
+                    <!-- Centre column: hero name + mode pill, big DPS, detail line -->
                     <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                        <TextBlock x:Name="HeroTitleText"
-                                   FontFamily="{StaticResource UiSemibold}" FontSize="14"
-                                   Foreground="#DDFFFFFF"
-                                   Text="DPS"/>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock x:Name="HeroTitleText"
+                                       FontFamily="{StaticResource UiSemibold}" FontSize="14"
+                                       Foreground="#DDFFFFFF"
+                                       VerticalAlignment="Center"
+                                       Text="DPS"/>
+                            <!--
+                                Explicit "what damage am I looking at" badge.  Live in both
+                                boss-only and all-damage modes the dashboard is otherwise
+                                visually identical, so without this it's easy to glance at
+                                the leaderboard and not know whether peers' totals are
+                                whole-region damage or just-this-fight damage.
+                            -->
+                            <Border x:Name="ModePill"
+                                    VerticalAlignment="Center"
+                                    Margin="10,0,0,0"
+                                    Padding="7,2"
+                                    CornerRadius="3"
+                                    Background="#22FFFFFF"
+                                    BorderBrush="#44FFFFFF"
+                                    BorderThickness="1">
+                                <TextBlock x:Name="ModeText"
+                                           FontFamily="{StaticResource UiFont}" FontSize="10"
+                                           FontWeight="SemiBold"
+                                           Foreground="#CCFFFFFF"
+                                           Text="ALL DAMAGE"/>
+                            </Border>
+                        </StackPanel>
                         <TextBlock x:Name="DpsText"
                                    FontFamily="{StaticResource UiSemibold}" FontSize="42"
                                    FontWeight="Bold" Foreground="#FFFFB347"
                                    LineHeight="46" LineStackingStrategy="BlockLineHeight"
+                                   Margin="0,2,0,0"
                                    Text="—"/>
                         <TextBlock x:Name="DetailText"
                                    FontFamily="{StaticResource UiFont}" FontSize="11"
