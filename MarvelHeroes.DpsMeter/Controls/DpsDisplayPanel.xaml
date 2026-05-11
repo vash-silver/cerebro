@@ -36,7 +36,7 @@
                           Checked="ShowSplinterTrackerMenuItem_OnChecked"
                           Unchecked="ShowSplinterTrackerMenuItem_OnUnchecked"/>
                 <MenuItem x:Name="SplinterCooldownSoundMenuItem"
-                          Header="Play sound when Splinter cooldown ends"
+                          Header="Play sound on Splinter drop / cooldown end"
                           IsCheckable="True"
                           Checked="SplinterCooldownSoundMenuItem_OnChecked"
                           Unchecked="SplinterCooldownSoundMenuItem_OnUnchecked"/>

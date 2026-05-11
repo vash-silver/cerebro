@@ -88,23 +88,20 @@ public sealed class DpsOverlayPresenter : IDisposable
         // a 7-minute cooldown ticker.  Independent of the DPS meters and unaffected by
         // boss-only mode / encounter lifecycle.
         _splinterTracker = new EternitySplinterTracker(_sniffer) { Diagnostic = AppendLog };
+        // Two alert moments, same sound: "a splinter just dropped, go grab it!" and
+        // "the cooldown expired, next drop is eligible".  Routed through one helper so the
+        // user's single SplinterCooldownSoundEnabled toggle controls both -- splitting
+        // them into separate settings would be twice the UI cost for negligible benefit;
+        // the events are always 7 minutes apart so there's no overlap risk.
         _splinterTracker.SplinterDropped += (_, args) =>
+        {
             AppendLog($"DpsOverlayPresenter: splinter dropped at {args.Utc:HH:mm:ss} -- 7 min cooldown armed");
+            PlaySplinterAlert("drop");
+        };
         _splinterTracker.CooldownExpired += (_, _) =>
         {
             AppendLog("DpsOverlayPresenter: splinter cooldown expired -- next drop eligible");
-            // Optional audio cue.  Routed through SplinterCooldownSoundPlayer which tries
-            // the user's configured custom sound file first (any WPF-decodable format) and
-            // falls back to the Windows notification sound when no path is set or the file
-            // can't be played.  Both code paths are wrapped in try/catch internally; the
-            // tick handler never throws because of a bad audio device.
-            if (_sharedSettings?.SplinterCooldownSoundEnabled == true)
-            {
-                bool playedCustom = SplinterCooldownSoundPlayer.Play(_sharedSettings.SplinterCooldownSoundPath);
-                AppendLog(playedCustom
-                    ? $"DpsOverlayPresenter: played custom splinter sound '{_sharedSettings.SplinterCooldownSoundPath}'"
-                    : "DpsOverlayPresenter: played system asterisk for splinter cooldown");
-            }
+            PlaySplinterAlert("cooldown-expired");
         };
 
         {
@@ -682,6 +679,19 @@ public sealed class DpsOverlayPresenter : IDisposable
     {
         _splinterTracker?.ArmFromNow();
         AppendLog("DpsOverlayPresenter: splinter cooldown armed manually by user request");
+    }
+
+    /// <summary>Play the configured splinter alert sound (custom file if set, system
+    /// asterisk fallback otherwise).  Gated on the user's enable toggle.  Used for BOTH
+    /// drop detection AND cooldown expiry -- single sound for both events keeps the
+    /// settings UI simple; the events are 7 min apart so there's no overlap.</summary>
+    private void PlaySplinterAlert(string contextForLog)
+    {
+        if (_sharedSettings?.SplinterCooldownSoundEnabled != true) return;
+        bool playedCustom = SplinterCooldownSoundPlayer.Play(_sharedSettings.SplinterCooldownSoundPath);
+        AppendLog(playedCustom
+            ? $"DpsOverlayPresenter: played custom splinter sound for {contextForLog} ('{_sharedSettings.SplinterCooldownSoundPath}')"
+            : $"DpsOverlayPresenter: played system asterisk for splinter {contextForLog}");
     }
 
     public void OpenReportViewer()
