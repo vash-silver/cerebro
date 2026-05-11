@@ -63,7 +63,16 @@ public partial class MainAppWindow : Window
         // live-window variants -- isOverlayMode:false hides the on-panel close button
         // (the window's title bar X handles closing) and the cursor stays default.
         LivePanel.Initialize(settings, isOverlayMode: false);
+        SettingsPanel.Initialize(settings);
         SetShowOverlayChecked(settings.ShowOverlay);
+
+        // Settings tab fires the same events the live panel fires (BossOnlyToggled, ClearDps,
+        // ResetMaxHitRecord, ResetSplinterCooldown) so the presenter doesn't have to special-
+        // case it.  Funnel them into the same window-level events.
+        SettingsPanel.BossOnlyToggled             += v  => BossOnlyToggled?.Invoke(v);
+        SettingsPanel.ClearDpsRequested           += () => ClearDpsRequested?.Invoke();
+        SettingsPanel.ResetMaxHitRecordRequested  += () => ResetMaxHitRecordRequested?.Invoke();
+        SettingsPanel.ResetSplinterCooldownRequested += () => ResetSplinterCooldownRequested?.Invoke();
 
         // Bubble panel events out so the presenter can subscribe to this window the same
         // way it does to DpsLiveWindow / DpsOverlayWindow.

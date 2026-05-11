@@ -131,6 +131,15 @@
                                             ShowCloseButton="False"
                                             Margin="8"/>
             </TabItem>
+            <TabItem Header="Settings">
+                <!--
+                    Settings tab consolidates the right-click-menu toggles + actions into a
+                    proper surface.  Backed by the same DpsOverlaySettingsFile singleton the
+                    panels share.  The right-click menu still works on the overlay for when
+                    the main window isn't in front.
+                -->
+                <controls:SettingsPanel x:Name="SettingsPanel"/>
+            </TabItem>
         </TabControl>
 
         <!-- ── Footer status strip ───────────────────────────────────────────────── -->
