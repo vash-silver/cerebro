@@ -29,9 +29,12 @@ public sealed class DpsOverlayPresenter : IDisposable
     private DpsMeter? _bossMeter;
     private EternitySplinterTracker? _splinterTracker;
     private DpsOverlayWindow? _overlayWindow;
-    private DpsLiveWindow? _liveWindow;
+    private MainAppWindow? _mainWindow;
     private DpsOverlaySettingsFile? _sharedSettings;
-    private bool _inWindowMode;
+    // Tracks the current visibility state of the floating overlay (formerly tracked by
+    // _inWindowMode; renamed to reflect the new app-first design where the main window is
+    // always up and the overlay is optional).
+    private bool _overlayVisible;
     private DispatcherTimer? _decayTimer;
     private bool _lastVisibilityDecision = true;
 
@@ -101,19 +104,21 @@ public sealed class DpsOverlayPresenter : IDisposable
         _uiDispatcher.Invoke(() =>
         {
             _sharedSettings = DpsOverlaySettingsFile.Load();
-            _inWindowMode   = _sharedSettings.WindowMode;
+            _overlayVisible = _sharedSettings.ShowOverlay;
 
+            // App-first layout: the main window is created and shown unconditionally; the
+            // floating overlay is created up front too (so we can push DPS updates to it
+            // even before it's visible), but Show()n only when the user opts in.
+            _mainWindow    = new MainAppWindow(_sharedSettings);
             _overlayWindow = new DpsOverlayWindow(_sharedSettings);
-            _liveWindow    = new DpsLiveWindow(_sharedSettings);
 
-            initialBossOnly = _overlayWindow.InitialBossOnlyPreference;
+            initialBossOnly = _mainWindow.InitialBossOnlyPreference;
 
+            WireWindowEvents(_mainWindow);
             WireWindowEvents(_overlayWindow);
-            WireWindowEvents(_liveWindow);
 
-            if (_inWindowMode)
-                _liveWindow.Show();
-            else
+            _mainWindow.Show();
+            if (_overlayVisible)
                 _overlayWindow.ShowWithoutActivating();
 
             _decayTimer = new DispatcherTimer(
@@ -126,13 +131,17 @@ public sealed class DpsOverlayPresenter : IDisposable
 
         _meter.BossOnlyMode = initialBossOnly;
 
-        AppendLog($"DpsOverlayPresenter started (sniffer running={_sniffer.IsRunning}, windowMode={_inWindowMode})");
+        AppendLog($"DpsOverlayPresenter started (sniffer running={_sniffer.IsRunning}, overlayVisible={_overlayVisible})");
     }
 
     private void WireWindowEvents(DpsOverlayWindow w)
     {
         w.BossOnlyToggled      += (enabled) => { if (_meter != null) _meter.BossOnlyMode = enabled; };
-        w.SwitchModeRequested  += ToggleWindowMode;
+        // The overlay's right-click "Switch mode" menu item used to flip between overlay /
+        // live-window mode.  In the app-first layout it instead toggles the overlay's own
+        // visibility -- same effect from the user's perspective (the meter "moves out of
+        // the way") while leaving the main window untouched.
+        w.SwitchModeRequested  += () => SetOverlayVisible(!_overlayVisible);
         w.SaveSnapshotRequested += (h, enc, p) => SaveSnapshotNow(h, enc, p);
         w.ClearDpsRequested    += ClearDpsNow;
         w.ResetMaxHitRecordRequested += ResetMaxHitRecordNow;
@@ -140,36 +149,40 @@ public sealed class DpsOverlayPresenter : IDisposable
         w.ViewReportsRequested += OpenReportViewer;
     }
 
-    private void WireWindowEvents(DpsLiveWindow w)
+    private void WireWindowEvents(MainAppWindow w)
     {
         w.BossOnlyToggled      += (enabled) => { if (_meter != null) _meter.BossOnlyMode = enabled; };
-        w.SwitchModeRequested  += ToggleWindowMode;
+        w.SwitchModeRequested  += () => SetOverlayVisible(!_overlayVisible);  // see overlay-window note
         w.SaveSnapshotRequested += (h, enc, p) => SaveSnapshotNow(h, enc, p);
         w.ClearDpsRequested    += ClearDpsNow;
         w.ResetMaxHitRecordRequested += ResetMaxHitRecordNow;
         w.ResetSplinterCooldownRequested += ResetSplinterCooldownNow;
-        w.ViewReportsRequested += OpenReportViewer;
+        // The Live tab's right-click "View reports" switches tabs in-place (handled inside
+        // MainAppWindow); the presenter doesn't need to do anything here.  No ViewReports
+        // subscription means we avoid double-opening a standalone window.
+
+        // Header "Show overlay" checkbox -- the canonical user-facing toggle in the new layout.
+        w.ShowOverlayToggled += SetOverlayVisible;
     }
 
-    private void ToggleWindowMode()
+    /// <summary>Show or hide the floating overlay and persist the choice.  Keeps the main
+    /// window's checkbox in sync so the user can toggle from either the checkbox or the
+    /// overlay's right-click menu without the two views disagreeing.</summary>
+    private void SetOverlayVisible(bool visible)
     {
-        _inWindowMode = !_inWindowMode;
-        if (_inWindowMode)
-        {
-            _overlayWindow?.Hide();
-            _liveWindow?.Show();
-        }
-        else
-        {
-            _liveWindow?.Hide();
+        if (_overlayVisible == visible) return;
+        _overlayVisible = visible;
+        if (visible)
             _overlayWindow?.ShowWithoutActivating();
-        }
+        else
+            _overlayWindow?.Hide();
+        _mainWindow?.SetShowOverlayChecked(visible);
         if (_sharedSettings != null)
         {
-            _sharedSettings.WindowMode = _inWindowMode;
+            _sharedSettings.ShowOverlay = visible;
             DpsOverlaySettingsFile.Save(_sharedSettings);
         }
-        AppendLog($"DpsOverlayPresenter: switched to {(_inWindowMode ? "window" : "overlay")} mode");
+        AppendLog($"DpsOverlayPresenter: overlay visibility = {visible}");
     }
 
     public void Stop()
@@ -182,8 +195,8 @@ public sealed class DpsOverlayPresenter : IDisposable
             _decayTimer = null;
             try { _overlayWindow?.Close(); } catch { }
             _overlayWindow = null;
-            try { _liveWindow?.CloseByPresenter(); } catch { }
-            _liveWindow = null;
+            try { _mainWindow?.CloseByPresenter(); } catch { }
+            _mainWindow = null;
             _sharedSettings = null;
         });
 
@@ -247,7 +260,7 @@ public sealed class DpsOverlayPresenter : IDisposable
 
     private void OnDecayTick(object? sender, EventArgs e)
     {
-        if (_meter is null || (_overlayWindow is null && _liveWindow is null)) return;
+        if (_meter is null || (_overlayWindow is null && _mainWindow is null)) return;
 
         _meter.Tick(DateTime.UtcNow);
         _bossMeter?.Tick(DateTime.UtcNow);
@@ -298,7 +311,7 @@ public sealed class DpsOverlayPresenter : IDisposable
                 _splinterTracker.RemainingCooldown,
                 _splinterTracker.DropCount,
                 justDropped);
-            _liveWindow?.UpdateSplinterStatus(
+            _mainWindow?.UpdateSplinterStatus(
                 _splinterTracker.IsCooldownActive,
                 _splinterTracker.RemainingCooldown,
                 _splinterTracker.DropCount,
@@ -316,8 +329,11 @@ public sealed class DpsOverlayPresenter : IDisposable
         _prevBossEncounterActive = bossEncounter.IsActive;
         _prevBossEncounterEnded  = bossEncounter.IsEnded;
 
-        // Visibility gating applies only to the overlay (the live window is a normal window).
-        if (!_inWindowMode && _overlayWindow != null)
+        // Visibility gating applies only to the floating overlay -- the main window is a
+        // standard taskbar app and stays visible regardless of which process is in the
+        // foreground.  When the user hasn't asked for the overlay at all (_overlayVisible
+        // false), we also skip the auto-hide dance entirely.
+        if (_overlayVisible && _overlayWindow != null)
         {
             bool shouldShow = ShouldBeVisible?.Invoke() ?? true;
             if (shouldShow != _lastVisibilityDecision)
@@ -355,7 +371,7 @@ public sealed class DpsOverlayPresenter : IDisposable
         _overlayWindow?.UpdateDps(dps, total60s, sessionTotal, owner, maxHit, maxHitSession, maxHitEncounter,
             heroName, bossName, bossOnly, top5, encounter,
             bossDps, bossTotal60s, bossTop5, bossEncounter, powerBreakdown);
-        _liveWindow?.UpdateDps(dps, total60s, sessionTotal, owner, maxHit, maxHitSession, maxHitEncounter,
+        _mainWindow?.UpdateDps(dps, total60s, sessionTotal, owner, maxHit, maxHitSession, maxHitEncounter,
             heroName, bossName, bossOnly, top5, encounter,
             bossDps, bossTotal60s, bossTop5, bossEncounter, powerBreakdown);
     }
