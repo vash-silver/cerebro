@@ -173,6 +173,7 @@ public sealed class DpsOverlayPresenter : IDisposable
         w.ClearDpsRequested    += ClearDpsNow;
         w.ResetMaxHitRecordRequested += ResetMaxHitRecordNow;
         w.ResetSplinterCooldownRequested += ResetSplinterCooldownNow;
+        w.ArmSplinterCooldownRequested   += ArmSplinterCooldownNow;
         // The Live tab's right-click "View reports" switches tabs in-place (handled inside
         // MainAppWindow); the presenter doesn't need to do anything here.  No ViewReports
         // subscription means we avoid double-opening a standalone window.
@@ -670,6 +671,17 @@ public sealed class DpsOverlayPresenter : IDisposable
     {
         _splinterTracker?.Reset();
         AppendLog("DpsOverlayPresenter: splinter cooldown cleared by user request");
+    }
+
+    /// <summary>Manually start the 7-minute splinter cooldown from this moment.  Useful when
+    /// the user saw a splinter drop in-game that the auto-detection missed -- e.g. it dropped
+    /// before they launched the meter, the proto-index match failed because of a game patch,
+    /// or the EntityCreate happened during a region-load packet storm that exceeded the
+    /// per-session discovery log cap.</summary>
+    public void ArmSplinterCooldownNow()
+    {
+        _splinterTracker?.ArmFromNow();
+        AppendLog("DpsOverlayPresenter: splinter cooldown armed manually by user request");
     }
 
     public void OpenReportViewer()

@@ -51,6 +51,7 @@ public partial class SettingsPanel : UserControl
     public event Action?       ClearDpsRequested;
     public event Action?       ResetMaxHitRecordRequested;
     public event Action?       ResetSplinterCooldownRequested;
+    public event Action?       ArmSplinterCooldownRequested;
 
     public SettingsPanel()
     {
@@ -248,6 +249,9 @@ public partial class SettingsPanel : UserControl
 
     private void ResetSplinterButton_Click(object sender, RoutedEventArgs e)
         => ResetSplinterCooldownRequested?.Invoke();
+
+    private void ArmSplinterButton_Click(object sender, RoutedEventArgs e)
+        => ArmSplinterCooldownRequested?.Invoke();
 
     private void TestSoundButton_Click(object sender, RoutedEventArgs e)
     {

@@ -158,7 +158,11 @@
                 <Button Content="Reset hero max-hit record…" Style="{StaticResource DangerButton}"
                         Click="ResetMaxHitButton_Click"/>
                 <Button Content="Reset Splinter cooldown" Style="{StaticResource SettingsButton}"
-                        Click="ResetSplinterButton_Click"/>
+                        Click="ResetSplinterButton_Click"
+                        ToolTip="Clear the cooldown timer.  Use if the in-game server timer was reset (relog, zone change) and the meter is showing the wrong remaining time."/>
+                <Button Content="Arm Splinter cooldown now" Style="{StaticResource SettingsButton}"
+                        Click="ArmSplinterButton_Click"
+                        ToolTip="Start the 7-minute cooldown timer from this moment.  Use if you saw a Splinter drop in-game that the meter didn't detect automatically (e.g. it dropped before you launched the meter)."/>
                 <Button Content="Test Splinter sound" Style="{StaticResource SettingsButton}"
                         Click="TestSoundButton_Click"/>
             </WrapPanel>

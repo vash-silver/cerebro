@@ -43,6 +43,7 @@ public partial class MainAppWindow : Window
     public event Action?         ClearDpsRequested;
     public event Action?         ResetMaxHitRecordRequested;
     public event Action?         ResetSplinterCooldownRequested;
+    public event Action?         ArmSplinterCooldownRequested;
     // ViewReportsRequested is kept in the API surface for signature parity with
     // DpsLiveWindow / DpsOverlayWindow, but the main window short-circuits the right-click
     // "View reports" menu by switching to the Reports tab in-place rather than asking the
@@ -77,6 +78,7 @@ public partial class MainAppWindow : Window
         SettingsTab.ClearDpsRequested               += () => ClearDpsRequested?.Invoke();
         SettingsTab.ResetMaxHitRecordRequested      += () => ResetMaxHitRecordRequested?.Invoke();
         SettingsTab.ResetSplinterCooldownRequested  += () => ResetSplinterCooldownRequested?.Invoke();
+        SettingsTab.ArmSplinterCooldownRequested    += () => ArmSplinterCooldownRequested?.Invoke();
 
         // The dashboard's "Save snapshot" button forwards a snapshot of the current tick
         // (top heroes / encounter state / power breakdown all cached on the last UpdateDps).
