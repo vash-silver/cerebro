@@ -122,4 +122,27 @@ public sealed class EternitySplinterTrackerTests
         // Adding the canonical default again is a no-op -- DefaultKnownProtoRefs has it already.
         t.AddKnownProtoRef(KnownSplinterProtoRef);
     }
+
+    [Fact]
+    public void AddKnownProtoIndex_LetsCallerExtendTheEnumIndexMatchSetAtRuntime()
+    {
+        // Enum-index path mirrors the proto-ref one -- this test is the smoke check that
+        // the second extension API doesn't throw / is idempotent.  Real matching is verified
+        // empirically once the splinter's enum index is discovered from a live session.
+        using var t = new EternitySplinterTracker(null);
+        t.AddKnownProtoIndex(12345u);
+        t.AddKnownProtoIndex(12345u);
+        t.AddKnownProtoIndex(99999u);
+    }
+
+    [Fact]
+    public void DefaultKnownProtoIndices_IsEmptyByDesign()
+    {
+        // The enum-index default set is intentionally empty -- indices are build-specific
+        // and have to be observed via the discovery log before being baked in.  If a future
+        // commit adds entries to the default set, that's fine; this test documents the
+        // current state so a regression doesn't sneak in (e.g. accidental copy-paste from
+        // the ulong PrototypeId set into the uint enum-index set).
+        Assert.Empty(EternitySplinterTracker.DefaultKnownProtoIndices);
+    }
 }
