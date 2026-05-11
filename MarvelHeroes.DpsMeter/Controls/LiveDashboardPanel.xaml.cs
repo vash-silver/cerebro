@@ -258,9 +258,12 @@ public partial class LiveDashboardPanel : UserControl
 
         if (justDropped)
         {
-            // 7 minutes was just armed -- progress bar starts near zero; bright orange flash.
+            // Cooldown was just armed -- progress bar starts near zero; bright orange flash.
+            // Caption pulls the duration off the tracker constant so a future tuning of
+            // CooldownDuration doesn't leave a "7-minute cooldown armed" lie on screen.
+            int armMinutes = (int)EternitySplinterTracker.CooldownDuration.TotalMinutes;
             SplinterStatusBig.Text   = "DROPPED!";
-            SplinterCaption.Text     = "7-minute cooldown armed";
+            SplinterCaption.Text     = $"{armMinutes}-minute cooldown armed";
             SplinterStatusBig.Foreground = s_splFlash;
             SplinterIcon.Foreground      = s_splFlash;
             SplinterAccent.Fill          = s_splFlashBd;

@@ -68,13 +68,13 @@ public sealed class DpsOverlaySettingsFile
     public bool ShowPowerBreakdown { get; set; } = false;
 
     /// <summary>When <c>true</c> the Eternity Splinter tracker status line is shown beneath the
-    /// main DPS number.  Tracks the 7-minute server-side cooldown between splinter drops so the
+    /// main DPS number.  Tracks the cooldown countdown between splinter drops so the
     /// user knows when killing another mob has a chance of yielding a splinter.  Default
     /// <c>true</c> in release -- the tracker is small, useful, and inactive (no visible state)
     /// until a splinter drops, so there's no downside to having it on out of the box.</summary>
     public bool ShowEternitySplinterTracker { get; set; } = true;
 
-    /// <summary>When <c>true</c> a short sound is played once the moment the 7-minute
+    /// <summary>When <c>true</c> a short sound is played once the moment the
     /// splinter cooldown expires.  When <see cref="SplinterCooldownSoundPath"/> is set to a
     /// valid file path, that file is played; otherwise we fall back to the Windows
     /// notification sound via <c>System.Media.SystemSounds.Asterisk</c>, which respects the

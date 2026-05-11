@@ -92,14 +92,14 @@
                       Checked="ShowSplinterCheckbox_OnChecked"
                       Unchecked="ShowSplinterCheckbox_OnUnchecked"/>
             <TextBlock Style="{StaticResource HintText}"
-                       Text="Shows a small status pill with the 7-minute server-side cooldown between Eternity Splinter drops."/>
+                       Text="Shows a status pill with the 6-minute countdown between Eternity Splinter drops."/>
 
             <CheckBox x:Name="SplinterSoundCheckbox" Style="{StaticResource SettingCheckbox}"
                       Content="Play sound on Splinter drop AND when cooldown ends"
                       Checked="SplinterSoundCheckbox_OnChecked"
                       Unchecked="SplinterSoundCheckbox_OnUnchecked"/>
             <TextBlock Style="{StaticResource HintText}"
-                       Text="Same sound fires for both events: once the moment a Splinter drops in-game (so you don't miss the pile on the ground) and again when the 7-minute cooldown expires (so you know the next drop is eligible).  Routes through Windows' notification channel so OS volume / mute applies."/>
+                       Text="Same sound fires for both events: once the moment a Splinter drops in-game (so you don't miss the pile on the ground) and again when the 6-minute cooldown expires (so you know the next drop is eligible).  Routes through Windows' notification channel so OS volume / mute applies."/>
 
             <Grid Margin="22,6,0,2">
                 <Grid.ColumnDefinitions>
@@ -185,7 +185,7 @@
                         ToolTip="Clear the cooldown timer.  Use if the in-game server timer was reset (relog, zone change) and the meter is showing the wrong remaining time."/>
                 <Button Content="Arm Splinter cooldown now" Style="{StaticResource SettingsButton}"
                         Click="ArmSplinterButton_Click"
-                        ToolTip="Start the 7-minute cooldown timer from this moment.  Use if you saw a Splinter drop in-game that the meter didn't detect automatically (e.g. it dropped before you launched the meter)."/>
+                        ToolTip="Start the 6-minute cooldown timer from this moment.  Use if you saw a Splinter drop in-game that the meter didn't detect automatically (e.g. it dropped before you launched the meter)."/>
                 <Button Content="Test Splinter sound" Style="{StaticResource SettingsButton}"
                         Click="TestSoundButton_Click"/>
             </WrapPanel>

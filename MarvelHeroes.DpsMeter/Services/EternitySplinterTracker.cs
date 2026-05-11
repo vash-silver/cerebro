@@ -6,7 +6,8 @@ namespace MarvelHeroes.DpsMeter.Services;
 
 /// <summary>
 /// Watches the sniffer's <see cref="MhMissionSniffer.LootDropped"/> events for Eternity
-/// Splinter drops and exposes the resulting 7-minute server-side cooldown to the UI.
+/// Splinter drops and exposes the resulting 6-minute cooldown countdown to the UI (the
+/// server-side throttle is ~7 minutes; see <see cref="CooldownDuration"/> for the gap).
 ///
 /// <para>The server keeps splinter drops on a per-player throttle: at most one drop per
 /// <see cref="CooldownDuration"/> per player.  When a splinter spawns on the ground we
@@ -35,8 +36,13 @@ namespace MarvelHeroes.DpsMeter.Services;
 /// </summary>
 public sealed class EternitySplinterTracker : IDisposable
 {
-    /// <summary>Standard server-side cooldown between splinter drops.</summary>
-    public static readonly TimeSpan CooldownDuration = TimeSpan.FromMinutes(7);
+    /// <summary>Standard server-side cooldown between splinter drops.  Empirically the
+    /// MHServerEmu throttle resolves a touch under 7 min in practice (network jitter, server
+    /// tick alignment), so we run the visible countdown at 6 min -- this means the timer
+    /// hits zero a hair before the server is actually ready, but in exchange the user never
+    /// sees a "0:00 -- eligible" reading that lies because the server hasn't rolled over
+    /// yet.  Favour false-positive eligibility over false-negative.</summary>
+    public static readonly TimeSpan CooldownDuration = TimeSpan.FromMinutes(6);
 
     /// <summary>Known Eternity Splinter <c>PrototypeId</c> values, used by the
     /// <see cref="MhMissionSniffer.LootDropped"/> path (full 64-bit DataRef matching).
@@ -112,7 +118,7 @@ public sealed class EternitySplinterTracker : IDisposable
     /// the UI should marshal to its dispatcher.</summary>
     public event EventHandler<SplinterDroppedEventArgs>? SplinterDropped;
 
-    /// <summary>Fires exactly once per cooldown when the 7-minute window expires.  Useful
+    /// <summary>Fires exactly once per cooldown when the countdown window expires.  Useful
     /// for an audio cue or toast.  Runs on whichever thread called <see cref="Tick"/>.</summary>
     public event EventHandler? CooldownExpired;
 
@@ -160,7 +166,7 @@ public sealed class EternitySplinterTracker : IDisposable
         }
     }
 
-    /// <summary>True while we're inside the post-drop 7-minute window.  False before the
+    /// <summary>True while we're inside the post-drop countdown window.  False before the
     /// first drop and after the window has elapsed.</summary>
     public bool IsCooldownActive => RemainingCooldown > TimeSpan.Zero;
 
@@ -230,7 +236,7 @@ public sealed class EternitySplinterTracker : IDisposable
     }
 
     /// <summary>Poll point for the UI dispatcher's decay timer.  Fires
-    /// <see cref="CooldownExpired"/> once when the 7-minute window elapses; idempotent
+    /// <see cref="CooldownExpired"/> once when the countdown window elapses; idempotent
     /// otherwise.  Call as often as you'd like -- it's a cheap clock comparison.</summary>
     public void Tick()
     {
@@ -331,7 +337,7 @@ public sealed class EternitySplinterTracker : IDisposable
         }
         var msg = manual
             ? $"EternitySplinterTracker: cooldown armed manually at {utc:HH:mm:ss}"
-            : $"EternitySplinterTracker: splinter drop detected at {utc:HH:mm:ss} (#{DropCount}) -- 7 min cooldown started";
+            : $"EternitySplinterTracker: splinter drop detected at {utc:HH:mm:ss} (#{DropCount}) -- {CooldownDuration.TotalMinutes:0} min cooldown started";
         Diagnostic?.Invoke(msg);
         try { SplinterDropped?.Invoke(this, new SplinterDroppedEventArgs(utc, manual)); }
         catch { /* listener exceptions don't kill the parser */ }

@@ -29,9 +29,14 @@ public sealed class EternitySplinterTrackerTests
     }
 
     [Fact]
-    public void CooldownDuration_Is7Minutes()
+    public void CooldownDuration_Is6Minutes()
     {
-        Assert.Equal(TimeSpan.FromMinutes(7), EternitySplinterTracker.CooldownDuration);
+        // The display countdown is intentionally 1 min shorter than the server-side throttle
+        // (~7 min): rather than show "0:00 -- eligible" while the server is still rejecting
+        // drop rolls, the timer expires a hair early so the user knows they can start trying.
+        // Pinned via test so a future tuning ("let's push it to 5 min") is a deliberate
+        // change and not an accidental drift.
+        Assert.Equal(TimeSpan.FromMinutes(6), EternitySplinterTracker.CooldownDuration);
     }
 
     [Fact]
@@ -57,7 +62,7 @@ public sealed class EternitySplinterTrackerTests
         var after  = DateTime.UtcNow;
 
         Assert.True(t.IsCooldownActive);
-        // Remaining should be (almost) the full 7 minutes -- allow 2s of slack for slow CI.
+        // Remaining should be (almost) the full CooldownDuration -- allow 2s of slack for slow CI.
         Assert.InRange(
             t.RemainingCooldown,
             EternitySplinterTracker.CooldownDuration - TimeSpan.FromSeconds(2),

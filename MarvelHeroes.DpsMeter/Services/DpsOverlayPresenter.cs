@@ -85,8 +85,9 @@ public sealed class DpsOverlayPresenter : IDisposable
         _bossMeter.DpsChanged += OnDpsChanged;
 
         // Eternity Splinter tracker -- subscribes to the sniffer's LootDropped events for
-        // a 7-minute cooldown ticker.  Independent of the DPS meters and unaffected by
-        // boss-only mode / encounter lifecycle.
+        // a cooldown ticker (see EternitySplinterTracker.CooldownDuration for the actual
+        // window length).  Independent of the DPS meters and unaffected by boss-only mode /
+        // encounter lifecycle.
         _splinterTracker = new EternitySplinterTracker(_sniffer) { Diagnostic = AppendLog };
         // Route the sound player's fallback diagnostics through the same log so we can see
         // *why* the system-asterisk fallback fired -- "file not found" vs. "exception
@@ -97,7 +98,8 @@ public sealed class DpsOverlayPresenter : IDisposable
         // "the cooldown expired, next drop is eligible".  Routed through one helper so the
         // user's single SplinterCooldownSoundEnabled toggle controls both -- splitting
         // them into separate settings would be twice the UI cost for negligible benefit;
-        // the events are always 7 minutes apart so there's no overlap risk.
+        // the drop and cooldown-expired events are always one CooldownDuration apart so
+        // there's no overlap risk regardless of which value we pick.
         //
         // THREADING: SplinterDropped fires from the sniffer's capture thread (because
         // EternitySplinterTracker.OnEntityCreated runs there), but WPF's MediaPlayer --
@@ -108,7 +110,7 @@ public sealed class DpsOverlayPresenter : IDisposable
         // (via Tick()), so it doesn't need the same hop.
         _splinterTracker.SplinterDropped += (_, args) =>
         {
-            AppendLog($"DpsOverlayPresenter: splinter dropped at {args.Utc:HH:mm:ss} -- 7 min cooldown armed");
+            AppendLog($"DpsOverlayPresenter: splinter dropped at {args.Utc:HH:mm:ss} -- {EternitySplinterTracker.CooldownDuration.TotalMinutes:0} min cooldown armed");
             _uiDispatcher.BeginInvoke(new Action(() => PlaySplinterAlert("drop")));
         };
         _splinterTracker.CooldownExpired += (_, _) =>
@@ -683,7 +685,7 @@ public sealed class DpsOverlayPresenter : IDisposable
         AppendLog("DpsOverlayPresenter: splinter cooldown cleared by user request");
     }
 
-    /// <summary>Manually start the 7-minute splinter cooldown from this moment.  Useful when
+    /// <summary>Manually start the splinter cooldown from this moment.  Useful when
     /// the user saw a splinter drop in-game that the auto-detection missed -- e.g. it dropped
     /// before they launched the meter, the proto-index match failed because of a game patch,
     /// or the EntityCreate happened during a region-load packet storm that exceeded the
@@ -697,7 +699,7 @@ public sealed class DpsOverlayPresenter : IDisposable
     /// <summary>Play the configured splinter alert sound (custom file if set, system
     /// asterisk fallback otherwise).  Gated on the user's enable toggle.  Used for BOTH
     /// drop detection AND cooldown expiry -- single sound for both events keeps the
-    /// settings UI simple; the events are 7 min apart so there's no overlap.</summary>
+    /// settings UI simple; the events are one CooldownDuration apart so there's no overlap.</summary>
     private void PlaySplinterAlert(string contextForLog)
     {
         if (_sharedSettings?.SplinterCooldownSoundEnabled != true) return;

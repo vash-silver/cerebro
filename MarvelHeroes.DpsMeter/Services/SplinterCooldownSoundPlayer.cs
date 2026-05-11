@@ -15,8 +15,8 @@ namespace MarvelHeroes.DpsMeter.Services;
 /// on the UI thread via the 4 Hz decay timer, so callers don't need to marshal explicitly.</para>
 ///
 /// <para>A single static <see cref="MediaPlayer"/> instance is reused across plays.  The
-/// cooldown is 7 minutes so we never overlap; <see cref="MediaPlayer.Open"/> stops any
-/// previous playback before starting the new one.</para>
+/// cooldown is on the order of minutes so plays never overlap in practice;
+/// <see cref="MediaPlayer.Open"/> stops any previous playback before starting the new one.</para>
 /// </summary>
 public static class SplinterCooldownSoundPlayer
 {
