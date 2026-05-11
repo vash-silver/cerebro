@@ -93,18 +93,17 @@ public sealed class DpsOverlayPresenter : IDisposable
         _splinterTracker.CooldownExpired += (_, _) =>
         {
             AppendLog("DpsOverlayPresenter: splinter cooldown expired -- next drop eligible");
-            // Optional audio cue.  Routed through Windows' notification-sound channel so it
-            // respects the user's OS-level sound preferences (muting system sounds also
-            // mutes us).  Try/catch is belt-and-braces -- audio APIs occasionally throw on
-            // headless / RDP / no-sound-device hosts; we never want that to take down the
-            // tick handler that just expired the cooldown.
+            // Optional audio cue.  Routed through SplinterCooldownSoundPlayer which tries
+            // the user's configured custom sound file first (any WPF-decodable format) and
+            // falls back to the Windows notification sound when no path is set or the file
+            // can't be played.  Both code paths are wrapped in try/catch internally; the
+            // tick handler never throws because of a bad audio device.
             if (_sharedSettings?.SplinterCooldownSoundEnabled == true)
             {
-                try { System.Media.SystemSounds.Asterisk.Play(); }
-                catch (Exception ex)
-                {
-                    AppendLog($"DpsOverlayPresenter: splinter cooldown sound failed: {ex.GetType().Name}: {ex.Message}");
-                }
+                bool playedCustom = SplinterCooldownSoundPlayer.Play(_sharedSettings.SplinterCooldownSoundPath);
+                AppendLog(playedCustom
+                    ? $"DpsOverlayPresenter: played custom splinter sound '{_sharedSettings.SplinterCooldownSoundPath}'"
+                    : "DpsOverlayPresenter: played system asterisk for splinter cooldown");
             }
         };
 

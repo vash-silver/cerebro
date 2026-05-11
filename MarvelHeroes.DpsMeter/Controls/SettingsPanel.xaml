@@ -101,6 +101,35 @@
             <TextBlock Style="{StaticResource HintText}"
                        Text="Routes through Windows' notification-sound channel, so the OS-level volume / mute setting applies."/>
 
+            <Grid Margin="22,6,0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,0"
+                           FontFamily="Segoe UI" FontSize="11" Foreground="#AAFFFFFF"
+                           Text="Custom sound:"/>
+                <TextBox x:Name="SplinterSoundPathText" Grid.Column="1"
+                         FontFamily="Consolas" FontSize="11"
+                         Background="#1E1E1E" Foreground="#DDFFFFFF"
+                         BorderBrush="#44FFFFFF" BorderThickness="1"
+                         Padding="4,3" VerticalContentAlignment="Center"
+                         IsReadOnly="True"
+                         Text="(system default)"
+                         ToolTip="Browse to pick a WAV / MP3 / WMA / AAC file.  Clear to fall back to the Windows notification sound."/>
+                <Button Grid.Column="2" Content="Browse…" Margin="6,0,0,0"
+                        Style="{StaticResource SettingsButton}"
+                        Click="BrowseSplinterSoundButton_Click"/>
+                <Button Grid.Column="3" Content="Clear" Margin="6,0,0,0"
+                        Style="{StaticResource SettingsButton}"
+                        Click="ClearSplinterSoundButton_Click"/>
+            </Grid>
+            <TextBlock Style="{StaticResource HintText}"
+                       Text="If set, this file plays instead of the Windows asterisk.  Missing / unreadable files silently fall back to the system sound."/>
+
             <!-- ── Overlay scale ───────────────────────────────────────────────────────── -->
             <TextBlock Text="OVERLAY SCALE" Style="{StaticResource SectionHeader}"/>
             <TextBlock Style="{StaticResource HintText}" Margin="0,0,0,4"

@@ -5,6 +5,7 @@ using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
 using MarvelHeroesComporator.NetworkSniffer;
+using MarvelHeroes.DpsMeter.Services;
 
 namespace MarvelHeroes.DpsMeter.Controls;
 
@@ -76,6 +77,12 @@ public partial class SettingsPanel : UserControl
         SetChecked(ShowPowerBreakdownCheckbox,  settings.ShowPowerBreakdown,         ref _suppressShowPowerBreakdown);
         SetChecked(ShowSplinterCheckbox,        settings.ShowEternitySplinterTracker, ref _suppressShowSplinter);
         SetChecked(SplinterSoundCheckbox,       settings.SplinterCooldownSoundEnabled, ref _suppressSplinterSound);
+
+        // Custom splinter sound path -- read-only textbox so the user always sees what's
+        // configured; "(system default)" placeholder when empty.
+        SplinterSoundPathText.Text = string.IsNullOrWhiteSpace(settings.SplinterCooldownSoundPath)
+            ? "(system default)"
+            : settings.SplinterCooldownSoundPath;
 
         // Diagnostics
         SetChecked(LoggingCheckbox,             settings.LoggingEnabled,             ref _suppressLogging);
@@ -244,7 +251,43 @@ public partial class SettingsPanel : UserControl
 
     private void TestSoundButton_Click(object sender, RoutedEventArgs e)
     {
-        try { System.Media.SystemSounds.Asterisk.Play(); }
-        catch { /* same swallow as the right-click menu's Test path */ }
+        // Route through the same helper the presenter uses, so the test always matches
+        // what'd play on a real cooldown expiry (custom file if set, system fallback if not).
+        SplinterCooldownSoundPlayer.Play(_settings?.SplinterCooldownSoundPath);
+    }
+
+    private void BrowseSplinterSoundButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_settings == null) return;
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title  = "Pick a sound file for the Splinter cooldown notification",
+            // The filter list mirrors what WPF's MediaPlayer can natively decode.
+            // Most users will pick a WAV or MP3; the others are listed for completeness.
+            Filter = "Sound files (*.wav;*.mp3;*.wma;*.aac)|*.wav;*.mp3;*.wma;*.aac"
+                   + "|WAV (*.wav)|*.wav"
+                   + "|MP3 (*.mp3)|*.mp3"
+                   + "|All files (*.*)|*.*",
+            CheckFileExists = true,
+        };
+        if (string.IsNullOrWhiteSpace(_settings.SplinterCooldownSoundPath) == false)
+        {
+            try { dialog.InitialDirectory = Path.GetDirectoryName(_settings.SplinterCooldownSoundPath); }
+            catch { /* invalid path -- let the dialog pick its own default */ }
+        }
+        if (dialog.ShowDialog() == true)
+        {
+            _settings.SplinterCooldownSoundPath = dialog.FileName;
+            SplinterSoundPathText.Text = dialog.FileName;
+            Save();
+        }
+    }
+
+    private void ClearSplinterSoundButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_settings == null) return;
+        _settings.SplinterCooldownSoundPath = null;
+        SplinterSoundPathText.Text = "(system default)";
+        Save();
     }
 }
