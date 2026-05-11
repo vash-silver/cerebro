@@ -179,22 +179,73 @@ public partial class LiveDashboardPanel : UserControl
         // ── Power breakdown rows ─────────────────────────────────────────────────────────────
         RenderPowers(powerBreakdown);
 
-        // ── Boss-fight banner ────────────────────────────────────────────────────────────────
-        if (inBossFight)
+        // ── Boss-fight section ───────────────────────────────────────────────────────────────
+        // Show the dedicated boss section whenever the parallel _bossMeter is mid-encounter
+        // or just-ended, AND we're NOT already in boss-only mode.  In boss-only mode the
+        // main leaderboard above IS the boss view, so a duplicate section would just take
+        // up space; in all-damage mode this section gives the user "both views at once"
+        // without changing modes.
+        bool showBossSection = !bossOnlyMode
+            && (bossEncounter.IsActive || bossEncounter.IsEnded);
+        if (showBossSection)
         {
             BossFightBanner.Visibility = Visibility.Visible;
             BossNameText.Text   = string.IsNullOrEmpty(bossDisplayName) ? "(unknown)" : bossDisplayName;
             BossDpsText.Text    = bossDps > 0.1 ? FormatDps(bossDps) : "—";
-            BossStatusText.Text = encounter.IsEnded
-                ? $"fight ended · Fight: {FormatTotal(encounter.SelfTotal)}"
+            BossStatusText.Text = bossEncounter.IsEnded
+                ? $"fight ended · Fight: {FormatTotal(bossEncounter.SelfTotal)}"
                 : (bossDps > 0.1
-                    ? $"live · Fight: {FormatTotal(encounter.SelfTotal)}"
-                    : $"60s avg · Fight: {FormatTotal(encounter.SelfTotal)}");
+                    ? $"live · Fight: {FormatTotal(bossEncounter.SelfTotal)}"
+                    : $"60s avg · Fight: {FormatTotal(bossEncounter.SelfTotal)}");
+            RenderBossLeaderboard(bossTopHeroes);
         }
         else
         {
             BossFightBanner.Visibility = Visibility.Collapsed;
         }
+    }
+
+    private void RenderBossLeaderboard(IReadOnlyList<DpsMeterClass.HeroShareEntry>? rows)
+    {
+        if (rows == null || rows.Count == 0)
+        {
+            BossLeaderboardRows.ItemsSource = null;
+            return;
+        }
+
+        // Same scaling logic as the main leaderboard; smaller hit area (30px portrait,
+        // 34px row height) since this section is supplementary -- the all-damage view above
+        // is the primary one.
+        double maxPercent = 0;
+        foreach (var r in rows) if (r.Percent > maxPercent) maxPercent = r.Percent;
+        if (maxPercent <= 0.01) maxPercent = 1.0;
+
+        const double trackWidthPx = 600.0;  // boss section is full-width, wider track
+        var view = new List<LeaderboardRow>(rows.Count);
+        foreach (var r in rows)
+        {
+            bool realNick = !string.IsNullOrEmpty(r.PlayerName)
+                && !(r.PlayerName.Length > 1 && r.PlayerName[0] == '#');
+            string display = !string.IsNullOrEmpty(r.Name) && realNick
+                ? $"{r.Name}  ({r.PlayerName})"
+                : !string.IsNullOrEmpty(r.Name) ? r.Name
+                : realNick ? r.PlayerName!
+                : r.IsSelf ? "you" : "?";
+            double pct = Math.Clamp(r.Percent, 0, 100);
+            view.Add(new LeaderboardRow
+            {
+                Portrait    = HeroAvatarImages.TryGet(r.Name),
+                DisplayName = display,
+                DpsText     = r.Dps   > 0.1 ? FormatDps(r.Dps)   : "",
+                TotalText   = r.Total60s > 0 ? FormatTotal(r.Total60s) : "",
+                PctText     = $"{r.Percent:0}%",
+                BarWidth    = trackWidthPx * (pct / maxPercent),
+                BarFill     = r.IsSelf ? s_selfBar : s_peerBar,
+                TextColor   = r.IsSelf ? s_selfFg  : s_peerFg,
+                FontWeight  = r.IsSelf ? FontWeights.SemiBold : FontWeights.Normal,
+            });
+        }
+        BossLeaderboardRows.ItemsSource = view;
     }
 
     public void UpdateSplinterStatus(bool cooldownActive, TimeSpan remaining, int dropCount, bool justDropped)

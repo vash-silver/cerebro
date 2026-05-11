@@ -328,36 +328,114 @@
                 </Border>
             </Grid>
 
-            <!-- ── Boss fight banner (shown when an encounter is active) ────────────── -->
+            <!--
+                Boss fight section: shown when boss encounter is live or just-ended AND
+                the user is in All-damage mode (in Boss-only mode the main leaderboard IS
+                the boss view, so this would be redundant).  Gives the user "both views at
+                once" without having to toggle modes: top leaderboard = all damage, bottom
+                section = boss-specific damage with its own mini leaderboard.
+            -->
             <Border x:Name="BossFightBanner" Grid.Row="2"
                     Style="{StaticResource Card}" Margin="0,14,0,0"
-                    BorderBrush="#66FF6B00" Background="#1A2410"
+                    BorderBrush="#66FF6B00" Background="#1A1410"
                     Visibility="Collapsed">
-                <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBlock Grid.Column="0" Text="BOSS FIGHT"
-                               FontFamily="{StaticResource UiSemibold}" FontSize="11"
-                               Foreground="#BBFF6B00" VerticalAlignment="Center"
-                               Margin="0,0,16,0"/>
-                    <TextBlock x:Name="BossNameText" Grid.Column="1"
-                               FontFamily="{StaticResource UiSemibold}" FontSize="14"
-                               Foreground="#FFCC8888" VerticalAlignment="Center"
-                               Margin="0,0,16,0"
-                               Text=""/>
-                    <TextBlock x:Name="BossStatusText" Grid.Column="2"
-                               FontFamily="{StaticResource UiFont}" FontSize="11"
-                               Foreground="#AAFFFFFF" VerticalAlignment="Center"
-                               Text=""/>
-                    <TextBlock x:Name="BossDpsText" Grid.Column="3"
-                               FontFamily="{StaticResource UiSemibold}" FontSize="18"
-                               Foreground="#FFFFB347" VerticalAlignment="Center"
-                               Text="—"/>
-                </Grid>
+                <DockPanel>
+                    <!-- Header row -->
+                    <Grid DockPanel.Dock="Top" Margin="0,0,0,10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="BOSS FIGHT"
+                                   FontFamily="{StaticResource UiSemibold}" FontSize="11"
+                                   Foreground="#BBFF6B00" VerticalAlignment="Center"
+                                   Margin="0,0,16,0"/>
+                        <TextBlock x:Name="BossNameText" Grid.Column="1"
+                                   FontFamily="{StaticResource UiSemibold}" FontSize="14"
+                                   Foreground="#FFCC8888" VerticalAlignment="Center"
+                                   Margin="0,0,16,0"
+                                   Text=""/>
+                        <TextBlock x:Name="BossStatusText" Grid.Column="2"
+                                   FontFamily="{StaticResource UiFont}" FontSize="11"
+                                   Foreground="#AAFFFFFF" VerticalAlignment="Center"
+                                   Text=""/>
+                        <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="DPS"
+                                       FontFamily="{StaticResource UiFont}" FontSize="10"
+                                       Foreground="#88FFFFFF" Margin="0,4,6,0"
+                                       VerticalAlignment="Bottom"/>
+                            <TextBlock x:Name="BossDpsText"
+                                       FontFamily="{StaticResource UiSemibold}" FontSize="22"
+                                       Foreground="#FFFFB347" VerticalAlignment="Center"
+                                       Text="—"/>
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- Mini leaderboard for the boss fight -->
+                    <Grid DockPanel.Dock="Top" Margin="0,0,0,4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="64"/>
+                            <ColumnDefinition Width="78"/>
+                            <ColumnDefinition Width="44"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Width="40" Text=""/>
+                        <TextBlock Grid.Column="1" Text="HERO"  Style="{StaticResource ColHeader}" HorizontalAlignment="Left"/>
+                        <TextBlock Grid.Column="2" Text="DPS"   Style="{StaticResource ColHeader}"/>
+                        <TextBlock Grid.Column="3" Text="TOTAL" Style="{StaticResource ColHeader}"/>
+                        <TextBlock Grid.Column="4" Text="%"     Style="{StaticResource ColHeader}"/>
+                    </Grid>
+
+                    <ItemsControl x:Name="BossLeaderboardRows">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Height="34" Margin="0,2">
+                                    <Rectangle HorizontalAlignment="Left" Height="34"
+                                               RadiusX="3" RadiusY="3"
+                                               Width="{Binding BarWidth}" Fill="{Binding BarFill}"/>
+                                    <Grid Margin="4,0,4,0" VerticalAlignment="Center">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="64"/>
+                                            <ColumnDefinition Width="78"/>
+                                            <ColumnDefinition Width="44"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Image Grid.Column="0" Width="30" Height="30"
+                                               Source="{Binding Portrait}"
+                                               Stretch="UniformToFill"
+                                               SnapsToDevicePixels="True"
+                                               Margin="0,0,8,0"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding DisplayName}"
+                                                   FontFamily="{StaticResource UiFont}" FontSize="13"
+                                                   Foreground="{Binding TextColor}"
+                                                   FontWeight="{Binding FontWeight}"
+                                                   VerticalAlignment="Center"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock Grid.Column="2" Text="{Binding DpsText}"
+                                                   FontFamily="{StaticResource UiFont}" FontSize="12"
+                                                   Foreground="{Binding TextColor}"
+                                                   TextAlignment="Right" HorizontalAlignment="Right"
+                                                   VerticalAlignment="Center"/>
+                                        <TextBlock Grid.Column="3" Text="{Binding TotalText}"
+                                                   FontFamily="{StaticResource UiFont}" FontSize="12"
+                                                   Foreground="{Binding TextColor}"
+                                                   TextAlignment="Right" HorizontalAlignment="Right"
+                                                   VerticalAlignment="Center"/>
+                                        <TextBlock Grid.Column="4" Text="{Binding PctText}"
+                                                   FontFamily="{StaticResource UiSemibold}" FontSize="13"
+                                                   Foreground="{Binding TextColor}"
+                                                   TextAlignment="Right" HorizontalAlignment="Right"
+                                                   VerticalAlignment="Center"/>
+                                    </Grid>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </DockPanel>
             </Border>
         </Grid>
     </ScrollViewer>
