@@ -7,7 +7,13 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <RootNamespace>MarvelHeroes.DpsMeter</RootNamespace>
-    <AssemblyName>MarvelHeroes.DpsMeter</AssemblyName>
+    <!--
+      Output EXE / assembly filename.  The project name on disk is still
+      MarvelHeroes.DpsMeter (sln + csproj + namespace are stable internal IDs), but
+      the user-facing product is "Cerebro" so the EXE in Task Manager, on the
+      taskbar, in Alt+Tab, and in Explorer reads as Cerebro.exe.
+    -->
+    <AssemblyName>Cerebro</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <!--
       Sets the EXE's Windows shell icon (what Explorer, the taskbar pin, and Alt+Tab show

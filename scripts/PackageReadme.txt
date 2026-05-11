@@ -1,9 +1,11 @@
-Marvel Heroes — Standalone DPS Meter
-====================================
+Cerebro — DPS Meter for Marvel Heroes
+=====================================
 
-A real-time DPS overlay for Marvel Heroes Omega (Tahiti / MHServerEmu
+A real-time DPS meter for Marvel Heroes Omega (Tahiti / MHServerEmu
 community servers).  Runs as its own process — no patching, no DLL
 injection — by passively sniffing the client's TCP traffic.
+
+Source / issues / updates: https://github.com/vash-silver/cerebro
 
 
 Requirements
@@ -25,7 +27,7 @@ How to run
 
   1.  Install Npcap (link above) if you haven't already.
   2.  Start Marvel Heroes and log into the game world.
-  3.  Double-click MarvelHeroes.DpsMeter.exe.
+  3.  Double-click Cerebro.exe.
   4.  A small overlay appears in the top-left corner of your screen.
         - Left-drag to reposition.
         - Right-click for the full settings menu (boss-only toggle,

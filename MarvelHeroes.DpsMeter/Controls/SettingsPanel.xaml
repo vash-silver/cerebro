@@ -219,7 +219,7 @@
             <TextBlock x:Name="AboutText"
                        FontFamily="Segoe UI" FontSize="11" Foreground="#AAFFFFFF"
                        TextWrapping="Wrap"
-                       Text="Marvel Heroes DPS Meter"/>
+                       Text="Cerebro"/>
 
         </StackPanel>
     </ScrollViewer>

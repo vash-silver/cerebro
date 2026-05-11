@@ -1,9 +1,10 @@
-# Marvel Heroes — Standalone DPS Meter
+# Cerebro
 
-Always-on-top WPF overlay that displays real-time DPS for Marvel Heroes
-(Tahiti / MHServerEmu builds). Runs as its own process — no patching,
-no DLL injection, no game-side hooks — by passively sniffing the client's
-TCP/4306 traffic with Npcap.
+*A real-time DPS meter for Marvel Heroes (Tahiti / MHServerEmu builds).*
+
+Always-on-top WPF overlay + main app window that displays your DPS as you
+play. Runs as its own process — no patching, no DLL injection, no game-side
+hooks — by passively sniffing the client's TCP/4306 traffic with Npcap.
 
 ```
 ┌───────────────────────────────┐
@@ -196,17 +197,31 @@ All per-user state lives under `%LocalAppData%\MarvelHeroesComporator\`:
 The folder name is intentionally shared with the upstream comporator app
 so a user upgrading from the integrated overlay keeps their records.
 
-## Provenance
+## Acknowledgments / Provenance
 
-Extracted from the larger
-[MarvelHeroesComporator](https://github.com/) tool.  The `NetworkSniffer/`
-files retain their original `MarvelHeroesComporator.NetworkSniffer`
-namespace so the sniffer code can be re-shared with that project verbatim.
-The `Gazillion/` and `lib/` contents are vendored from
-[MHServerEmu](https://github.com/Crypto137/MHServerEmu) (`EmuSource`).
+Cerebro stands on a stack of generous upstream work:
+
+- **[wmascent/MarvelHeroesOmega.DpsMeter](https://github.com/wmascent/MarvelHeroesOmega.DpsMeter)**
+  is the original DPS meter this project was forked from. The packet-sniffing
+  approach, the protobuf parsing skeleton, the encounter-scoped leaderboard,
+  the `MarvelHeroesComporator.NetworkSniffer` core, and the "passive TCP/4306
+  observation, no game hooks" architecture all come from there. Many of the
+  files under `NetworkSniffer/` retain the original `MarvelHeroesComporator`
+  namespace verbatim so improvements can be cross-pollinated back to upstream.
+- **[Crypto137/MHServerEmu](https://github.com/Crypto137/MHServerEmu)**
+  provides the `Gazillion/` protobuf definitions and the `lib/` payloads
+  vendored from `EmuSource`. Without the reverse-engineering work in MHServerEmu
+  there would be nothing to point a packet sniffer at.
+- **Marvel Heroes** itself, the game by Gazillion Entertainment (2013–2017),
+  which a community continues to keep alive on private servers. Cerebro is a
+  tribute to that community.
+
+Cerebro is a third-party tool. It does not modify, patch, inject into, or
+otherwise interact with the game client — it only observes the same network
+traffic the OS already routes to your machine.
 
 ## License
 
 See `lib/Google.ProtocolBuffers.License` for the bundled protobuf DLL.
-The rest of the source is unlicensed pending upstream decision — please
-ask before redistributing.
+The rest of the source is unlicensed pending decision — please ask before
+redistributing.

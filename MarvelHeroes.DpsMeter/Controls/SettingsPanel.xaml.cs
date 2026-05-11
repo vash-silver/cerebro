@@ -63,7 +63,7 @@ public partial class SettingsPanel : UserControl
             "MarvelHeroesComporator", "dps-meter.log");
 
         var version = Assembly.GetExecutingAssembly().GetName().Version;
-        AboutText.Text = $"Marvel Heroes DPS Meter  ·  v{version}\n" +
+        AboutText.Text = $"Cerebro  ·  DPS meter for Marvel Heroes  ·  v{version}\n" +
                          $"Settings file: %LocalAppData%\\MarvelHeroesComporator\\dps-overlay.json";
     }
 

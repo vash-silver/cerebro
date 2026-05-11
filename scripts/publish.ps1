@@ -2,7 +2,7 @@
 
 <#
 .SYNOPSIS
-    Build a self-contained release zip of MarvelHeroes.DpsMeter ready to send to a non-developer.
+    Build a self-contained release zip of Cerebro ready to send to a non-developer.
 
 .DESCRIPTION
     Wraps `dotnet publish` with the exact set of flags that produced the v1.0 release zip:
@@ -13,13 +13,13 @@
         - deterministic build
 
     Then copies scripts/PackageReadme.txt next to the EXE and zips both together as
-    publish/MarvelHeroesDpsMeter-v<Version>.zip.
+    publish/Cerebro-v<Version>.zip.
 
     The publish folder is gitignored (see .gitignore), so nothing committed.
 
 .PARAMETER Version
     Version tag baked into the zip filename.  Default: "1.0".
-    Example: -Version "1.1" produces publish/MarvelHeroesDpsMeter-v1.1.zip
+    Example: -Version "1.1" produces publish/Cerebro-v1.1.zip
 
 .PARAMETER SkipLeakScan
     Skip the personal-info scan over the produced binary.  Off by default; the
@@ -28,11 +28,11 @@
 
 .EXAMPLE
     .\scripts\publish.ps1
-    Produces publish/MarvelHeroesDpsMeter-v1.0.zip with default flags.
+    Produces publish/Cerebro-v1.0.zip with default flags.
 
 .EXAMPLE
     .\scripts\publish.ps1 -Version 1.2
-    Produces publish/MarvelHeroesDpsMeter-v1.2.zip.
+    Produces publish/Cerebro-v1.2.zip.
 #>
 
 [CmdletBinding()]
@@ -49,8 +49,8 @@ $RepoRoot      = Split-Path -Parent $PSScriptRoot
 $Csproj        = Join-Path $RepoRoot 'MarvelHeroes.DpsMeter\MarvelHeroes.DpsMeter.csproj'
 $PackageReadme = Join-Path $PSScriptRoot 'PackageReadme.txt'
 $PublishRoot   = Join-Path $RepoRoot 'publish'
-$StagingDir    = Join-Path $PublishRoot 'MarvelHeroesDpsMeter'
-$ZipPath       = Join-Path $PublishRoot ("MarvelHeroesDpsMeter-v{0}.zip" -f $Version)
+$StagingDir    = Join-Path $PublishRoot 'Cerebro'
+$ZipPath       = Join-Path $PublishRoot ("Cerebro-v{0}.zip" -f $Version)
 
 if (-not (Test-Path $Csproj)) {
     throw ("Could not find {0}. Run this script from inside the repo." -f $Csproj)
@@ -62,10 +62,10 @@ if (-not (Test-Path $PackageReadme)) {
 # Heads-up if a previous instance is still running ------------------------
 # Release publish targets bin\Release so a running Debug build normally does
 # not block the publish, but flag it so the user can close the app if it does.
-$running = Get-Process -Name 'MarvelHeroes.DpsMeter' -ErrorAction SilentlyContinue
+$running = Get-Process -Name 'Cerebro' -ErrorAction SilentlyContinue
 if ($running) {
     $pidList = ($running | ForEach-Object { $_.Id }) -join ', '
-    Write-Warning "MarvelHeroes.DpsMeter.exe is currently running (PID $pidList). The Release publish should still succeed, but close the app if the build fails on a file lock."
+    Write-Warning "Cerebro.exe is currently running (PID $pidList). The Release publish should still succeed, but close the app if the build fails on a file lock."
 }
 
 # Clean previous output ---------------------------------------------------
@@ -106,7 +106,7 @@ if ($LASTEXITCODE -ne 0) {
     throw ("dotnet publish failed with exit code {0}." -f $LASTEXITCODE)
 }
 
-$exe = Join-Path $StagingDir 'MarvelHeroes.DpsMeter.exe'
+$exe = Join-Path $StagingDir 'Cerebro.exe'
 if (-not (Test-Path $exe)) {
     throw ("Expected EXE not found at {0} after publish." -f $exe)
 }
@@ -138,7 +138,7 @@ if (-not $SkipLeakScan) {
     $leakPatterns = @()
     if ($userName) { $leakPatterns += ("\\Users\\{0}\\" -f $userName) }
     $leakPatterns += @(
-        'MarvelHeroes\.DpsMeter\.pdb'
+        'Cerebro\.pdb'
         'MarvelHeroesComporator\.NetworkSniffer\.pdb'
         'Gazillion\.pdb'
         '@gmail\.com'
@@ -180,7 +180,7 @@ $exeMb   = '{0:N1} MB' -f ($exeInfo.Length / 1MB)
 
 Write-Host ""
 Write-Host "-----------------------------------------------------------"
-Write-Host ("  Built MarvelHeroesDpsMeter v{0}" -f $Version)
+Write-Host ("  Built Cerebro v{0}" -f $Version)
 Write-Host "-----------------------------------------------------------"
 Write-Host ("  EXE : {0}" -f $exe)
 Write-Host ("        {0} (self-contained, single file, no .NET install needed)" -f $exeMb)
