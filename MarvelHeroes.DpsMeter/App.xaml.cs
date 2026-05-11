@@ -172,8 +172,20 @@ public partial class App : Application
         }
         catch (Exception ex)
         {
-            AppendLog($"Startup failed: {ex.GetType().Name}: {ex.Message}");
-            AppendLog(ex.StackTrace ?? "");
+            // Walk the InnerException chain -- TargetInvocationException (from WPF's BAML
+            // loader) and friends wrap the real fault.  Without this the log shows only
+            // "Exception has been thrown by the target of an invocation." which is useless
+            // for triage.
+            var cur = ex;
+            int depth = 0;
+            while (cur != null)
+            {
+                AppendLog($"Startup failed [{depth}]: {cur.GetType().Name}: {cur.Message}");
+                AppendLog(cur.StackTrace ?? "");
+                cur = cur.InnerException;
+                depth++;
+                if (depth > 8) break;  // pathological loop guard; real chains are 2-3 deep
+            }
             // Surface the failure visually since there's no main window to fall back to.
             // Most common cause is "Npcap not installed" — a friendly message points the user
             // at the right download instead of leaving them staring at an empty desktop.

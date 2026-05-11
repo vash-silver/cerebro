@@ -138,7 +138,7 @@
                     panels share.  The right-click menu still works on the overlay for when
                     the main window isn't in front.
                 -->
-                <controls:SettingsPanel x:Name="SettingsPanel"/>
+                <controls:SettingsPanel x:Name="SettingsTab"/>
             </TabItem>
         </TabControl>
 
