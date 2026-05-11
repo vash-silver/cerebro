@@ -177,6 +177,11 @@ public partial class SettingsPanel : UserControl
 
     private void UpdateScaleReadout(double value)
     {
+        // The Slider fires ValueChanged during InitializeComponent when its Value default
+        // (0.0) gets assigned, BEFORE the sibling ScaleReadout TextBlock has been parsed
+        // into existence.  Guard accordingly -- the next call (post-InitializeComponent, from
+        // Initialize() or a user drag) will succeed normally.
+        if (ScaleReadout == null) return;
         ScaleReadout.Text = $"{value * 100:0}%";
     }
 
