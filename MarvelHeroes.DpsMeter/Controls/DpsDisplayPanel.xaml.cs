@@ -494,6 +494,16 @@ public partial class DpsDisplayPanel : UserControl
         _splinterCooldownSound = false; SaveAll();
     }
 
+    /// <summary>Plays the same Windows notification sound the presenter triggers on actual
+    /// cooldown expiry, so the user can verify the audio path works without waiting 7
+    /// minutes (and without going through the splinter-detection + timer chain).  Fires
+    /// regardless of the on/off toggle -- this is an explicit "play it now" action.</summary>
+    private void TestSplinterSoundMenuItem_OnClick(object sender, RoutedEventArgs e)
+    {
+        try { System.Media.SystemSounds.Asterisk.Play(); }
+        catch { /* same swallow as the presenter's expiry path; nothing useful to surface here */ }
+    }
+
     /// <summary>Updates the splinter tracker status line.  Called from the presenter's decay
     /// timer alongside the regular DPS push -- decoupled from <see cref="UpdateDps"/> so the
     /// presenter can keep the tracker live even when no DPS changes have happened recently
