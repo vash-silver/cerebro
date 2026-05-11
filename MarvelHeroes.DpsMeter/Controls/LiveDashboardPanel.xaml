@@ -55,6 +55,7 @@
         <Grid Margin="14">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>  <!-- summary card -->
+                <RowDefinition Height="Auto"/>  <!-- splinter banner -->
                 <RowDefinition Height="*"/>     <!-- leaderboard + powers -->
                 <RowDefinition Height="Auto"/>  <!-- boss-fight banner -->
             </Grid.RowDefinitions>
@@ -141,18 +142,9 @@
                             </StackPanel>
                         </Grid>
 
-                        <!-- ES status pill -->
-                        <Border x:Name="SplinterPanel" Margin="0,10,0,0"
-                                HorizontalAlignment="Right"
-                                Padding="10,3" CornerRadius="4"
-                                Background="#332E7FFF" BorderBrush="#552E7FFF" BorderThickness="1"
-                                Visibility="Collapsed">
-                            <TextBlock x:Name="SplinterText"
-                                       FontFamily="{StaticResource UiSemibold}" FontSize="12"
-                                       Foreground="#FFB0CDFF" Text="ES: ready"/>
-                        </Border>
-
-                        <!-- Save snapshot button -->
+                        <!-- Save snapshot button.  The prominent ES UI is the dedicated
+                             banner below this card; the old small pill that lived here is
+                             gone in favour of that. -->
                         <Button x:Name="SaveSnapshotButton" Content="Save snapshot"
                                 Style="{StaticResource DashboardActionButton}"
                                 HorizontalAlignment="Right" Margin="0,10,0,0"
@@ -161,8 +153,90 @@
                 </Grid>
             </Border>
 
+            <!--
+                Eternity Splinter cooldown banner.  Always visible (data or no data) so the
+                user knows the feature exists at a glance.  Three visual states driven by
+                UpdateSplinterStatus (cooldownActive / justDropped / dropCount):
+
+                  READY   blue   :  "READY" + "next drop eligible"
+                  COUNTDOWN amber:  "M:SS"  + "until next eligible drop"  + progress bar
+                  DROPPED  orange:  "DROPPED!" + "armed 7:00 cooldown"    + brief bright flash
+
+                Coloured left-edge accent + progress bar give the section a "status widget"
+                feel rather than a passive line of text.
+            -->
+            <Border x:Name="SplinterBanner" Grid.Row="1" Margin="0,0,0,14"
+                    CornerRadius="4" SnapsToDevicePixels="True"
+                    Background="#111111" BorderBrush="#332E7FFF" BorderThickness="1"
+                    Padding="0">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="6"/>     <!-- coloured accent -->
+                        <ColumnDefinition Width="Auto"/>  <!-- icon + label -->
+                        <ColumnDefinition Width="*"/>     <!-- progress bar + caption -->
+                        <ColumnDefinition Width="Auto"/>  <!-- big status + count -->
+                    </Grid.ColumnDefinitions>
+
+                    <Rectangle x:Name="SplinterAccent" Grid.Column="0" Fill="#552E7FFF"/>
+
+                    <!-- Icon + label -->
+                    <StackPanel Grid.Column="1" Orientation="Horizontal"
+                                VerticalAlignment="Center" Margin="14,14,16,14">
+                        <TextBlock x:Name="SplinterIcon" Text="✦"
+                                   FontSize="28" Margin="0,0,10,0"
+                                   Foreground="#FFB0CDFF" VerticalAlignment="Center"/>
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="ETERNITY SPLINTER"
+                                       FontFamily="{StaticResource UiSemibold}"
+                                       FontSize="11" FontWeight="SemiBold"
+                                       Foreground="#88FFFFFF"/>
+                            <TextBlock x:Name="SplinterSubtitle"
+                                       FontFamily="{StaticResource UiFont}" FontSize="11"
+                                       Foreground="#66FFFFFF"
+                                       Text="cooldown tracker"/>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <!-- Centre: progress bar + caption -->
+                    <Grid Grid.Column="2" VerticalAlignment="Center" Margin="6,12,16,12">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <ProgressBar x:Name="SplinterProgress" Grid.Row="0"
+                                     Minimum="0" Maximum="100" Value="0"
+                                     Height="10"
+                                     Background="#1B1B1B"
+                                     Foreground="#2E7FFF"
+                                     BorderBrush="#33FFFFFF"
+                                     BorderThickness="1"/>
+                        <TextBlock x:Name="SplinterCaption" Grid.Row="1"
+                                   FontFamily="{StaticResource UiFont}" FontSize="10"
+                                   Foreground="#77FFFFFF" Margin="0,4,0,0"
+                                   Text="next drop eligible now"/>
+                    </Grid>
+
+                    <!-- Right: big status text + drops-today count -->
+                    <StackPanel Grid.Column="3" VerticalAlignment="Center"
+                                HorizontalAlignment="Right" Margin="0,12,18,12"
+                                MinWidth="100">
+                        <TextBlock x:Name="SplinterStatusBig"
+                                   FontFamily="{StaticResource UiSemibold}" FontSize="24"
+                                   FontWeight="Bold"
+                                   Foreground="#FFB0CDFF"
+                                   TextAlignment="Right"
+                                   Text="READY"/>
+                        <TextBlock x:Name="SplinterCountText"
+                                   FontFamily="{StaticResource UiFont}" FontSize="10"
+                                   Foreground="#77FFFFFF"
+                                   TextAlignment="Right" Margin="0,2,0,0"
+                                   Text=""/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
             <!-- ── Leaderboard + Powers (2 columns) ─────────────────────────────────── -->
-            <Grid Grid.Row="1">
+            <Grid Grid.Row="2">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"  MinWidth="320"/>
                     <ColumnDefinition Width="14"/>
@@ -335,7 +409,7 @@
                 once" without having to toggle modes: top leaderboard = all damage, bottom
                 section = boss-specific damage with its own mini leaderboard.
             -->
-            <Border x:Name="BossFightBanner" Grid.Row="2"
+            <Border x:Name="BossFightBanner" Grid.Row="3"
                     Style="{StaticResource Card}" Margin="0,14,0,0"
                     BorderBrush="#66FF6B00" Background="#1A1410"
                     Visibility="Collapsed">

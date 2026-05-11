@@ -250,41 +250,53 @@ public partial class LiveDashboardPanel : UserControl
 
     public void UpdateSplinterStatus(bool cooldownActive, TimeSpan remaining, int dropCount, bool justDropped)
     {
-        // The dashboard always shows the splinter pill if there's any state to show.  Hide
-        // entirely when there's nothing yet -- avoids a "ready / no data" pill confusing
-        // the user on first launch.
-        bool anyData = dropCount > 0 || cooldownActive || justDropped;
-        if (!anyData)
-        {
-            SplinterPanel.Visibility = Visibility.Collapsed;
-            return;
-        }
+        // The full-width banner is always visible -- even on first launch with no drops
+        // yet, the "READY" state with the icon and label tells the user the feature exists.
+        // Three states drive the colours / status text / progress bar; the count text on
+        // the right tallies session drops once we've seen one.
+        SplinterCountText.Text = dropCount > 0 ? $"{dropCount} this session" : string.Empty;
 
-        SplinterPanel.Visibility = Visibility.Visible;
-        string suffix = dropCount > 0 ? $"  ({dropCount} today)" : string.Empty;
         if (justDropped)
         {
-            SplinterText.Text = "ES: dropped!" + suffix;
-            SplinterText.Foreground   = s_splFlash;
-            SplinterPanel.Background  = s_splFlashBg;
-            SplinterPanel.BorderBrush = s_splFlashBd;
+            // 7 minutes was just armed -- progress bar starts near zero; bright orange flash.
+            SplinterStatusBig.Text   = "DROPPED!";
+            SplinterCaption.Text     = "7-minute cooldown armed";
+            SplinterStatusBig.Foreground = s_splFlash;
+            SplinterIcon.Foreground      = s_splFlash;
+            SplinterAccent.Fill          = s_splFlashBd;
+            SplinterBanner.BorderBrush   = s_splFlashBd;
+            SplinterProgress.Foreground  = s_splFlash;
+            SplinterProgress.Value       = 0;
         }
         else if (cooldownActive)
         {
             int totalSec = (int)Math.Ceiling(remaining.TotalSeconds);
             int mm = totalSec / 60;
             int ss = totalSec % 60;
-            SplinterText.Text = $"ES: {mm}:{ss:00}" + suffix;
-            SplinterText.Foreground   = s_splCount;
-            SplinterPanel.Background  = s_splCountBg;
-            SplinterPanel.BorderBrush = s_splCountBd;
+            SplinterStatusBig.Text   = $"{mm}:{ss:00}";
+            SplinterCaption.Text     = "until next eligible drop";
+            SplinterStatusBig.Foreground = s_splCount;
+            SplinterIcon.Foreground      = s_splCount;
+            SplinterAccent.Fill          = s_splCountBd;
+            SplinterBanner.BorderBrush   = s_splCountBd;
+            SplinterProgress.Foreground  = s_splCount;
+            // Fill bar UP as we approach "ready": 0% just after drop, 100% at ready.
+            double total = EternitySplinterTracker.CooldownDuration.TotalSeconds;
+            double elapsed = total - remaining.TotalSeconds;
+            SplinterProgress.Value = Math.Clamp(elapsed / total * 100.0, 0, 100);
         }
         else
         {
-            SplinterText.Text = "ES: ready" + suffix;
-            SplinterText.Foreground   = s_splReady;
-            SplinterPanel.Background  = s_splReadyBg;
-            SplinterPanel.BorderBrush = s_splReadyBd;
+            SplinterStatusBig.Text   = "READY";
+            SplinterCaption.Text     = dropCount > 0
+                ? "next drop eligible -- go kill something"
+                : "no drops yet; tracker armed";
+            SplinterStatusBig.Foreground = s_splReady;
+            SplinterIcon.Foreground      = s_splReady;
+            SplinterAccent.Fill          = s_splReadyBd;
+            SplinterBanner.BorderBrush   = s_splReadyBd;
+            SplinterProgress.Foreground  = s_splReady;
+            SplinterProgress.Value       = 100;
         }
     }
 
