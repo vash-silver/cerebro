@@ -103,6 +103,11 @@ public sealed class EternitySplinterTracker : IDisposable
     private readonly HashSet<uint>  _unknownProtoIndicesLogged;    // de-dup EntityCreated diag
     private int _unknownProtoIndicesLogCount;                       // session-wide spam cap
     private const int MaxUnknownProtoIndexLogs = 200;
+    // De-dup cap for cooldown-suppressed match logs.  If protoIdx 13341 turns out to be
+    // shared with a very common entity, we don't want every suppression to spam the log
+    // -- one line per (cooldown-window, protoIdx) is enough to confirm the suppression
+    // works.  Cleared on each fresh detection so a new cooldown window starts fresh.
+    private readonly HashSet<uint> _suppressedProtoIndicesLoggedThisCooldown = new();
     private readonly object _sync = new();
 
     private DateTime _lastDropUtc      = DateTime.MinValue;
@@ -269,6 +274,29 @@ public sealed class EternitySplinterTracker : IDisposable
 
         if (matched)
         {
+            // Cooldown-active suppression: the server-side splinter throttle is ~7 min per
+            // player, so a SECOND real drop arriving while our cooldown timer is still
+            // running is physically impossible.  If we observe an EntityCreate with a known
+            // splinter index inside the cooldown window, that's a false positive -- the
+            // proto enum index is shared with some other entity (most likely a generic
+            // ground-item / currency-stack reshuffle that the server emits during normal
+            // play).  Drop it silently; if the user actually missed a real drop they can
+            // hit "Reset Splinter cooldown" to clear the gate.
+            //
+            // We log the suppression (de-duped per session) so future debugging can tell
+            // "the detector saw the right index but suppressed" apart from "the detector
+            // never saw anything matching".
+            if (IsCooldownActive)
+            {
+                if (LogSuppressedDetection(e))
+                    Diagnostic?.Invoke(
+                        $"EternitySplinterTracker: suppressed false-positive EntityCreate -- " +
+                        $"protoIdx={e.PrototypeEnumIndex} entityId={e.EntityId} at {e.UtcTime:HH:mm:ss} " +
+                        $"(cooldown still has {RemainingCooldown.TotalSeconds:0}s left; the server " +
+                        $"can't legitimately drop a 2nd splinter inside the throttle window).  " +
+                        $"This proto index probably shares with a non-splinter entity.");
+                return;
+            }
             OnSplinterDetected(e.UtcTime, manual: false);
             return;
         }
@@ -304,6 +332,18 @@ public sealed class EternitySplinterTracker : IDisposable
 
         if (matched)
         {
+            // Same cooldown-active suppression as OnEntityCreated -- on the off-chance the
+            // LootDropped path *also* gets shared between splinters and another currency
+            // item, drop in-cooldown matches as false positives.  See the OnEntityCreated
+            // comment for the rationale.
+            if (IsCooldownActive)
+            {
+                Diagnostic?.Invoke(
+                    $"EternitySplinterTracker: suppressed in-cooldown LootDropped -- " +
+                    $"protoRef={e.ItemProtoRef} at {e.UtcTime:HH:mm:ss} " +
+                    $"(cooldown {RemainingCooldown.TotalSeconds:0}s left).");
+                return;
+            }
             OnSplinterDetected(e.UtcTime, manual: false);
             return;
         }
@@ -327,6 +367,16 @@ public sealed class EternitySplinterTracker : IDisposable
                 $"around this time, add this id to DefaultKnownProtoRefs.");
     }
 
+    /// <summary>De-dup the cooldown-suppression diagnostic so a frequently-shared proto
+    /// index doesn't fill the log with one line per false-positive EntityCreate.  Returns
+    /// <c>true</c> the FIRST time we see this index within the current cooldown window.
+    /// Reset by <see cref="OnSplinterDetected"/> so the next legit drop starts a fresh
+    /// window with its own dedup set.</summary>
+    private bool LogSuppressedDetection(EntityCreatedEvent e)
+    {
+        lock (_sync) return _suppressedProtoIndicesLoggedThisCooldown.Add(e.PrototypeEnumIndex);
+    }
+
     private void OnSplinterDetected(DateTime utc, bool manual)
     {
         lock (_sync)
@@ -334,6 +384,9 @@ public sealed class EternitySplinterTracker : IDisposable
             _lastDropUtc          = utc;
             _cooldownExpiredFired = false;
             DropCount++;
+            // Reset the suppressed-index log set so the next cooldown window starts fresh
+            // (one diagnostic line per unique proto-index per window).
+            _suppressedProtoIndicesLoggedThisCooldown.Clear();
         }
         var msg = manual
             ? $"EternitySplinterTracker: cooldown armed manually at {utc:HH:mm:ss}"
@@ -351,6 +404,24 @@ public sealed class EternitySplinterTracker : IDisposable
             _sniffer.EntityCreated -= OnEntityCreated;
         }
     }
+
+    // ── Test injection hooks (accessible to MarvelHeroes.DpsMeter.Tests via InternalsVisibleTo) ──
+    // Lets unit tests drive the detection paths without spinning up an MhMissionSniffer
+    // (which needs Npcap, network capture, etc.).  Mirrors the pattern used by DpsMeter's
+    // TestInjectDamage / TestInjectEntityKilled.
+
+    /// <summary>Test-only entry point that runs the same OnEntityCreated logic the sniffer
+    /// would trigger.  Used by tests to verify proto-index matching and cooldown
+    /// suppression without needing a live capture.</summary>
+    internal void TestInjectEntityCreate(uint protoIdx, ulong entityId, bool isAvatar, DateTime utc)
+        => OnEntityCreated(this, new EntityCreatedEvent
+        {
+            PrototypeEnumIndex = protoIdx,
+            EntityId           = entityId,
+            DatabaseUniqueId   = 0,
+            IsAvatar           = isAvatar,
+            UtcTime            = utc,
+        });
 }
 
 public sealed class SplinterDroppedEventArgs : EventArgs

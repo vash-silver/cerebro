@@ -151,4 +151,50 @@ public sealed class EternitySplinterTrackerTests
         // session proves a different index is the right one.
         Assert.Contains(13341u, EternitySplinterTracker.DefaultKnownProtoIndices);
     }
+
+    [Fact]
+    public void EntityCreate_WhileCooldownActive_IsSuppressedAsFalsePositive()
+    {
+        // The server's per-player splinter throttle is ~7 min, so any "drop" detection
+        // arriving inside the cooldown window we just started has to be a false positive
+        // (the proto index is shared with some non-splinter entity).  Verify that the
+        // SECOND EntityCreate matching the splinter index, while the cooldown is still
+        // active, neither fires SplinterDropped nor bumps DropCount.
+        using var t = new EternitySplinterTracker(null);
+        int dropEvents = 0;
+        t.SplinterDropped += (_, _) => dropEvents++;
+
+        // First create with the canonical index -- this IS the legit drop.
+        t.TestInjectEntityCreate(protoIdx: 13341u, entityId: 1, isAvatar: false, utc: DateTime.UtcNow);
+        Assert.Equal(1, dropEvents);
+        Assert.Equal(1, t.DropCount);
+        Assert.True(t.IsCooldownActive);
+
+        // Second create -- 42 seconds later, well inside the cooldown.  This is the user's
+        // reported false-positive pattern (16:49:29 → 16:50:11 in the field log).
+        t.TestInjectEntityCreate(protoIdx: 13341u, entityId: 2, isAvatar: false, utc: DateTime.UtcNow);
+        Assert.Equal(1, dropEvents);   // <-- still 1; suppressed
+        Assert.Equal(1, t.DropCount);  // <-- still 1; suppressed
+    }
+
+    [Fact]
+    public void EntityCreate_AfterCooldownExpires_FiresNormally()
+    {
+        // Counter-test: once the cooldown window has elapsed, a matching EntityCreate
+        // SHOULD fire as normal.  Use Reset() to clear the gate (faster than waiting 6
+        // minutes in a unit test); semantically equivalent to "the cooldown timer hit
+        // zero".  Without this counter-test the suppression could silently degrade into
+        // "never fires at all" and the prior test would still pass.
+        using var t = new EternitySplinterTracker(null);
+        int dropEvents = 0;
+        t.SplinterDropped += (_, _) => dropEvents++;
+
+        t.TestInjectEntityCreate(protoIdx: 13341u, entityId: 1, isAvatar: false, utc: DateTime.UtcNow);
+        Assert.Equal(1, dropEvents);
+        t.Reset();
+        Assert.False(t.IsCooldownActive);
+
+        t.TestInjectEntityCreate(protoIdx: 13341u, entityId: 2, isAvatar: false, utc: DateTime.UtcNow);
+        Assert.Equal(2, dropEvents);
+    }
 }
