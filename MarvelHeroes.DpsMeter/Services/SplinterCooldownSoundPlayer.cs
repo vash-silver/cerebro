@@ -22,6 +22,12 @@ public static class SplinterCooldownSoundPlayer
 {
     private static MediaPlayer? s_mediaPlayer;
 
+    /// <summary>Optional log sink for "why did the fallback fire?" diagnostics.  When we
+    /// swallow an exception or skip the custom path because the file isn't on disk, we
+    /// surface the reason here so the presenter's log captures it.  Set once by the host
+    /// (typically <see cref="DpsOverlayPresenter"/>) at startup.</summary>
+    public static Action<string>? Diagnostic { get; set; }
+
     /// <summary>Play either the configured file (if non-empty and on disk) or the system
     /// asterisk sound.  Never throws -- audio failures are best-effort.</summary>
     /// <param name="customSoundPath">Absolute path to a sound file, or null/empty to use
@@ -51,11 +57,23 @@ public static class SplinterCooldownSoundPlayer
                     s_mediaPlayer.Play();
                     return true;
                 }
+                else
+                {
+                    // Non-empty path but the file is gone -- common after a sound file is
+                    // moved / deleted / on an unmounted drive.  Surface as a one-line log so
+                    // the user can see the path the meter was asked to play.
+                    Diagnostic?.Invoke($"SplinterCooldownSoundPlayer: custom path is configured but File.Exists returned false -- path='{customSoundPath}'. Falling back to system asterisk.");
+                }
             }
-            catch
+            catch (Exception ex)
             {
-                // Swallow and fall through to the system sound -- a corrupt file or a
-                // missing codec shouldn't take down the cooldown notification entirely.
+                // Swallow and fall through to the system sound -- a corrupt file, a missing
+                // codec, or a cross-thread MediaPlayer access shouldn't take down the
+                // cooldown notification entirely.  Log the exception type and message so we
+                // can tell these failure modes apart in the field; previously this catch was
+                // silent and the only signal that anything was wrong was "fallback played
+                // when custom was expected".
+                Diagnostic?.Invoke($"SplinterCooldownSoundPlayer: custom playback threw {ex.GetType().Name}: {ex.Message} -- path='{customSoundPath}'. Falling back to system asterisk.");
             }
         }
 

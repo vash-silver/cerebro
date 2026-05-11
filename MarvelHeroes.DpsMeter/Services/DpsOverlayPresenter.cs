@@ -88,6 +88,11 @@ public sealed class DpsOverlayPresenter : IDisposable
         // a 7-minute cooldown ticker.  Independent of the DPS meters and unaffected by
         // boss-only mode / encounter lifecycle.
         _splinterTracker = new EternitySplinterTracker(_sniffer) { Diagnostic = AppendLog };
+        // Route the sound player's fallback diagnostics through the same log so we can see
+        // *why* the system-asterisk fallback fired -- "file not found" vs. "exception
+        // during MediaPlayer.Open" are very different failure modes and previously looked
+        // identical from outside (just the "played system asterisk" line).
+        SplinterCooldownSoundPlayer.Diagnostic = AppendLog;
         // Two alert moments, same sound: "a splinter just dropped, go grab it!" and
         // "the cooldown expired, next drop is eligible".  Routed through one helper so the
         // user's single SplinterCooldownSoundEnabled toggle controls both -- splitting
