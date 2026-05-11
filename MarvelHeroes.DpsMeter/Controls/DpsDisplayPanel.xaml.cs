@@ -63,6 +63,11 @@ public partial class DpsDisplayPanel : UserControl
         finally { _suppressShowSplinterTrackerMenuEvents = false; }
         SplinterPanel.Visibility = settings.ShowEternitySplinterTracker ? Visibility.Visible : Visibility.Collapsed;
 
+        _splinterCooldownSound = settings.SplinterCooldownSoundEnabled;
+        _suppressSplinterCooldownSoundMenuEvents = true;
+        try { SplinterCooldownSoundMenuItem.IsChecked = settings.SplinterCooldownSoundEnabled; }
+        finally { _suppressSplinterCooldownSoundMenuEvents = false; }
+
         ApplyScale(settings.Scale, save: false);
 
         SetDisplayMode(isOverlayMode);
@@ -401,11 +406,12 @@ public partial class DpsDisplayPanel : UserControl
     {
         if (left.HasValue) _settings.Left = left.Value;
         if (top.HasValue)  _settings.Top  = top.Value;
-        _settings.Scale                       = _scale;
-        _settings.BossDpsOnly                 = _bossOnlyMode;
-        _settings.ShowBossSection             = _showBossSection;
-        _settings.ShowPowerBreakdown          = _showPowerBreakdown;
-        _settings.ShowEternitySplinterTracker = _showSplinterTracker;
+        _settings.Scale                        = _scale;
+        _settings.BossDpsOnly                  = _bossOnlyMode;
+        _settings.ShowBossSection              = _showBossSection;
+        _settings.ShowPowerBreakdown           = _showPowerBreakdown;
+        _settings.ShowEternitySplinterTracker  = _showSplinterTracker;
+        _settings.SplinterCooldownSoundEnabled = _splinterCooldownSound;
         DpsOverlaySettingsFile.Save(_settings);
     }
 
@@ -467,6 +473,25 @@ public partial class DpsDisplayPanel : UserControl
     {
         if (_suppressShowSplinterTrackerMenuEvents) return;
         _showSplinterTracker = false; SplinterPanel.Visibility = Visibility.Collapsed; SaveAll();
+    }
+
+    // ── Eternity Splinter cooldown sound ──────────────────────────────────────────────────────
+    // No event back to the presenter is needed -- the presenter reads the flag straight off
+    // _sharedSettings.SplinterCooldownSoundEnabled at the moment CooldownExpired fires, so
+    // toggling the menu item simply needs to keep the persisted settings up to date.  The
+    // suppression flag protects against re-firing during the initial state sync in Initialize.
+    private bool _splinterCooldownSound;
+    private bool _suppressSplinterCooldownSoundMenuEvents;
+
+    private void SplinterCooldownSoundMenuItem_OnChecked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressSplinterCooldownSoundMenuEvents) return;
+        _splinterCooldownSound = true; SaveAll();
+    }
+    private void SplinterCooldownSoundMenuItem_OnUnchecked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressSplinterCooldownSoundMenuEvents) return;
+        _splinterCooldownSound = false; SaveAll();
     }
 
     /// <summary>Updates the splinter tracker status line.  Called from the presenter's decay

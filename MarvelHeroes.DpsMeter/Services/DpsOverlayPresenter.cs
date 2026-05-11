@@ -91,7 +91,22 @@ public sealed class DpsOverlayPresenter : IDisposable
         _splinterTracker.SplinterDropped += (_, args) =>
             AppendLog($"DpsOverlayPresenter: splinter dropped at {args.Utc:HH:mm:ss} -- 7 min cooldown armed");
         _splinterTracker.CooldownExpired += (_, _) =>
+        {
             AppendLog("DpsOverlayPresenter: splinter cooldown expired -- next drop eligible");
+            // Optional audio cue.  Routed through Windows' notification-sound channel so it
+            // respects the user's OS-level sound preferences (muting system sounds also
+            // mutes us).  Try/catch is belt-and-braces -- audio APIs occasionally throw on
+            // headless / RDP / no-sound-device hosts; we never want that to take down the
+            // tick handler that just expired the cooldown.
+            if (_sharedSettings?.SplinterCooldownSoundEnabled == true)
+            {
+                try { System.Media.SystemSounds.Asterisk.Play(); }
+                catch (Exception ex)
+                {
+                    AppendLog($"DpsOverlayPresenter: splinter cooldown sound failed: {ex.GetType().Name}: {ex.Message}");
+                }
+            }
+        };
 
         {
             var prior = _sniffer.Diagnostic;

@@ -74,6 +74,16 @@ public sealed class DpsOverlaySettingsFile
     /// until a splinter drops, so there's no downside to having it on out of the box.</summary>
     public bool ShowEternitySplinterTracker { get; set; } = true;
 
+    /// <summary>When <c>true</c> a short Windows system sound is played once the moment the
+    /// 7-minute splinter cooldown expires, so the user can keep playing without watching
+    /// the pill countdown to zero.  Routed via <c>System.Media.SystemSounds.Asterisk</c> so
+    /// it picks up whatever notification sound the user has configured at the OS level (or
+    /// silence if they've muted system sounds).  Default <c>true</c> -- the whole reason
+    /// the tracker exists is to surface "you can go farm splinters again now," and a sound
+    /// is the most reliable way to deliver that without forcing the user to look at the
+    /// overlay.</summary>
+    public bool SplinterCooldownSoundEnabled { get; set; } = true;
+
     /// <summary>Legacy setting from the overlay-first era of the app.  Previously meant:
     /// <c>true</c> = show DPS in the regular titled <c>DpsLiveWindow</c>, <c>false</c> = show
     /// the transparent floating overlay.  As of the main-app GUI rework the app always shows
