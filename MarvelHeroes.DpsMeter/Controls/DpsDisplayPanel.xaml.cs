@@ -503,14 +503,23 @@ public partial class DpsDisplayPanel : UserControl
         _splinterCooldownSound = false; SaveAll();
     }
 
-    /// <summary>Plays the same Windows notification sound the presenter triggers on actual
-    /// cooldown expiry, so the user can verify the audio path works without waiting 7
-    /// minutes (and without going through the splinter-detection + timer chain).  Fires
-    /// regardless of the on/off toggle -- this is an explicit "play it now" action.</summary>
+    /// <summary>Plays the same sound the presenter triggers on an actual splinter drop or
+    /// cooldown-expired event, so the user can verify the audio path works without waiting
+    /// 6 minutes (and without going through the splinter-detection + timer chain).  Fires
+    /// regardless of the on/off toggle -- this is an explicit "play it now" action.
+    ///
+    /// <para>Previously this fired <see cref="System.Media.SystemSounds.Asterisk"/> directly,
+    /// which meant the test was lying: a user who'd configured a custom MP3 in Settings
+    /// would test the asterisk fallback instead of their actual sound, and on systems where
+    /// the Windows notification channel is muted (Do Not Disturb / Focus Assist) the test
+    /// produced no sound at all.  Route through the same helper the presenter uses so the
+    /// test matches reality -- custom file + volume slider if configured, system fallback
+    /// only when no path is set.</para></summary>
     private void TestSplinterSoundMenuItem_OnClick(object sender, RoutedEventArgs e)
     {
-        try { System.Media.SystemSounds.Asterisk.Play(); }
-        catch { /* same swallow as the presenter's expiry path; nothing useful to surface here */ }
+        SplinterCooldownSoundPlayer.Play(
+            _settings.SplinterCooldownSoundPath,
+            _settings.SplinterCooldownSoundVolume);
     }
 
     /// <summary>Updates the splinter tracker status line.  Called from the presenter's decay
