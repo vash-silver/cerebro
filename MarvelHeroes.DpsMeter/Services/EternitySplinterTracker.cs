@@ -72,8 +72,22 @@ public sealed class EternitySplinterTracker : IDisposable
     /// the value to add.</para></summary>
     public static readonly HashSet<uint> DefaultKnownProtoIndices = new()
     {
-        // Empty by design: enum indices are build-specific and discovered empirically.
-        // Add the splinter's index here once it's been observed via the discovery log.
+        // Discovered empirically via two-session intersection of the discovery-log
+        // EntityCreate dumps:
+        //   Session 1 (12 unique non-avatar indices): 8813 11533 6714 7041 1542 11745
+        //     16014 13341 536 19207 13073 4683
+        //   Session 2 (23 unique): ...
+        //   Intersection minus already-known mob/boss/hero entries:
+        //     536  6714  8813  13073  13341
+        //
+        // 13341 matches the strongest "splinter drop" pattern: a *lone* EntityCreate
+        // that spawns ~1 second after a mob-kill loot burst (rather than inside the
+        // same-millisecond cluster of gear / credits / fortune-card entities).  That
+        // timing is consistent with how Eternity Splinters visually plop down a beat
+        // after the mob actually dies.  Tentative -- if field-testing shows the pill
+        // doesn't flash on real splinter drops, try 13073 next (the only other lone-
+        // pattern intersection candidate).
+        13341u,
     };
 
     private readonly MhMissionSniffer? _sniffer;

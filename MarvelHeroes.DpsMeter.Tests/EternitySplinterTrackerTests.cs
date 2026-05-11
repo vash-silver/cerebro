@@ -136,13 +136,14 @@ public sealed class EternitySplinterTrackerTests
     }
 
     [Fact]
-    public void DefaultKnownProtoIndices_IsEmptyByDesign()
+    public void DefaultKnownProtoIndices_ContainsTheEmpiricallyDiscoveredSplinterIndex()
     {
-        // The enum-index default set is intentionally empty -- indices are build-specific
-        // and have to be observed via the discovery log before being baked in.  If a future
-        // commit adds entries to the default set, that's fine; this test documents the
-        // current state so a regression doesn't sneak in (e.g. accidental copy-paste from
-        // the ulong PrototypeId set into the uint enum-index set).
-        Assert.Empty(EternitySplinterTracker.DefaultKnownProtoIndices);
+        // Smoke check: 13341 was the strongest-pattern intersection candidate across two
+        // discovery-log sessions (lone EntityCreate ~1s after a mob-kill loot burst, present
+        // in both sessions, not in any known mob/boss/hero list).  If a refactor accidentally
+        // drops or changes this value the tracker silently goes back to never firing on
+        // EntityCreated, so we pin it.  Update the constant -- and this test -- if a future
+        // session proves a different index is the right one.
+        Assert.Contains(13341u, EternitySplinterTracker.DefaultKnownProtoIndices);
     }
 }
