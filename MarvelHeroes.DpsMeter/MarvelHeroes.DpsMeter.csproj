@@ -10,6 +10,14 @@
     <AssemblyName>MarvelHeroes.DpsMeter</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <!--
+      Sets the EXE's Windows shell icon (what Explorer, the taskbar pin, and Alt+Tab show
+      for the executable itself before any windows are created).  Regenerate with
+      scripts\generate_appicon.ps1 whenever the design changes.  The script renders the
+      same artwork at every standard size (16, 24, 32, 48, 64, 128, 256) and packs them
+      into a single ICO so the OS picks the right one per context.
+    -->
+    <ApplicationIcon>AppIcon.ico</ApplicationIcon>
+    <!--
       Framework-dependent deployment (per user request).  Distribution is a small ~2 MB
       executable plus the shared NetworkSniffer / Gazillion DLLs; end-user must have
       the .NET 8 Desktop Runtime installed.  To produce a self-contained single-file
