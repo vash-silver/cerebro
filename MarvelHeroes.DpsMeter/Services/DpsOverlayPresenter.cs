@@ -93,10 +93,18 @@ public sealed class DpsOverlayPresenter : IDisposable
         // user's single SplinterCooldownSoundEnabled toggle controls both -- splitting
         // them into separate settings would be twice the UI cost for negligible benefit;
         // the events are always 7 minutes apart so there's no overlap risk.
+        //
+        // THREADING: SplinterDropped fires from the sniffer's capture thread (because
+        // EternitySplinterTracker.OnEntityCreated runs there), but WPF's MediaPlayer --
+        // used inside PlaySplinterAlert -> SplinterCooldownSoundPlayer.Play for the
+        // custom-file path -- is a Freezable bound to its creating Dispatcher and silently
+        // misbehaves when used cross-thread.  Marshal to the UI dispatcher before invoking
+        // the alert.  CooldownExpired is already raised from the UI-dispatcher decay timer
+        // (via Tick()), so it doesn't need the same hop.
         _splinterTracker.SplinterDropped += (_, args) =>
         {
             AppendLog($"DpsOverlayPresenter: splinter dropped at {args.Utc:HH:mm:ss} -- 7 min cooldown armed");
-            PlaySplinterAlert("drop");
+            _uiDispatcher.BeginInvoke(new Action(() => PlaySplinterAlert("drop")));
         };
         _splinterTracker.CooldownExpired += (_, _) =>
         {
