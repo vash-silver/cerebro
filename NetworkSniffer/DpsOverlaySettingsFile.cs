@@ -74,10 +74,19 @@ public sealed class DpsOverlaySettingsFile
     /// until a splinter drops, so there's no downside to having it on out of the box.</summary>
     public bool ShowEternitySplinterTracker { get; set; } = true;
 
-    /// <summary>When <c>true</c> the DPS data is shown in a regular titled window instead of the
-    /// transparent borderless overlay.  Toggled via the right-click "Switch to window mode" menu
-    /// item; persists across sessions.</summary>
+    /// <summary>Legacy setting from the overlay-first era of the app.  Previously meant:
+    /// <c>true</c> = show DPS in the regular titled <c>DpsLiveWindow</c>, <c>false</c> = show
+    /// the transparent floating overlay.  As of the main-app GUI rework the app always shows
+    /// the new <c>MainAppWindow</c>, so this property is no longer consulted at runtime --
+    /// it stays on the type only so older <c>dps-overlay.json</c> files round-trip cleanly
+    /// without losing the field.  See <see cref="ShowOverlay"/> for the new equivalent.</summary>
     public bool WindowMode { get; set; } = false;
+
+    /// <summary>When <c>true</c> the floating always-on-top overlay window is visible in
+    /// addition to the main app window.  Toggled via the "Show overlay" checkbox in the
+    /// header of <c>MainAppWindow</c>.  Defaults to <c>false</c> -- new users get just the
+    /// main app on first launch and opt into the overlay when they want it over the game.</summary>
+    public bool ShowOverlay { get; set; } = false;
 
     /// <summary>Primary game mux / frontend TCP port (default 4306 when missing or invalid).</summary>
     public int GameTcpPort { get; set; }
