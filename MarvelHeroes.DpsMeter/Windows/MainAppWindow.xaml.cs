@@ -44,6 +44,8 @@ public partial class MainAppWindow : Window
     public event Action?         ResetMaxHitRecordRequested;
     public event Action?         ResetSplinterCooldownRequested;
     public event Action?         ArmSplinterCooldownRequested;
+    public event Action<uint, uint>? SplinterArmHotkeyChanged;
+    public event Action<bool>?       SplinterArmHotkeyEnabledChanged;
     // ViewReportsRequested is kept in the API surface for signature parity with
     // DpsLiveWindow / DpsOverlayWindow, but the main window short-circuits the right-click
     // "View reports" menu by switching to the Reports tab in-place rather than asking the
@@ -79,10 +81,19 @@ public partial class MainAppWindow : Window
         SettingsTab.ResetMaxHitRecordRequested      += () => ResetMaxHitRecordRequested?.Invoke();
         SettingsTab.ResetSplinterCooldownRequested  += () => ResetSplinterCooldownRequested?.Invoke();
         SettingsTab.ArmSplinterCooldownRequested    += () => ArmSplinterCooldownRequested?.Invoke();
+        // Hotkey rebind / enable / disable -- routed up to the presenter which owns the
+        // Win32 RegisterHotKey lifecycle.  The Settings panel itself only persists the
+        // new binding; the presenter does the live re-register.
+        SettingsTab.SplinterArmHotkeyChanged        += (m, v) => SplinterArmHotkeyChanged?.Invoke(m, v);
+        SettingsTab.SplinterArmHotkeyEnabledChanged += en     => SplinterArmHotkeyEnabledChanged?.Invoke(en);
 
         // The dashboard's "Save snapshot" button forwards a snapshot of the current tick
         // (top heroes / encounter state / power breakdown all cached on the last UpdateDps).
         LivePanel.SaveSnapshotRequested += (h, enc, p) => SaveSnapshotRequested?.Invoke(h, enc, p);
+
+        // Dashboard's "I got a splinter" button -- routes to the same presenter action as the
+        // Settings tab's "Arm Splinter cooldown now" button and the (future) global hotkey.
+        LivePanel.ArmSplinterCooldownRequested += () => ArmSplinterCooldownRequested?.Invoke();
 
         // Auto-size? No -- the main app should remember its user-resized geometry once we
         // add that.  For now, the XAML's Width/Height defaults apply.

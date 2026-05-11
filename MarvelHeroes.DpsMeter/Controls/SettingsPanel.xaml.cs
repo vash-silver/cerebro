@@ -4,8 +4,10 @@ using System.IO;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using MarvelHeroesComporator.NetworkSniffer;
 using MarvelHeroes.DpsMeter.Services;
+using MarvelHeroes.DpsMeter.Windows;
 
 namespace MarvelHeroes.DpsMeter.Controls;
 
@@ -41,6 +43,7 @@ public partial class SettingsPanel : UserControl
     private bool _suppressShowSplinter;
     private bool _suppressSplinterSound;
     private bool _suppressSplinterVolume;
+    private bool _suppressSplinterArmHotkey;
     private bool _suppressLogging;
     private bool _suppressScale;
 
@@ -53,6 +56,13 @@ public partial class SettingsPanel : UserControl
     public event Action?       ResetMaxHitRecordRequested;
     public event Action?       ResetSplinterCooldownRequested;
     public event Action?       ArmSplinterCooldownRequested;
+    /// <summary>Fires after the user finishes rebinding the global hotkey via the
+    /// Settings UI.  Args are the new (modifiers, vk) pair.  Presenter listens to
+    /// re-register the system hotkey with the new combo.</summary>
+    public event Action<uint, uint>? SplinterArmHotkeyChanged;
+    /// <summary>Fires when the user toggles the hotkey on or off.  Presenter listens to
+    /// register / unregister the system hotkey accordingly.</summary>
+    public event Action<bool>? SplinterArmHotkeyEnabledChanged;
 
     public SettingsPanel()
     {
@@ -92,6 +102,12 @@ public partial class SettingsPanel : UserControl
         try { SplinterVolumeSlider.Value = Math.Clamp(settings.SplinterCooldownSoundVolume, 0.0, 1.0); }
         finally { _suppressSplinterVolume = false; }
         UpdateSplinterVolumeReadout(SplinterVolumeSlider.Value);
+
+        // Splinter "arm cooldown" hotkey -- toggle + readable binding string.
+        SetChecked(SplinterArmHotkeyCheckbox, settings.SplinterArmHotkeyEnabled, ref _suppressSplinterArmHotkey);
+        SplinterArmHotkeyText.Text = GlobalHotkey.Format(
+            settings.SplinterArmHotkeyModifiers,
+            settings.SplinterArmHotkeyVk);
 
         // Diagnostics
         SetChecked(LoggingCheckbox,             settings.LoggingEnabled,             ref _suppressLogging);
@@ -185,6 +201,49 @@ public partial class SettingsPanel : UserControl
         // can't drift due to slider snap quirks.
         _settings.SplinterCooldownSoundVolume = Math.Round(Math.Clamp(e.NewValue, 0.0, 1.0), 2);
         Save();
+    }
+
+    // ── Splinter "I got a splinter" global hotkey ────────────────────────────────────────────
+
+    private void SplinterArmHotkeyCheckbox_OnChecked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressSplinterArmHotkey || _settings == null) return;
+        _settings.SplinterArmHotkeyEnabled = true; Save();
+        SplinterArmHotkeyEnabledChanged?.Invoke(true);
+    }
+    private void SplinterArmHotkeyCheckbox_OnUnchecked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressSplinterArmHotkey || _settings == null) return;
+        _settings.SplinterArmHotkeyEnabled = false; Save();
+        SplinterArmHotkeyEnabledChanged?.Invoke(false);
+    }
+
+    /// <summary>Captures the user's next key combo as the new hotkey.  Pops a small modal
+    /// "press a key combo" window because trying to capture from a normal Settings-panel
+    /// keyboard handler is hairy: WPF's input system swallows modifier-only events, the
+    /// user has to be told what state we're in ("currently listening"), and we want a
+    /// clean Esc-to-cancel.  A focused dialog is simpler than juggling state on the
+    /// panel itself.</summary>
+    private void RebindSplinterHotkeyButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_settings == null) return;
+        var dlg = new HotkeyCaptureWindow
+        {
+            Owner = Window.GetWindow(this),
+            // Pre-fill with the current binding so the user can see what they're replacing.
+            InitialDisplay = GlobalHotkey.Format(
+                _settings.SplinterArmHotkeyModifiers,
+                _settings.SplinterArmHotkeyVk),
+        };
+        var result = dlg.ShowDialog();
+        if (result == true && dlg.CapturedModifiers != 0 && dlg.CapturedVk != 0)
+        {
+            _settings.SplinterArmHotkeyModifiers = dlg.CapturedModifiers;
+            _settings.SplinterArmHotkeyVk        = dlg.CapturedVk;
+            Save();
+            SplinterArmHotkeyText.Text = GlobalHotkey.Format(dlg.CapturedModifiers, dlg.CapturedVk);
+            SplinterArmHotkeyChanged?.Invoke(dlg.CapturedModifiers, dlg.CapturedVk);
+        }
     }
 
     private void UpdateSplinterVolumeReadout(double value)

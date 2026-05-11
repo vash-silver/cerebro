@@ -36,6 +36,14 @@ public partial class LiveDashboardPanel : UserControl
                         DpsMeterClass.EncounterSnapshot,
                         IReadOnlyList<DpsMeterClass.PowerBreakdownEntry>?>? SaveSnapshotRequested;
 
+    /// <summary>Manual "I just got a splinter, start the cooldown" override.  Bubbles up to
+    /// the presenter which calls <c>EternitySplinterTracker.ArmFromNow()</c>.  Same effect as
+    /// the Settings tab's "Arm Splinter cooldown now" button or the future global hotkey --
+    /// exposed prominently in the live dashboard because the in-game open-world case (lots
+    /// of other players around, auto-detection picks up everyone's drops) is the most common
+    /// moment the user needs to override the timer mid-play.</summary>
+    public event Action? ArmSplinterCooldownRequested;
+
     public LiveDashboardPanel()
     {
         InitializeComponent();
@@ -485,6 +493,9 @@ public partial class LiveDashboardPanel : UserControl
 
     private void SaveSnapshotButton_OnClick(object sender, RoutedEventArgs e)
         => SaveSnapshotRequested?.Invoke(_lastTopHeroes, _lastEncounter, _lastPowerBreakdown);
+
+    private void ArmSplinterButton_Click(object sender, RoutedEventArgs e)
+        => ArmSplinterCooldownRequested?.Invoke();
 
     // ── Format helpers (same scaling as DpsDisplayPanel) ─────────────────────────────────────
 

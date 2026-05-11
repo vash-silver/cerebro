@@ -153,6 +153,38 @@
             <TextBlock Style="{StaticResource HintText}"
                        Text="Affects custom sound files only.  When the system fallback plays, volume is controlled by Windows' notification-sound level instead."/>
 
+            <!-- Global "I got a splinter" hotkey.  Workaround for crowded open-world maps
+                 where auto-detection picks up every nearby player's drops. -->
+            <CheckBox x:Name="SplinterArmHotkeyCheckbox" Style="{StaticResource SettingCheckbox}"
+                      Content="Enable global &quot;I got a splinter&quot; hotkey"
+                      Checked="SplinterArmHotkeyCheckbox_OnChecked"
+                      Unchecked="SplinterArmHotkeyCheckbox_OnUnchecked"/>
+            <TextBlock Style="{StaticResource HintText}"
+                       Text="System-wide keypress that starts a fresh splinter cooldown from this moment, regardless of which app is in the foreground.  Use when you saw your splinter drop in a crowded area and the auto-detect grabbed someone else's instead."/>
+            <Grid Margin="22,6,0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,0"
+                           FontFamily="Segoe UI" FontSize="11" Foreground="#AAFFFFFF"
+                           Text="Hotkey:"/>
+                <TextBox x:Name="SplinterArmHotkeyText" Grid.Column="1"
+                         FontFamily="Consolas" FontSize="11"
+                         Background="#1E1E1E" Foreground="#FFCC66"
+                         BorderBrush="#44FFFFFF" BorderThickness="1"
+                         Padding="6,4" VerticalContentAlignment="Center"
+                         IsReadOnly="True"
+                         Text="Ctrl+Shift+E"
+                         ToolTip="Click Rebind, then press your desired key combination.  Escape cancels.  Must include at least one of Ctrl / Alt / Shift / Win plus a regular key (letter, number, F1-F12, etc)."/>
+                <Button Grid.Column="2" Content="Rebind…" Margin="6,0,0,0"
+                        Style="{StaticResource SettingsButton}"
+                        Click="RebindSplinterHotkeyButton_Click"/>
+            </Grid>
+            <TextBlock x:Name="SplinterArmHotkeyStatus" Style="{StaticResource HintText}"
+                       Text="Default is Ctrl+Shift+E.  If your chosen combo conflicts with another app already holding the same shortcut, registration silently fails -- check the diagnostics log for details."/>
+
             <!-- ── Overlay scale ───────────────────────────────────────────────────────── -->
             <TextBlock Text="OVERLAY SCALE" Style="{StaticResource SectionHeader}"/>
             <TextBlock Style="{StaticResource HintText}" Margin="0,0,0,4"

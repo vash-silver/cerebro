@@ -95,6 +95,26 @@ public sealed class DpsOverlaySettingsFile
     /// outside [0.0, 1.0] are clamped at use time.</summary>
     public double SplinterCooldownSoundVolume { get; set; } = 1.0;
 
+    /// <summary>When <c>true</c> a global system-wide hotkey starts a fresh splinter cooldown
+    /// from the moment it's pressed -- same effect as clicking "Arm Splinter cooldown now" in
+    /// Settings, but accessible without leaving the game.  Critical workaround for crowded
+    /// open-world maps where the proto-index-based auto-detection picks up every nearby
+    /// player's drop indiscriminately: when you know YOU got a splinter, press the hotkey to
+    /// peg the timer to your own pickup.  Default <c>true</c> with a Ctrl+Shift+E binding.</summary>
+    public bool SplinterArmHotkeyEnabled { get; set; } = true;
+
+    /// <summary>Win32 hotkey modifier mask (combination of MOD_ALT=1 / MOD_CONTROL=2 /
+    /// MOD_SHIFT=4 / MOD_WIN=8).  Stored as the raw bitmask so registration is a direct
+    /// pass-through to <c>RegisterHotKey</c>.  Default = MOD_CONTROL | MOD_SHIFT (6) so the
+    /// stock binding is Ctrl+Shift+&lt;key&gt;.</summary>
+    public uint SplinterArmHotkeyModifiers { get; set; } = 0x02 | 0x04;  // MOD_CONTROL | MOD_SHIFT
+
+    /// <summary>Win32 virtual-key code (e.g. <c>VK_E</c> = 0x45).  Stored as the raw VK so
+    /// registration is a direct pass-through to <c>RegisterHotKey</c>.  Default = 'E' (0x45)
+    /// for "Eternity" -- combined with the modifier default gives Ctrl+Shift+E, which is
+    /// unbound by Marvel Heroes' default keymap and by Windows itself.</summary>
+    public uint SplinterArmHotkeyVk { get; set; } = 0x45;  // VK_E
+
     /// <summary>Legacy setting from the overlay-first era of the app.  Previously meant:
     /// <c>true</c> = show DPS in the regular titled <c>DpsLiveWindow</c>, <c>false</c> = show
     /// the transparent floating overlay.  As of the main-app GUI rework the app always shows

@@ -31,6 +31,7 @@ public sealed class DpsOverlayPresenter : IDisposable
     private DpsOverlayWindow? _overlayWindow;
     private MainAppWindow? _mainWindow;
     private DpsOverlaySettingsFile? _sharedSettings;
+    private GlobalHotkey? _armSplinterHotkey;
     // Tracks the current visibility state of the floating overlay (formerly tracked by
     // _inWindowMode; renamed to reflect the new app-first design where the main window is
     // always up and the overlay is optional).
@@ -147,6 +148,19 @@ public sealed class DpsOverlayPresenter : IDisposable
             if (_overlayVisible)
                 _overlayWindow.ShowWithoutActivating();
 
+            // Global "I got a splinter" hotkey -- registered AFTER Show() so the main
+            // window's HWND exists.  Failures (combo already owned by another app) are
+            // logged but non-fatal; the in-app button and Settings tab "Arm Splinter
+            // cooldown now" remain available either way.
+            if (_sharedSettings.SplinterArmHotkeyEnabled)
+            {
+                _armSplinterHotkey = new GlobalHotkey(_mainWindow) { Diagnostic = AppendLog };
+                _armSplinterHotkey.Pressed += ArmSplinterCooldownNow;
+                _armSplinterHotkey.TryRegister(
+                    _sharedSettings.SplinterArmHotkeyModifiers,
+                    _sharedSettings.SplinterArmHotkeyVk);
+            }
+
             _decayTimer = new DispatcherTimer(
                 TimeSpan.FromMilliseconds(250),
                 DispatcherPriority.Background,
@@ -186,6 +200,11 @@ public sealed class DpsOverlayPresenter : IDisposable
         w.ResetMaxHitRecordRequested += ResetMaxHitRecordNow;
         w.ResetSplinterCooldownRequested += ResetSplinterCooldownNow;
         w.ArmSplinterCooldownRequested   += ArmSplinterCooldownNow;
+        // Live re-bind of the global hotkey when the user changes it in Settings -- the
+        // Settings panel has already persisted to _sharedSettings, but we own the OS-level
+        // registration and need to drop + re-add the binding for it to take effect.
+        w.SplinterArmHotkeyChanged       += OnSplinterArmHotkeyChanged;
+        w.SplinterArmHotkeyEnabledChanged += OnSplinterArmHotkeyEnabledChanged;
         // The Live tab's right-click "View reports" switches tabs in-place (handled inside
         // MainAppWindow); the presenter doesn't need to do anything here.  No ViewReports
         // subscription means we avoid double-opening a standalone window.
@@ -222,6 +241,8 @@ public sealed class DpsOverlayPresenter : IDisposable
         {
             _decayTimer?.Stop();
             _decayTimer = null;
+            try { _armSplinterHotkey?.Dispose(); } catch { }
+            _armSplinterHotkey = null;
             try { _overlayWindow?.CloseByPresenter(); } catch { }
             _overlayWindow = null;
             try { _mainWindow?.CloseByPresenter(); } catch { }
@@ -694,6 +715,49 @@ public sealed class DpsOverlayPresenter : IDisposable
     {
         _splinterTracker?.ArmFromNow();
         AppendLog("DpsOverlayPresenter: splinter cooldown armed manually by user request");
+    }
+
+    /// <summary>Live re-register the global hotkey with a new (modifiers, vk) combo.  Called
+    /// when the user changes the binding via Settings -> Rebind.  The Settings panel has
+    /// already persisted the new values to _sharedSettings; this method just drops the old
+    /// OS-level registration and adds a new one.  No-op if the hotkey is currently disabled
+    /// (toggle is off) -- in that case the new combo will be picked up when the user re-enables.</summary>
+    private void OnSplinterArmHotkeyChanged(uint modifiers, uint vk)
+    {
+        if (_sharedSettings?.SplinterArmHotkeyEnabled != true) return;
+        if (_armSplinterHotkey == null)
+        {
+            // Toggle was on but registration hadn't been built yet (shouldn't happen in
+            // practice -- Start() builds it -- but defensive).
+            if (_mainWindow == null) return;
+            _armSplinterHotkey = new GlobalHotkey(_mainWindow) { Diagnostic = AppendLog };
+            _armSplinterHotkey.Pressed += ArmSplinterCooldownNow;
+        }
+        _armSplinterHotkey.TryRegister(modifiers, vk);
+    }
+
+    /// <summary>Handle the user toggling the hotkey on or off in Settings.  When turning
+    /// ON, register with the current persisted combo; when turning OFF, unregister so the
+    /// OS-level shortcut stops firing.</summary>
+    private void OnSplinterArmHotkeyEnabledChanged(bool enabled)
+    {
+        if (enabled)
+        {
+            if (_mainWindow == null || _sharedSettings == null) return;
+            if (_armSplinterHotkey == null)
+            {
+                _armSplinterHotkey = new GlobalHotkey(_mainWindow) { Diagnostic = AppendLog };
+                _armSplinterHotkey.Pressed += ArmSplinterCooldownNow;
+            }
+            _armSplinterHotkey.TryRegister(
+                _sharedSettings.SplinterArmHotkeyModifiers,
+                _sharedSettings.SplinterArmHotkeyVk);
+        }
+        else
+        {
+            _armSplinterHotkey?.Unregister();
+            AppendLog("DpsOverlayPresenter: splinter-arm hotkey disabled by user");
+        }
     }
 
     /// <summary>Play the configured splinter alert sound (custom file if set, system
