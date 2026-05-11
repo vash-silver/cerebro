@@ -142,6 +142,8 @@ public sealed class DpsOverlayPresenter : IDisposable
         // visibility -- same effect from the user's perspective (the meter "moves out of
         // the way") while leaving the main window untouched.
         w.SwitchModeRequested  += () => SetOverlayVisible(!_overlayVisible);
+        // Alt+F4 / WM_CLOSE on the overlay -> hide + persist (matches X-button behavior).
+        w.HideRequested        += () => SetOverlayVisible(false);
         w.SaveSnapshotRequested += (h, enc, p) => SaveSnapshotNow(h, enc, p);
         w.ClearDpsRequested    += ClearDpsNow;
         w.ResetMaxHitRecordRequested += ResetMaxHitRecordNow;
@@ -193,7 +195,7 @@ public sealed class DpsOverlayPresenter : IDisposable
         {
             _decayTimer?.Stop();
             _decayTimer = null;
-            try { _overlayWindow?.Close(); } catch { }
+            try { _overlayWindow?.CloseByPresenter(); } catch { }
             _overlayWindow = null;
             try { _mainWindow?.CloseByPresenter(); } catch { }
             _mainWindow = null;

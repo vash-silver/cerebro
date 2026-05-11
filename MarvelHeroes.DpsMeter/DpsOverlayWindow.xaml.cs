@@ -32,7 +32,13 @@ public partial class DpsOverlayWindow : Window
         Panel.Initialize(settings, isOverlayMode: true);
 
         Panel.DragStarted          += () => { try { DragMove(); } catch { } };
-        Panel.CloseRequested       += () => Application.Current?.Shutdown();
+        // Clicking the overlay's small X button used to quit the entire app -- the overlay
+        // WAS the app.  In the new app-first layout the main window is the app, and the
+        // overlay is an auxiliary view, so X just hides the overlay (same effect as
+        // unticking the main window's "Show overlay" checkbox).  The presenter's
+        // SwitchModeRequested handler routes through SetOverlayVisible(false), which also
+        // syncs the checkbox and persists the new setting.
+        Panel.CloseRequested       += () => SwitchModeRequested?.Invoke();
         Panel.SwitchModeRequested  += () => SwitchModeRequested?.Invoke();
         Panel.BossOnlyToggled      += v  => BossOnlyToggled?.Invoke(v);
         Panel.SaveSnapshotRequested += (h, enc, p) => SaveSnapshotRequested?.Invoke(h, enc, p);
@@ -43,7 +49,32 @@ public partial class DpsOverlayWindow : Window
 
         SourceInitialized += OnSourceInitialized;
         LocationChanged   += (_, _) => Panel.SaveAll(Left, Top);
-        Closing           += (_, _) => Panel.SaveAll(Left, Top);
+        // Cancel-and-hide on user-initiated close so the window object survives between
+        // toggles of the "Show overlay" checkbox.  Without this, an Alt+F4 on the overlay
+        // would destroy the WPF window, leaving _overlayWindow pointing at a dead object;
+        // the next checkbox-on toggle would throw on ShowWithoutActivating().  The presenter
+        // sets _closingByPresenter via CloseByPresenter() before its final Close() so
+        // app shutdown can still actually destroy the window.
+        Closing += (sender, args) =>
+        {
+            Panel.SaveAll(Left, Top);
+            if (_closingByPresenter) return;
+            args.Cancel = true;
+            Hide();
+            HideRequested?.Invoke();
+        };
+    }
+
+    /// <summary>Raised when the user closed the overlay via Alt+F4 / WM_CLOSE.  The presenter
+    /// uses this to sync the main window's checkbox + persist ShowOverlay=false (the user
+    /// dismissed the overlay, so reflect that choice everywhere).</summary>
+    public event Action? HideRequested;
+
+    private bool _closingByPresenter;
+    public void CloseByPresenter()
+    {
+        _closingByPresenter = true;
+        Close();
     }
 
     public void UpdateDps(
