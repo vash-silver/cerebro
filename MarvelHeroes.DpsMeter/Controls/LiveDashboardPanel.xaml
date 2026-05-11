@@ -1,0 +1,339 @@
+<UserControl x:Class="MarvelHeroes.DpsMeter.Controls.LiveDashboardPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="#1A1A1A"
+             Foreground="#CCFFFFFF">
+
+    <UserControl.Resources>
+        <FontFamily x:Key="UiFont">Segoe UI</FontFamily>
+        <FontFamily x:Key="UiSemibold">Segoe UI Semibold</FontFamily>
+
+        <Style x:Key="Card" TargetType="Border">
+            <Setter Property="Background" Value="#111111"/>
+            <Setter Property="BorderBrush" Value="#33FFFFFF"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="4"/>
+            <Setter Property="Padding" Value="14,12"/>
+        </Style>
+
+        <Style x:Key="SectionLabel" TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
+            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="#88FF6B00"/>
+            <Setter Property="Margin" Value="0,0,0,8"/>
+        </Style>
+
+        <Style x:Key="ColHeader" TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
+            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="#55FFFFFF"/>
+            <Setter Property="TextAlignment" Value="Right"/>
+            <Setter Property="HorizontalAlignment" Value="Right"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+
+        <Style x:Key="DashboardActionButton" TargetType="Button">
+            <Setter Property="Background" Value="#222222"/>
+            <Setter Property="Foreground" Value="#CCFFFFFF"/>
+            <Setter Property="BorderBrush" Value="#44FFFFFF"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="10,4"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#333333"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </UserControl.Resources>
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <Grid Margin="14">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>  <!-- summary card -->
+                <RowDefinition Height="*"/>     <!-- leaderboard + powers -->
+                <RowDefinition Height="Auto"/>  <!-- boss-fight banner -->
+            </Grid.RowDefinitions>
+
+            <!-- ── Summary card ─────────────────────────────────────────────────────── -->
+            <Border Grid.Row="0" Style="{StaticResource Card}" Margin="0,0,0,14">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Hero portrait (96x96, with circle clip-ish fallback) -->
+                    <Border Grid.Column="0" Width="84" Height="84"
+                            Background="#2A2A2A" CornerRadius="6"
+                            BorderBrush="#44FFFFFF" BorderThickness="1"
+                            Margin="0,0,16,0" SnapsToDevicePixels="True">
+                        <Image x:Name="HeroPortrait" Stretch="UniformToFill"
+                               SnapsToDevicePixels="True"/>
+                    </Border>
+
+                    <!-- Centre column: hero name, DPS, mode -->
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                        <TextBlock x:Name="HeroTitleText"
+                                   FontFamily="{StaticResource UiSemibold}" FontSize="14"
+                                   Foreground="#DDFFFFFF"
+                                   Text="DPS"/>
+                        <TextBlock x:Name="DpsText"
+                                   FontFamily="{StaticResource UiSemibold}" FontSize="42"
+                                   FontWeight="Bold" Foreground="#FFFFB347"
+                                   LineHeight="46" LineStackingStrategy="BlockLineHeight"
+                                   Text="—"/>
+                        <TextBlock x:Name="DetailText"
+                                   FontFamily="{StaticResource UiFont}" FontSize="11"
+                                   Foreground="#88FFFFFF" Margin="0,4,0,0"
+                                   Text="idle"/>
+                    </StackPanel>
+
+                    <!-- Right column: max-hit triplet + ES pill -->
+                    <StackPanel Grid.Column="2" VerticalAlignment="Center"
+                                HorizontalAlignment="Right" MinWidth="180">
+                        <TextBlock Style="{StaticResource SectionLabel}" Text="MAX HIT"
+                                   HorizontalAlignment="Right" Margin="0,0,0,4"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Foreground="#77FFFFFF" FontSize="10" FontFamily="{StaticResource UiFont}" Text="fight"   TextAlignment="Right"/>
+                                <TextBlock Foreground="#77FFFFFF" FontSize="10" FontFamily="{StaticResource UiFont}" Text="session" TextAlignment="Right"/>
+                                <TextBlock Foreground="#77FFFFFF" FontSize="10" FontFamily="{StaticResource UiFont}" Text="record"  TextAlignment="Right"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Margin="10,0,0,0">
+                                <TextBlock x:Name="MaxHitFightText"   FontFamily="{StaticResource UiSemibold}" FontSize="13" Foreground="#FFCC66" Text="—"/>
+                                <TextBlock x:Name="MaxHitSessionText" FontFamily="{StaticResource UiSemibold}" FontSize="13" Foreground="#FFCC66" Text="—"/>
+                                <TextBlock x:Name="MaxHitRecordText"  FontFamily="{StaticResource UiSemibold}" FontSize="13" Foreground="#FFCC66" Text="—"/>
+                            </StackPanel>
+                        </Grid>
+
+                        <!-- ES status pill -->
+                        <Border x:Name="SplinterPanel" Margin="0,10,0,0"
+                                HorizontalAlignment="Right"
+                                Padding="10,3" CornerRadius="4"
+                                Background="#332E7FFF" BorderBrush="#552E7FFF" BorderThickness="1"
+                                Visibility="Collapsed">
+                            <TextBlock x:Name="SplinterText"
+                                       FontFamily="{StaticResource UiSemibold}" FontSize="12"
+                                       Foreground="#FFB0CDFF" Text="ES: ready"/>
+                        </Border>
+
+                        <!-- Save snapshot button -->
+                        <Button x:Name="SaveSnapshotButton" Content="Save snapshot"
+                                Style="{StaticResource DashboardActionButton}"
+                                HorizontalAlignment="Right" Margin="0,10,0,0"
+                                Click="SaveSnapshotButton_OnClick"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ── Leaderboard + Powers (2 columns) ─────────────────────────────────── -->
+            <Grid Grid.Row="1">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"  MinWidth="320"/>
+                    <ColumnDefinition Width="14"/>
+                    <ColumnDefinition Width="*"  MinWidth="320"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Leaderboard -->
+                <Border Grid.Column="0" Style="{StaticResource Card}">
+                    <DockPanel>
+                        <TextBlock Style="{StaticResource SectionLabel}" DockPanel.Dock="Top"
+                                   Text="LEADERBOARD"/>
+                        <Grid DockPanel.Dock="Top" Margin="0,0,0,4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="64"/>
+                                <ColumnDefinition Width="78"/>
+                                <ColumnDefinition Width="44"/>
+                            </Grid.ColumnDefinitions>
+                            <!-- Spacer to align with portrait column -->
+                            <TextBlock Grid.Column="0" Width="40" Text=""/>
+                            <TextBlock Grid.Column="1" Text="HERO"  Style="{StaticResource ColHeader}" HorizontalAlignment="Left"/>
+                            <TextBlock Grid.Column="2" Text="DPS"   Style="{StaticResource ColHeader}"/>
+                            <TextBlock Grid.Column="3" Text="TOTAL" Style="{StaticResource ColHeader}"/>
+                            <TextBlock Grid.Column="4" Text="%"     Style="{StaticResource ColHeader}"/>
+                        </Grid>
+
+                        <ItemsControl x:Name="LeaderboardRows">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Height="40" Margin="0,2">
+                                        <Rectangle HorizontalAlignment="Left" Height="40"
+                                                   RadiusX="3" RadiusY="3"
+                                                   Width="{Binding BarWidth}" Fill="{Binding BarFill}"/>
+                                        <Grid Margin="4,0,4,0" VerticalAlignment="Center">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="64"/>
+                                                <ColumnDefinition Width="78"/>
+                                                <ColumnDefinition Width="44"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Image Grid.Column="0" Width="36" Height="36"
+                                                   Source="{Binding Portrait}"
+                                                   Stretch="UniformToFill"
+                                                   SnapsToDevicePixels="True"
+                                                   Margin="0,0,8,0"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding DisplayName}"
+                                                       FontFamily="{StaticResource UiFont}" FontSize="13"
+                                                       Foreground="{Binding TextColor}"
+                                                       FontWeight="{Binding FontWeight}"
+                                                       VerticalAlignment="Center"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                            <TextBlock Grid.Column="2" Text="{Binding DpsText}"
+                                                       FontFamily="{StaticResource UiFont}" FontSize="12"
+                                                       Foreground="{Binding TextColor}"
+                                                       TextAlignment="Right" HorizontalAlignment="Right"
+                                                       VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="3" Text="{Binding TotalText}"
+                                                       FontFamily="{StaticResource UiFont}" FontSize="12"
+                                                       Foreground="{Binding TextColor}"
+                                                       TextAlignment="Right" HorizontalAlignment="Right"
+                                                       VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="4" Text="{Binding PctText}"
+                                                       FontFamily="{StaticResource UiSemibold}" FontSize="13"
+                                                       Foreground="{Binding TextColor}"
+                                                       TextAlignment="Right" HorizontalAlignment="Right"
+                                                       VerticalAlignment="Center"/>
+                                        </Grid>
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <TextBlock x:Name="LeaderboardEmptyHint" DockPanel.Dock="Top"
+                                   FontFamily="{StaticResource UiFont}" FontSize="11"
+                                   Foreground="#55FFFFFF" Margin="4,8,0,0"
+                                   Text="No damage logged yet."
+                                   Visibility="Visible"/>
+                    </DockPanel>
+                </Border>
+
+                <!-- Powers -->
+                <Border Grid.Column="2" Style="{StaticResource Card}">
+                    <DockPanel>
+                        <TextBlock Style="{StaticResource SectionLabel}" DockPanel.Dock="Top"
+                                   Text="MY POWERS"/>
+                        <Grid DockPanel.Dock="Top" Margin="0,0,0,4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="44"/>
+                                <ColumnDefinition Width="66"/>
+                                <ColumnDefinition Width="66"/>
+                                <ColumnDefinition Width="68"/>
+                                <ColumnDefinition Width="42"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="ABILITY" Style="{StaticResource ColHeader}" HorizontalAlignment="Left"/>
+                            <TextBlock Grid.Column="1" Text="HITS"    Style="{StaticResource ColHeader}"/>
+                            <TextBlock Grid.Column="2" Text="AVG"     Style="{StaticResource ColHeader}"/>
+                            <TextBlock Grid.Column="3" Text="MAX"     Style="{StaticResource ColHeader}"/>
+                            <TextBlock Grid.Column="4" Text="TOTAL"   Style="{StaticResource ColHeader}"/>
+                            <TextBlock Grid.Column="5" Text="%"       Style="{StaticResource ColHeader}"/>
+                        </Grid>
+
+                        <ItemsControl x:Name="PowerRows">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Height="22" Margin="0,1">
+                                        <Rectangle HorizontalAlignment="Left" Height="22"
+                                                   RadiusX="3" RadiusY="3"
+                                                   Width="{Binding BarWidth}" Fill="{Binding BarFill}"/>
+                                        <Grid Margin="4,0,4,0" VerticalAlignment="Center">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="44"/>
+                                                <ColumnDefinition Width="66"/>
+                                                <ColumnDefinition Width="66"/>
+                                                <ColumnDefinition Width="68"/>
+                                                <ColumnDefinition Width="42"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="{Binding Name}"
+                                                       FontFamily="{StaticResource UiFont}" FontSize="12"
+                                                       Foreground="{Binding TextColor}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding HitsText}"
+                                                       FontFamily="{StaticResource UiFont}" FontSize="11"
+                                                       Foreground="#88FFFFFF"
+                                                       TextAlignment="Right" HorizontalAlignment="Right"
+                                                       VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="2" Text="{Binding AvgText}"
+                                                       FontFamily="{StaticResource UiFont}" FontSize="11"
+                                                       Foreground="#AAFFFFFF"
+                                                       TextAlignment="Right" HorizontalAlignment="Right"
+                                                       VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="3" Text="{Binding MaxText}"
+                                                       FontFamily="{StaticResource UiFont}" FontSize="11"
+                                                       Foreground="#88FFFFFF"
+                                                       TextAlignment="Right" HorizontalAlignment="Right"
+                                                       VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="4" Text="{Binding TotalText}"
+                                                       FontFamily="{StaticResource UiFont}" FontSize="11"
+                                                       Foreground="#AAFFFFFF"
+                                                       TextAlignment="Right" HorizontalAlignment="Right"
+                                                       VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="5" Text="{Binding PctText}"
+                                                       FontFamily="{StaticResource UiSemibold}" FontSize="12"
+                                                       Foreground="{Binding TextColor}"
+                                                       TextAlignment="Right" HorizontalAlignment="Right"
+                                                       VerticalAlignment="Center"/>
+                                        </Grid>
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <TextBlock x:Name="PowersEmptyHint" DockPanel.Dock="Top"
+                                   FontFamily="{StaticResource UiFont}" FontSize="11"
+                                   Foreground="#55FFFFFF" Margin="0,8,0,0"
+                                   Text="No abilities logged yet."
+                                   Visibility="Visible"/>
+                    </DockPanel>
+                </Border>
+            </Grid>
+
+            <!-- ── Boss fight banner (shown when an encounter is active) ────────────── -->
+            <Border x:Name="BossFightBanner" Grid.Row="2"
+                    Style="{StaticResource Card}" Margin="0,14,0,0"
+                    BorderBrush="#66FF6B00" Background="#1A2410"
+                    Visibility="Collapsed">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="BOSS FIGHT"
+                               FontFamily="{StaticResource UiSemibold}" FontSize="11"
+                               Foreground="#BBFF6B00" VerticalAlignment="Center"
+                               Margin="0,0,16,0"/>
+                    <TextBlock x:Name="BossNameText" Grid.Column="1"
+                               FontFamily="{StaticResource UiSemibold}" FontSize="14"
+                               Foreground="#FFCC8888" VerticalAlignment="Center"
+                               Margin="0,0,16,0"
+                               Text=""/>
+                    <TextBlock x:Name="BossStatusText" Grid.Column="2"
+                               FontFamily="{StaticResource UiFont}" FontSize="11"
+                               Foreground="#AAFFFFFF" VerticalAlignment="Center"
+                               Text=""/>
+                    <TextBlock x:Name="BossDpsText" Grid.Column="3"
+                               FontFamily="{StaticResource UiSemibold}" FontSize="18"
+                               Foreground="#FFFFB347" VerticalAlignment="Center"
+                               Text="—"/>
+                </Grid>
+            </Border>
+        </Grid>
+    </ScrollViewer>
+</UserControl>

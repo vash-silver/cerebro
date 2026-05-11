@@ -26,12 +26,17 @@ namespace MarvelHeroes.DpsMeter.Windows;
 /// </summary>
 public partial class MainAppWindow : Window
 {
-    public bool InitialBossOnlyPreference => LivePanel.InitialBossOnlyPreference;
+    public bool InitialBossOnlyPreference { get; private set; }
 
     // Forwarded panel events -- same set DpsLiveWindow / DpsOverlayWindow expose so the
     // presenter's wiring code doesn't have to special-case this window.
     public event Action<bool>?   BossOnlyToggled;
-    public event Action?         SwitchModeRequested;   // unused in app-first mode; kept for API parity
+    // SwitchModeRequested kept for API parity with the overlay window so the presenter's
+    // WireWindowEvents overload signatures stay symmetric.  The main window itself has no
+    // way to fire it (no "switch mode" surface) -- suppress the never-used warning.
+#pragma warning disable CS0067
+    public event Action?         SwitchModeRequested;
+#pragma warning restore CS0067
     public event Action<IReadOnlyList<DpsMeterClass.HeroShareEntry>?,
                         DpsMeterClass.EncounterSnapshot,
                         IReadOnlyList<DpsMeterClass.PowerBreakdownEntry>?>? SaveSnapshotRequested;
@@ -59,47 +64,34 @@ public partial class MainAppWindow : Window
     {
         InitializeComponent();
 
-        // Live tab's DpsDisplayPanel uses the same Initialize signature as the overlay /
-        // live-window variants -- isOverlayMode:false hides the on-panel close button
-        // (the window's title bar X handles closing) and the cursor stays default.
-        LivePanel.Initialize(settings, isOverlayMode: false);
+        // LiveDashboardPanel has no menu / settings of its own -- it's a pure data display.
+        // We snapshot the persisted "boss only" preference here so the presenter can set
+        // _meter.BossOnlyMode at startup without going through the now-absent panel hook.
+        InitialBossOnlyPreference = settings.BossDpsOnly;
         SettingsTab.Initialize(settings);
         SetShowOverlayChecked(settings.ShowOverlay);
 
-        // Settings tab fires the same events the live panel fires (BossOnlyToggled, ClearDps,
-        // ResetMaxHitRecord, ResetSplinterCooldown) so the presenter doesn't have to special-
-        // case it.  Funnel them into the same window-level events.
-        SettingsTab.BossOnlyToggled             += v  => BossOnlyToggled?.Invoke(v);
-        SettingsTab.ClearDpsRequested           += () => ClearDpsRequested?.Invoke();
-        SettingsTab.ResetMaxHitRecordRequested  += () => ResetMaxHitRecordRequested?.Invoke();
-        SettingsTab.ResetSplinterCooldownRequested += () => ResetSplinterCooldownRequested?.Invoke();
+        // Settings tab raises the same events the overlay's right-click menu does so the
+        // presenter only needs to subscribe once and either UI surface can drive the action.
+        SettingsTab.BossOnlyToggled                 += v  => BossOnlyToggled?.Invoke(v);
+        SettingsTab.ClearDpsRequested               += () => ClearDpsRequested?.Invoke();
+        SettingsTab.ResetMaxHitRecordRequested      += () => ResetMaxHitRecordRequested?.Invoke();
+        SettingsTab.ResetSplinterCooldownRequested  += () => ResetSplinterCooldownRequested?.Invoke();
 
-        // Bubble panel events out so the presenter can subscribe to this window the same
-        // way it does to DpsLiveWindow / DpsOverlayWindow.
-        LivePanel.DragStarted             += () => { /* no-op: main window has a real title bar */ };
-        LivePanel.CloseRequested          += () => { /* close button hidden in non-overlay mode */ };
-        LivePanel.SwitchModeRequested     += () => SwitchModeRequested?.Invoke();
-        LivePanel.BossOnlyToggled         += v  => BossOnlyToggled?.Invoke(v);
-        LivePanel.SaveSnapshotRequested   += (h, enc, p) => SaveSnapshotRequested?.Invoke(h, enc, p);
-        LivePanel.ClearDpsRequested       += () => ClearDpsRequested?.Invoke();
-        LivePanel.ResetMaxHitRecordRequested  += () => ResetMaxHitRecordRequested?.Invoke();
-        LivePanel.ResetSplinterCooldownRequested += () => ResetSplinterCooldownRequested?.Invoke();
-        // The right-click "View reports" menu item in the live tab makes sense to interpret
-        // as "switch to the Reports tab here" rather than opening a separate window.
-        LivePanel.ViewReportsRequested    += () => MainTabs.SelectedIndex = 1;
+        // The dashboard's "Save snapshot" button forwards a snapshot of the current tick
+        // (top heroes / encounter state / power breakdown all cached on the last UpdateDps).
+        LivePanel.SaveSnapshotRequested += (h, enc, p) => SaveSnapshotRequested?.Invoke(h, enc, p);
 
         // Auto-size? No -- the main app should remember its user-resized geometry once we
         // add that.  For now, the XAML's Width/Height defaults apply.
         Closing += (_, _) =>
         {
-            if (_closingByPresenter)
-            {
-                LivePanel.SaveAll();
-                return;
-            }
+            if (_closingByPresenter) return;
             // Normal window close = quit the app.  The overlay is auxiliary; if the user
             // closes the main window we shut everything down (matches Windows convention).
-            // The presenter's Stop() will fire from App.OnExit and tear down cleanly.
+            // The presenter's Stop() will fire from App.OnExit and tear down cleanly.  No
+            // per-panel SaveAll() needed -- the Settings tab persists each toggle as it
+            // happens, and the LiveDashboardPanel has no settings to save.
             Application.Current?.Shutdown();
         };
     }

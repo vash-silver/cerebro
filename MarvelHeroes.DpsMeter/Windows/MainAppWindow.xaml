@@ -114,12 +114,13 @@
                         tab so its 280-px-wide leaderboard layout looks deliberate inside a
                         wider window.
                     -->
-                    <ScrollViewer VerticalScrollBarVisibility="Auto"
-                                  HorizontalScrollBarVisibility="Disabled">
-                        <controls:DpsDisplayPanel x:Name="LivePanel"
-                                                  HorizontalAlignment="Center"
-                                                  Margin="0,16,0,16"/>
-                    </ScrollViewer>
+                    <!--
+                        Dashboard layout purpose-built for the main app's wider canvas
+                        (compared to the 280-px-wide DpsDisplayPanel the overlay still uses).
+                        Summary card at top, leaderboard + power-breakdown side by side, boss
+                        banner at the bottom when an encounter's active.
+                    -->
+                    <controls:LiveDashboardPanel x:Name="LivePanel"/>
                 </Border>
             </TabItem>
             <TabItem Header="Reports">
