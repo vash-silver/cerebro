@@ -20,6 +20,13 @@ dps-meter.log
 dps-max-hits.json
 dps-player-index.json
 
+# ── Claude / agent tooling state (per-user, contains absolute paths) ────────
+# settings.local.json embeds shell allowlist patterns including absolute paths
+# under the current user's home directory.  Keeping the entire .claude/ dir
+# out of git prevents any agent-tooling metadata from leaking the developer's
+# Windows username into the repo.
+.claude/
+
 # ── OS noise ─────────────────────────────────────────────────────────────────
 Thumbs.db
 .DS_Store
