@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using MarvelHeroesComporator.NetworkSniffer;
 using MarvelHeroes.DpsMeter.Services;
 using Rectangle = System.Windows.Shapes.Rectangle;
@@ -541,6 +542,7 @@ public partial class DpsDisplayPanel : UserControl
 
         if (justDropped)
         {
+            StopSplinterReadyPulse();
             SplinterText.Text = "ES: dropped!" + suffix;
             SplinterText.Foreground = _splinterFlashBrush;
             SplinterPanel.Background  = _splinterFlashBg;
@@ -548,6 +550,7 @@ public partial class DpsDisplayPanel : UserControl
         }
         else if (cooldownActive)
         {
+            StopSplinterReadyPulse();
             // mm:ss -- truncate fractional seconds so the number ticks down predictably.
             int totalSec = (int)Math.Ceiling(remaining.TotalSeconds);
             int mm = totalSec / 60;
@@ -563,7 +566,54 @@ public partial class DpsDisplayPanel : UserControl
             SplinterText.Foreground = _splinterReadyBrush;
             SplinterPanel.Background  = _splinterReadyBg;
             SplinterPanel.BorderBrush = _splinterReadyBd;
+            // Soft opacity pulse on the pill so peripheral vision catches the "ready"
+            // state.  Same animation parameters as LiveDashboardPanel for consistency.
+            StartSplinterReadyPulse();
         }
+    }
+
+    // ── Splinter "ready" soft-pulse (mirrors LiveDashboardPanel) ──────────────────────────────
+    // The overlay-mode pill is smaller than the dashboard banner so the pulse is less
+    // prominent here, but it's still a useful peripheral-vision cue and keeps the two
+    // views feeling like one app.  See LiveDashboardPanel.EnsureReadyPulseBuilt for the
+    // design rationale (single Storyboard instance, idempotent Start across ticks,
+    // explicit Opacity restore on Stop).
+    private Storyboard? _splinterReadyPulse;
+    private bool _splinterPulseActive;
+
+    private void EnsureSplinterReadyPulseBuilt()
+    {
+        if (_splinterReadyPulse != null) return;
+        var anim = new DoubleAnimation
+        {
+            From           = 1.0,
+            To             = 0.55,
+            Duration       = new Duration(TimeSpan.FromMilliseconds(800)),
+            AutoReverse    = true,
+            RepeatBehavior = RepeatBehavior.Forever,
+            EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut },
+        };
+        Storyboard.SetTarget(anim, SplinterPanel);
+        Storyboard.SetTargetProperty(anim, new PropertyPath(OpacityProperty));
+        _splinterReadyPulse = new Storyboard();
+        _splinterReadyPulse.Children.Add(anim);
+    }
+
+    private void StartSplinterReadyPulse()
+    {
+        if (_splinterPulseActive) return;
+        EnsureSplinterReadyPulseBuilt();
+        _splinterReadyPulse!.Begin();
+        _splinterPulseActive = true;
+    }
+
+    private void StopSplinterReadyPulse()
+    {
+        if (!_splinterPulseActive) return;
+        _splinterReadyPulse?.Stop();
+        SplinterPanel.BeginAnimation(OpacityProperty, null);
+        SplinterPanel.Opacity = 1.0;
+        _splinterPulseActive = false;
     }
 
     private SolidColorBrush? _splinterReadyBrush, _splinterCountBrush, _splinterFlashBrush;

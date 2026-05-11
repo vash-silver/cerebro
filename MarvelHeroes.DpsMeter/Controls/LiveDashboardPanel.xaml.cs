@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using MarvelHeroesComporator.NetworkSniffer;
 using MarvelHeroes.DpsMeter.Services;
@@ -81,6 +82,64 @@ public partial class LiveDashboardPanel : UserControl
     private static readonly SolidColorBrush s_modePillBossFg    = Freeze(new SolidColorBrush(Color.FromArgb(0xFF, 0xFF, 0xCC, 0x66)));
 
     private static SolidColorBrush Freeze(SolidColorBrush b) { if (b.CanFreeze) b.Freeze(); return b; }
+
+    // ── Splinter "READY" soft-pulse animation ────────────────────────────────────────────────
+    // When the cooldown has expired the banner gently breathes between full and ~55% opacity
+    // so the user's peripheral vision catches "your next splinter is eligible to drop now"
+    // without it being a hard flash.  Stopped (and Opacity restored to 1.0) the moment the
+    // cooldown re-arms or a fresh drop is detected.
+    //
+    // Single Storyboard instance reused for the lifetime of the panel -- starting/stopping
+    // is cheap; rebuilding the Storyboard on every state change would churn allocations on
+    // the 4 Hz tick.  `_pulseActive` tracks whether it's currently running so we don't
+    // re-Begin() on every tick of the decay timer (each Begin would reset the easing curve
+    // and visibly snap the banner back to full opacity).
+    private Storyboard? _readyPulse;
+    private bool _pulseActive;
+
+    private void EnsureReadyPulseBuilt()
+    {
+        if (_readyPulse != null) return;
+
+        // 1.0 -> 0.55 -> 1.0 over 1.6s, soft sinusoidal easing, repeat forever.
+        // Easing avoids the linear "two-state blink" feel; the 0.55 floor keeps the text
+        // legible mid-pulse (going below ~0.4 makes the countdown text hard to read).
+        var anim = new DoubleAnimation
+        {
+            From           = 1.0,
+            To             = 0.55,
+            Duration       = new Duration(TimeSpan.FromMilliseconds(800)),
+            AutoReverse    = true,
+            RepeatBehavior = RepeatBehavior.Forever,
+            EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut },
+        };
+        Storyboard.SetTarget(anim, SplinterBanner);
+        Storyboard.SetTargetProperty(anim, new PropertyPath(OpacityProperty));
+
+        _readyPulse = new Storyboard();
+        _readyPulse.Children.Add(anim);
+    }
+
+    private void StartReadyPulse()
+    {
+        if (_pulseActive) return;          // idempotent across 4 Hz ticks
+        EnsureReadyPulseBuilt();
+        _readyPulse!.Begin();
+        _pulseActive = true;
+    }
+
+    private void StopReadyPulse()
+    {
+        if (!_pulseActive) return;
+        _readyPulse?.Stop();
+        // Explicitly restore Opacity to 1.0 -- Stop() leaves the property at whatever value
+        // the animation last set, which would freeze the banner at e.g. 0.7 if we stopped
+        // mid-cycle.  Direct assignment cancels the animation hold without needing
+        // BeginAnimation(null).
+        SplinterBanner.BeginAnimation(OpacityProperty, null);
+        SplinterBanner.Opacity = 1.0;
+        _pulseActive = false;
+    }
 
     // ── Main update entry ─────────────────────────────────────────────────────────────────────
     // Signature matches DpsDisplayPanel.UpdateDps so MainAppWindow can call either with the
@@ -261,6 +320,7 @@ public partial class LiveDashboardPanel : UserControl
             // Cooldown was just armed -- progress bar starts near zero; bright orange flash.
             // Caption pulls the duration off the tracker constant so a future tuning of
             // CooldownDuration doesn't leave a "7-minute cooldown armed" lie on screen.
+            StopReadyPulse();   // we're no longer ready -- restore Opacity to 1.0
             int armMinutes = (int)EternitySplinterTracker.CooldownDuration.TotalMinutes;
             SplinterStatusBig.Text   = "DROPPED!";
             SplinterCaption.Text     = $"{armMinutes}-minute cooldown armed";
@@ -273,6 +333,7 @@ public partial class LiveDashboardPanel : UserControl
         }
         else if (cooldownActive)
         {
+            StopReadyPulse();   // counting down is its own visual signal; no pulse needed
             int totalSec = (int)Math.Ceiling(remaining.TotalSeconds);
             int mm = totalSec / 60;
             int ss = totalSec % 60;
@@ -300,6 +361,9 @@ public partial class LiveDashboardPanel : UserControl
             SplinterBanner.BorderBrush   = s_splReadyBd;
             SplinterProgress.Foreground  = s_splReady;
             SplinterProgress.Value       = 100;
+            // Soft 0.8s in / 0.8s out opacity pulse so peripheral vision catches the
+            // ready state without it being a hard flash.  Idempotent across 4 Hz ticks.
+            StartReadyPulse();
         }
     }
 
