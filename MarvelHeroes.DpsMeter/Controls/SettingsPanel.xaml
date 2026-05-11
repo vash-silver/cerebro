@@ -130,6 +130,29 @@
             <TextBlock Style="{StaticResource HintText}"
                        Text="If set, this file plays instead of the Windows asterisk.  Missing / unreadable files silently fall back to the system sound."/>
 
+            <Grid Margin="22,8,0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,0"
+                           FontFamily="Segoe UI" FontSize="11" Foreground="#AAFFFFFF"
+                           Text="Volume:"/>
+                <Slider x:Name="SplinterVolumeSlider" Grid.Column="1"
+                        Minimum="0" Maximum="1" SmallChange="0.05" LargeChange="0.2"
+                        TickFrequency="0.1" TickPlacement="BottomRight"
+                        IsSnapToTickEnabled="False" VerticalAlignment="Center"
+                        ValueChanged="SplinterVolumeSlider_ValueChanged"/>
+                <TextBlock x:Name="SplinterVolumeReadout" Grid.Column="2"
+                           VerticalAlignment="Center" Margin="10,0,0,0"
+                           FontFamily="Segoe UI" FontSize="12" Foreground="#FFCC66"
+                           MinWidth="40" TextAlignment="Right"
+                           Text="100%"/>
+            </Grid>
+            <TextBlock Style="{StaticResource HintText}"
+                       Text="Affects custom sound files only.  When the system fallback plays, volume is controlled by Windows' notification-sound level instead."/>
+
             <!-- ── Overlay scale ───────────────────────────────────────────────────────── -->
             <TextBlock Text="OVERLAY SCALE" Style="{StaticResource SectionHeader}"/>
             <TextBlock Style="{StaticResource HintText}" Margin="0,0,0,4"

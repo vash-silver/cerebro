@@ -688,10 +688,12 @@ public sealed class DpsOverlayPresenter : IDisposable
     private void PlaySplinterAlert(string contextForLog)
     {
         if (_sharedSettings?.SplinterCooldownSoundEnabled != true) return;
-        bool playedCustom = SplinterCooldownSoundPlayer.Play(_sharedSettings.SplinterCooldownSoundPath);
+        bool playedCustom = SplinterCooldownSoundPlayer.Play(
+            _sharedSettings.SplinterCooldownSoundPath,
+            _sharedSettings.SplinterCooldownSoundVolume);
         AppendLog(playedCustom
-            ? $"DpsOverlayPresenter: played custom splinter sound for {contextForLog} ('{_sharedSettings.SplinterCooldownSoundPath}')"
-            : $"DpsOverlayPresenter: played system asterisk for splinter {contextForLog}");
+            ? $"DpsOverlayPresenter: played custom splinter sound for {contextForLog} ('{_sharedSettings.SplinterCooldownSoundPath}', vol={_sharedSettings.SplinterCooldownSoundVolume:0.00})"
+            : $"DpsOverlayPresenter: played system asterisk for splinter {contextForLog} (vol slider doesn't apply -- Windows controls)");
     }
 
     public void OpenReportViewer()

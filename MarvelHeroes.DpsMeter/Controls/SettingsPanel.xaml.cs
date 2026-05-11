@@ -40,6 +40,7 @@ public partial class SettingsPanel : UserControl
     private bool _suppressShowPowerBreakdown;
     private bool _suppressShowSplinter;
     private bool _suppressSplinterSound;
+    private bool _suppressSplinterVolume;
     private bool _suppressLogging;
     private bool _suppressScale;
 
@@ -84,6 +85,13 @@ public partial class SettingsPanel : UserControl
         SplinterSoundPathText.Text = string.IsNullOrWhiteSpace(settings.SplinterCooldownSoundPath)
             ? "(system default)"
             : settings.SplinterCooldownSoundPath;
+
+        // Splinter volume slider -- snap to settings without firing the ValueChanged path
+        // that would re-save (would be a no-op but the suppression keeps the flow clean).
+        _suppressSplinterVolume = true;
+        try { SplinterVolumeSlider.Value = Math.Clamp(settings.SplinterCooldownSoundVolume, 0.0, 1.0); }
+        finally { _suppressSplinterVolume = false; }
+        UpdateSplinterVolumeReadout(SplinterVolumeSlider.Value);
 
         // Diagnostics
         SetChecked(LoggingCheckbox,             settings.LoggingEnabled,             ref _suppressLogging);
@@ -167,6 +175,26 @@ public partial class SettingsPanel : UserControl
     {
         if (_suppressSplinterSound || _settings == null) return;
         _settings.SplinterCooldownSoundEnabled = false; Save();
+    }
+
+    private void SplinterVolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        UpdateSplinterVolumeReadout(e.NewValue);
+        if (_suppressSplinterVolume || _settings == null) return;
+        // Persist rounded to 2 decimals so the JSON stays compact and the readout
+        // can't drift due to slider snap quirks.
+        _settings.SplinterCooldownSoundVolume = Math.Round(Math.Clamp(e.NewValue, 0.0, 1.0), 2);
+        Save();
+    }
+
+    private void UpdateSplinterVolumeReadout(double value)
+    {
+        // Guard for the same pre-construction null trap as the scale-slider readout --
+        // the Slider fires ValueChanged during InitializeComponent when its default
+        // (0.0) is assigned, BEFORE the sibling SplinterVolumeReadout TextBlock has
+        // been parsed.
+        if (SplinterVolumeReadout == null) return;
+        SplinterVolumeReadout.Text = $"{value * 100:0}%";
     }
 
     // ── Scale ─────────────────────────────────────────────────────────────────────────────────
@@ -256,8 +284,11 @@ public partial class SettingsPanel : UserControl
     private void TestSoundButton_Click(object sender, RoutedEventArgs e)
     {
         // Route through the same helper the presenter uses, so the test always matches
-        // what'd play on a real cooldown expiry (custom file if set, system fallback if not).
-        SplinterCooldownSoundPlayer.Play(_settings?.SplinterCooldownSoundPath);
+        // what'd play on a real splinter alert (custom file if set + volume slider, or
+        // system fallback if no path is configured).
+        SplinterCooldownSoundPlayer.Play(
+            _settings?.SplinterCooldownSoundPath,
+            _settings?.SplinterCooldownSoundVolume ?? 1.0);
     }
 
     private void BrowseSplinterSoundButton_Click(object sender, RoutedEventArgs e)

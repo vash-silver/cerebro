@@ -88,6 +88,13 @@ public sealed class DpsOverlaySettingsFile
     /// Browse / Clear buttons; persists across launches.</summary>
     public string? SplinterCooldownSoundPath { get; set; }
 
+    /// <summary>Playback volume for the splinter alert sound, range 0.0 (silent) to 1.0
+    /// (full).  Default 1.0.  Applied to <c>MediaPlayer.Volume</c> for custom sound files
+    /// only -- the system <c>SystemSounds.Asterisk</c> fallback has no programmatic volume
+    /// control and uses whatever the user has configured at the Windows level.  Values
+    /// outside [0.0, 1.0] are clamped at use time.</summary>
+    public double SplinterCooldownSoundVolume { get; set; } = 1.0;
+
     /// <summary>Legacy setting from the overlay-first era of the app.  Previously meant:
     /// <c>true</c> = show DPS in the regular titled <c>DpsLiveWindow</c>, <c>false</c> = show
     /// the transparent floating overlay.  As of the main-app GUI rework the app always shows
