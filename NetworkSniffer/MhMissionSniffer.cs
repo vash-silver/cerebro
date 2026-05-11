@@ -1422,26 +1422,36 @@ public sealed class MhMissionSniffer : IDisposable
     /// should fall back to the community-member correlation path in that case.
     /// </returns>
     /// <summary>
-    /// Attempts to extract <c>PropertyEnum.InventoryStackCount</c> (= 525) from the property
-    /// collection at the start of a replication-mode entity archive.  Returns <c>true</c> and
-    /// sets <paramref name="stackCount"/> when the property is present in the collection;
-    /// returns <c>false</c> with <c>stackCount = 0</c> on any of the (many) entities that
-    /// don't carry the property, or on parse failure.
+    /// Attempts to extract the currency / item quantity from a replication-mode entity
+    /// archive.  Returns <c>true</c> and sets <paramref name="stackCount"/> when the entity
+    /// carries either an <c>ItemCurrency</c> property (currency-stack drops like Eternity
+    /// Splinters) or a non-trivial <c>InventoryStackCount</c> (regular stackable items).
+    /// Returns <c>false</c> with <c>stackCount = 0</c> for entities that don't carry either
+    /// property, or on parse failure.
     ///
-    /// <para><b>Wire format</b> (confirmed by decompiling MHServerEmu 1.0.1):
-    /// <c>Entity.Serialize</c> just calls <c>Properties.SerializeWithDefault</c>, which writes:
+    /// <para><b>Why two properties</b> (confirmed by decompiling MHServerEmu 1.0.1's
+    /// <c>LootManager.SpawnItemInternal</c>): currency drops like splinters spawn as Item
+    /// entities with <c>InventoryStackCount = 1</c> hardcoded (one ground stack), and the
+    /// ACTUAL amount stored on <c>ItemCurrency[currencyProtoRef] = amount</c>.  Reading only
+    /// InventoryStackCount would always report 1 splinter regardless of whether the user
+    /// got 1 or 100.  We prefer ItemCurrency when present; otherwise fall back to
+    /// InventoryStackCount for non-currency stackables.</para>
+    ///
+    /// <para><b>Wire format</b>: <c>Entity.Serialize</c> just calls
+    /// <c>Properties.SerializeWithDefault</c>, which writes:
     /// <code>
     ///   [varint: replication policy]
     ///   [4 bytes LE uint: numProperties]
     ///   for each property:
-    ///     [varint ulong: PropertyId.Raw, with PropertyEnum = Raw &gt;&gt; 53]
-    ///     [varint ulong: value bits, decoded for Integer-type as (bits &gt;&gt; 1) | (bits &lt;&lt; 63)]
+    ///     [varint ulong: PropertyId.Raw]    -- PropertyEnum = Raw &gt;&gt; 53, params in low 53 bits
+    ///     [varint ulong: value bits]        -- Integer type decodes as (bits &gt;&gt; 1) | (bits &lt;&lt; 63)
     /// </code>
     /// The 4-byte-LE count is unusual -- it's a back-patch in the writer that requires fixed
-    /// width.  For no-param properties (which InventoryStackCount is) the PropertyId.Raw
-    /// equals exactly <c>525uL &lt;&lt; 53</c>.  We only need to match THAT specific Raw value;
-    /// any other Raw with the same enum but params set would belong to a different property
-    /// instance and isn't relevant.</para>
+    /// width.  We match the property enum (top 11 bits of Raw) rather than the full Raw value,
+    /// because <c>ItemCurrency</c> takes a CurrencyRef parameter packed into the low bits
+    /// and we don't have the client's prototype-enum table to reconstruct the exact Raw.
+    /// Matching on enum alone is safe for splinter entities -- they carry exactly one
+    /// ItemCurrency property (their own currency), so any match IS the value we want.</para>
     /// </summary>
     private static bool TryExtractStackCount(byte[] archive, out int stackCount)
     {
@@ -1459,35 +1469,53 @@ public sealed class MhMissionSniffer : IDisposable
             // and continuing would just churn varints on garbage bytes.
             if (numProperties > 4096) return false;
 
-            // PropertyEnum.InventoryStackCount = 525 (confirmed from MHServerEmu's
-            // PropertyEnum.cs).  Raw = enum << 53 for the no-params case.
-            const ulong InventoryStackCountPropertyId = 525UL << 53;
+            // PropertyEnum values (from MHServerEmu 1.0.1's PropertyEnum.cs):
+            //   ItemCurrency = 540        -- the actual currency amount (parameterized by CurrencyRef)
+            //   InventoryStackCount = 525 -- the visual stack count (always 1 for currency drops)
+            const uint ItemCurrencyEnum        = 540;
+            const uint InventoryStackCountEnum = 525;
+
+            // Track both candidate values; prefer ItemCurrency when present.
+            int  itemCurrencyValue        = 0;
+            int  inventoryStackCountValue = 0;
+            bool sawItemCurrency          = false;
 
             for (uint i = 0; i < numProperties; i++)
             {
                 ulong propertyIdRaw = r.ReadVarUInt64();
                 ulong valueBits     = r.ReadVarUInt64();
 
-                if (propertyIdRaw == InventoryStackCountPropertyId)
+                uint enumValue = (uint)(propertyIdRaw >> 53);
+                if (enumValue != ItemCurrencyEnum && enumValue != InventoryStackCountEnum)
+                    continue;
+
+                // Integer-type decode: MathHelper.UnswizzleSignBit = (bits >> 1) | (bits << 63).
+                // For positive ints (every quantity we care about) the high bit is 0 so this
+                // reduces to a plain >> 1.
+                long value = (long)((valueBits >> 1) | (valueBits << 63));
+                if (value <= 0 || value > 1_000_000) continue;  // sanity-bound, ignore garbage
+
+                if (enumValue == ItemCurrencyEnum)
                 {
-                    // Integer-type properties decode via MathHelper.UnswizzleSignBit:
-                    //   long value = (long)((bits >> 1) | (bits << 63));
-                    // For positive stack counts (1..int.MaxValue), the high bit of bits is 0 so
-                    // the rotate becomes a plain >> 1.  Clamp to a sane range so a corrupt parse
-                    // can't propagate a billion-splinter "drop" into the tracker.
-                    long value = (long)((valueBits >> 1) | (valueBits << 63));
-                    if (value <= 0 || value > 1_000_000) return false;
-                    stackCount = (int)value;
-                    return true;
+                    itemCurrencyValue = (int)value;
+                    sawItemCurrency   = true;
+                }
+                else
+                {
+                    inventoryStackCountValue = (int)value;
                 }
             }
+
+            // Prefer ItemCurrency.  This is the value the game UI shows in the
+            // "+10 Eternity Splinters!" popup.  Fall back to InventoryStackCount for
+            // regular stackable items (potions etc) that don't have a currency property.
+            stackCount = sawItemCurrency ? itemCurrencyValue : inventoryStackCountValue;
+            return stackCount > 0;
         }
         catch
         {
             return false;
         }
-
-        return false;
     }
 
     private static (string, ulong) ScanAvatarPlayerName(byte[] archive)
