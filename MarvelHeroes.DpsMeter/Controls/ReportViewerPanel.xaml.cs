@@ -278,10 +278,15 @@ public partial class ReportViewerPanel : UserControl
         for (int i = 0; i < s.Leaderboard.Count; i++)
         {
             var r = s.Leaderboard[i];
-            string name = !string.IsNullOrEmpty(r.Name) && !string.IsNullOrEmpty(r.PlayerName)
+            // Treat the DpsMeter's synthetic "#XXXX" tag as "no real nickname" -- the hero
+            // name is strictly more informative when both are visually equivalent
+            // disambiguators.  See DpsDisplayPanel.RenderRows for the matching rule.
+            bool realNick = !string.IsNullOrEmpty(r.PlayerName)
+                && !(r.PlayerName.Length > 1 && r.PlayerName[0] == '#');
+            string name = !string.IsNullOrEmpty(r.Name) && realNick
                 ? $"{r.Name} ({r.PlayerName})"
                 : !string.IsNullOrEmpty(r.Name) ? r.Name
-                : !string.IsNullOrEmpty(r.PlayerName) ? r.PlayerName
+                : realNick ? r.PlayerName
                 : r.IsSelf ? "you" : "?";
 
             // Fallback DPS for older saves that only stored a non-zero Dps for the self row:
@@ -532,10 +537,13 @@ public partial class ReportViewerPanel : UserControl
             sb.AppendLine("LEADERBOARD");
             foreach (var r in s.Leaderboard)
             {
-                string name = !string.IsNullOrEmpty(r.Name) && !string.IsNullOrEmpty(r.PlayerName)
+                // Same synthetic-#XXXX-is-not-a-real-nickname rule as the on-screen panel.
+                bool realNick = !string.IsNullOrEmpty(r.PlayerName)
+                    && !(r.PlayerName.Length > 1 && r.PlayerName[0] == '#');
+                string name = !string.IsNullOrEmpty(r.Name) && realNick
                     ? $"{r.Name} ({r.PlayerName})"
                     : !string.IsNullOrEmpty(r.Name) ? r.Name
-                    : !string.IsNullOrEmpty(r.PlayerName) ? r.PlayerName
+                    : realNick ? r.PlayerName
                     : r.IsSelf ? "you" : "?";
                 sb.AppendLine($"  {name,-30} {FormatNum(r.Dps),8}  {FormatNum(r.Total),8}  {r.Percent:0}%");
             }

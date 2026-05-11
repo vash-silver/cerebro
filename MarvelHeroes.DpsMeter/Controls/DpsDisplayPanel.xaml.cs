@@ -338,15 +338,23 @@ public partial class DpsDisplayPanel : UserControl
                 bool hasPortrait = portrait != null;
                 img.Source = portrait; img.Visibility = hasPortrait ? Visibility.Visible : Visibility.Collapsed;
 
-                bool hasNick = !string.IsNullOrEmpty(row.PlayerName);
+                // "#XXXX" is the DpsMeter's synthetic-fallback tag for avatars whose real
+                // player nickname couldn't be resolved (no CommunityMember broadcast captured
+                // in this session, mid-region join, etc.).  It's useful for distinguishing
+                // duplicates of the same hero, but it's strictly less informative than the
+                // hero name when one is the only thing available -- "Hulk" reads way better
+                // than "#0CE6".  Treat the synthesized tag as "no nickname" for purposes of
+                // picking what to display; the hero name wins.
+                bool hasRealNick = !string.IsNullOrEmpty(row.PlayerName)
+                    && !(row.PlayerName.Length > 1 && row.PlayerName[0] == '#');
                 bool hasHero = !string.IsNullOrEmpty(row.Name);
                 string nameText;
                 if (hasPortrait)
-                    nameText = hasNick ? Truncate(row.PlayerName, 12) : hasHero ? Truncate(row.Name, 12) : (row.IsSelf ? "you" : "");
-                else if (hasHero && hasNick) nameText = $"{Truncate(row.Name, 10)} {Truncate(row.PlayerName, 10)}";
-                else if (hasHero)            nameText = Truncate(row.Name, 14);
-                else if (hasNick)            nameText = Truncate(row.PlayerName, 14);
-                else                         nameText = row.IsSelf ? "you" : "?";
+                    nameText = hasRealNick ? Truncate(row.PlayerName, 12) : hasHero ? Truncate(row.Name, 12) : (row.IsSelf ? "you" : "");
+                else if (hasHero && hasRealNick) nameText = $"{Truncate(row.Name, 10)} {Truncate(row.PlayerName, 10)}";
+                else if (hasHero)                nameText = Truncate(row.Name, 14);
+                else if (hasRealNick)            nameText = Truncate(row.PlayerName, 14);
+                else                             nameText = row.IsSelf ? "you" : "?";
 
                 var fg = row.IsSelf ? selfBrush : peerBrush;
                 var fw = row.IsSelf ? FontWeights.SemiBold : FontWeights.Normal;
