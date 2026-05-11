@@ -192,6 +192,15 @@ public sealed class EntityCreatedEvent
     /// variants), but every avatar — known or not — carries this flag.</summary>
     public bool IsAvatar { get; init; }
 
+    /// <summary>Quantity from the entity's <c>Property.InventoryStackCount</c>, or <c>0</c> if
+    /// the entity doesn't carry that property (every non-stackable entity, all mobs, all
+    /// avatars).  Populated by <c>MhMissionSniffer.TryExtractStackCount</c> which scans the
+    /// <c>archiveData</c> property collection.  Used by <c>EternitySplinterTracker</c> to
+    /// surface "how many splinters did this drop give us" -- splinters spawn as currency
+    /// items with a stack count of 1..30+, and the alert is much more useful when it reports
+    /// the actual quantity rather than just "a splinter dropped".</summary>
+    public int StackCount { get; init; }
+
     /// <summary>Player nickname as broadcast on the Avatar's <c>_playerName</c>
     /// RepString, when we were able to extract it from the archive blob. Unlike the
     /// <c>NetMessageModifyCommunityMember</c> path (which only fires for
@@ -1341,6 +1350,22 @@ public sealed class MhMissionSniffer : IDisposable
               + $"scannedName='{avatarName}' scannedOwnerDbId=0x{ownerDbId:X}");
         }
 
+            // Pull the InventoryStackCount property out of archiveData for non-avatar entities.
+            // Avatars don't have a meaningful stack count; saving the parse on the (very common)
+            // avatar EntityCreate cuts dead work in dense crowds.  Failures (corrupt archive,
+            // schema drift, archive that doesn't lead with a property collection) return 0 and
+            // we proceed normally -- the splinter tracker treats 0 as "unknown, default to 1".
+            int stackCount = 0;
+            if (!isAvatar)
+            {
+                try
+                {
+                    byte[] archiveBytes = msg.ArchiveData.ToByteArray();
+                    TryExtractStackCount(archiveBytes, out stackCount);
+                }
+                catch { /* swallow; stack-count extraction is best-effort */ }
+            }
+
             EntityCreated?.Invoke(this, new EntityCreatedEvent
             {
                 EntityId           = entityId,
@@ -1349,6 +1374,7 @@ public sealed class MhMissionSniffer : IDisposable
                 IsAvatar           = isAvatar,
                 PlayerName         = avatarName,
                 OwnerPlayerDbId    = ownerDbId,
+                StackCount         = stackCount,
                 UtcTime            = DateTime.UtcNow,
             });
         }
@@ -1395,6 +1421,75 @@ public sealed class MhMissionSniffer : IDisposable
     /// (playerName, ownerDbId) tuple.  Empty string / 0 on no confident match — callers
     /// should fall back to the community-member correlation path in that case.
     /// </returns>
+    /// <summary>
+    /// Attempts to extract <c>PropertyEnum.InventoryStackCount</c> (= 525) from the property
+    /// collection at the start of a replication-mode entity archive.  Returns <c>true</c> and
+    /// sets <paramref name="stackCount"/> when the property is present in the collection;
+    /// returns <c>false</c> with <c>stackCount = 0</c> on any of the (many) entities that
+    /// don't carry the property, or on parse failure.
+    ///
+    /// <para><b>Wire format</b> (confirmed by decompiling MHServerEmu 1.0.1):
+    /// <c>Entity.Serialize</c> just calls <c>Properties.SerializeWithDefault</c>, which writes:
+    /// <code>
+    ///   [varint: replication policy]
+    ///   [4 bytes LE uint: numProperties]
+    ///   for each property:
+    ///     [varint ulong: PropertyId.Raw, with PropertyEnum = Raw &gt;&gt; 53]
+    ///     [varint ulong: value bits, decoded for Integer-type as (bits &gt;&gt; 1) | (bits &lt;&lt; 63)]
+    /// </code>
+    /// The 4-byte-LE count is unusual -- it's a back-patch in the writer that requires fixed
+    /// width.  For no-param properties (which InventoryStackCount is) the PropertyId.Raw
+    /// equals exactly <c>525uL &lt;&lt; 53</c>.  We only need to match THAT specific Raw value;
+    /// any other Raw with the same enum but params set would belong to a different property
+    /// instance and isn't relevant.</para>
+    /// </summary>
+    private static bool TryExtractStackCount(byte[] archive, out int stackCount)
+    {
+        stackCount = 0;
+        if (archive == null || archive.Length < 5) return false;  // need at least header + count
+
+        try
+        {
+            var r = new GazillionArchiveReader(archive);
+            r.ReadReplicationHeader();
+            // 4-byte LE uint, NOT a varint -- see XML doc comment for rationale.
+            uint numProperties = r.ReadRawUInt32LittleEndian();
+            // Sanity bound: real entities have at most a few hundred properties.  Tens of
+            // thousands would indicate we've mis-parsed the header / aligned the wrong way,
+            // and continuing would just churn varints on garbage bytes.
+            if (numProperties > 4096) return false;
+
+            // PropertyEnum.InventoryStackCount = 525 (confirmed from MHServerEmu's
+            // PropertyEnum.cs).  Raw = enum << 53 for the no-params case.
+            const ulong InventoryStackCountPropertyId = 525UL << 53;
+
+            for (uint i = 0; i < numProperties; i++)
+            {
+                ulong propertyIdRaw = r.ReadVarUInt64();
+                ulong valueBits     = r.ReadVarUInt64();
+
+                if (propertyIdRaw == InventoryStackCountPropertyId)
+                {
+                    // Integer-type properties decode via MathHelper.UnswizzleSignBit:
+                    //   long value = (long)((bits >> 1) | (bits << 63));
+                    // For positive stack counts (1..int.MaxValue), the high bit of bits is 0 so
+                    // the rotate becomes a plain >> 1.  Clamp to a sane range so a corrupt parse
+                    // can't propagate a billion-splinter "drop" into the tracker.
+                    long value = (long)((valueBits >> 1) | (valueBits << 63));
+                    if (value <= 0 || value > 1_000_000) return false;
+                    stackCount = (int)value;
+                    return true;
+                }
+            }
+        }
+        catch
+        {
+            return false;
+        }
+
+        return false;
+    }
+
     private static (string, ulong) ScanAvatarPlayerName(byte[] archive)
     {
         if (archive == null || archive.Length < 20) return (string.Empty, 0);

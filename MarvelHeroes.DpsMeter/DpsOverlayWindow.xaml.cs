@@ -111,15 +111,15 @@ public partial class DpsOverlayWindow : Window
             bossDps, bossTotalDamage60s, bossTopHeroes, bossEncounter, powerBreakdown);
     }
 
-    public void UpdateSplinterStatus(bool cooldownActive, TimeSpan remaining, int dropCount, bool justDropped)
+    public void UpdateSplinterStatus(bool cooldownActive, TimeSpan remaining, int dropCount, int totalSplinters, bool justDropped)
     {
         if (!Dispatcher.CheckAccess())
         {
             Dispatcher.BeginInvoke(new Action(() =>
-                Panel.UpdateSplinterStatus(cooldownActive, remaining, dropCount, justDropped)));
+                Panel.UpdateSplinterStatus(cooldownActive, remaining, dropCount, totalSplinters, justDropped)));
             return;
         }
-        Panel.UpdateSplinterStatus(cooldownActive, remaining, dropCount, justDropped);
+        Panel.UpdateSplinterStatus(cooldownActive, remaining, dropCount, totalSplinters, justDropped);
     }
 
     public void ShowWithoutActivating()

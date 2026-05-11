@@ -533,7 +533,7 @@ public partial class DpsDisplayPanel : UserControl
     ///     <item>COUNT  -- cooldown active, shows mm:ss until next drop is eligible (amber).</item>
     ///     <item>FLASH  -- a drop was just detected; brief bright orange highlight (~3 s).</item>
     ///   </list></summary>
-    public void UpdateSplinterStatus(bool cooldownActive, TimeSpan remaining, int dropCount, bool justDropped)
+    public void UpdateSplinterStatus(bool cooldownActive, TimeSpan remaining, int dropCount, int totalSplinters, bool justDropped)
     {
         if (!_showSplinterTracker) return;
 
@@ -547,7 +547,9 @@ public partial class DpsDisplayPanel : UserControl
         _splinterFlashBg    ??= FreezeBrush(new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0x6B, 0x00)));
         _splinterFlashBd    ??= FreezeBrush(new SolidColorBrush(Color.FromArgb(0x99, 0xFF, 0x6B, 0x00)));
 
-        string suffix = dropCount > 0 ? $"  ({dropCount} today)" : string.Empty;
+        // Compact pill in the overlay: prefer total splinters over drop count -- "(14 today)"
+        // is way more useful than "(2 today)" when each drop varies 1..30 splinters.
+        string suffix = totalSplinters > 0 ? $"  ({totalSplinters} today)" : string.Empty;
 
         if (justDropped)
         {

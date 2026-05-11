@@ -178,6 +178,66 @@ public sealed class EternitySplinterTrackerTests
     }
 
     [Fact]
+    public void EntityCreate_WithStackCount_AccumulatesTotalSplinters()
+    {
+        // The sniffer extracts InventoryStackCount from each EntityCreate's archiveData
+        // and surfaces it as EntityCreatedEvent.StackCount.  The tracker uses that value
+        // when bumping TotalSplintersThisSession -- so a single drop event yielding 9
+        // splinters bumps the total by 9, not 1.  Verify with two drops of differing
+        // quantities; Reset() between them since the cooldown-active suppression would
+        // otherwise drop the second.
+        using var t = new EternitySplinterTracker(null);
+
+        t.TestInjectEntityCreate(protoIdx: 13341u, entityId: 1, isAvatar: false, utc: DateTime.UtcNow, stackCount: 9);
+        Assert.Equal(1, t.DropCount);
+        Assert.Equal(9, t.TotalSplintersThisSession);
+        t.Reset();
+
+        t.TestInjectEntityCreate(protoIdx: 13341u, entityId: 2, isAvatar: false, utc: DateTime.UtcNow, stackCount: 14);
+        Assert.Equal(2, t.DropCount);
+        Assert.Equal(23, t.TotalSplintersThisSession);  // 9 + 14 -- total persists across Reset
+    }
+
+    [Fact]
+    public void EntityCreate_WithoutStackCount_DefaultsToOne()
+    {
+        // When the wire-extraction fails (older build, schema drift, or the entity didn't
+        // actually carry the InventoryStackCount property), the sniffer reports stackCount=0
+        // and the tracker falls back to recording 1 splinter for the drop -- so a missing
+        // stack count never silently degrades to "0 splinters this session" which would be
+        // a worse-than-the-old-behaviour regression.
+        using var t = new EternitySplinterTracker(null);
+
+        t.TestInjectEntityCreate(protoIdx: 13341u, entityId: 1, isAvatar: false, utc: DateTime.UtcNow, stackCount: 0);
+        Assert.Equal(1, t.DropCount);
+        Assert.Equal(1, t.TotalSplintersThisSession);
+    }
+
+    [Fact]
+    public void ArmFromNow_WithExplicitCount_BumpsTotalBySpecifiedQuantity()
+    {
+        // Manual arm with an explicit count -- the user override path that lets you peg the
+        // session total to the actual game-reported quantity even when auto-detect missed
+        // the drop entirely.
+        using var t = new EternitySplinterTracker(null);
+
+        t.ArmFromNow(splinterCount: 5);
+        Assert.Equal(1, t.DropCount);
+        Assert.Equal(5, t.TotalSplintersThisSession);
+
+        t.Reset();
+        t.ArmFromNow(splinterCount: 12);
+        Assert.Equal(2, t.DropCount);
+        Assert.Equal(17, t.TotalSplintersThisSession);  // 5 + 12
+
+        // Default-parameter ArmFromNow() (no count) still works and treats as 1.
+        t.Reset();
+        t.ArmFromNow();
+        Assert.Equal(3, t.DropCount);
+        Assert.Equal(18, t.TotalSplintersThisSession);  // 17 + 1
+    }
+
+    [Fact]
     public void EntityCreate_AfterCooldownExpires_FiresNormally()
     {
         // Counter-test: once the cooldown window has elapsed, a matching EntityCreate

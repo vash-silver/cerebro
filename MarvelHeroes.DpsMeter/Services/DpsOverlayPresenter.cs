@@ -155,7 +155,10 @@ public sealed class DpsOverlayPresenter : IDisposable
             if (_sharedSettings.SplinterArmHotkeyEnabled)
             {
                 _armSplinterHotkey = new GlobalHotkey(_mainWindow) { Diagnostic = AppendLog };
-                _armSplinterHotkey.Pressed += ArmSplinterCooldownNow;
+                // Hotkey arms with the default count of 1 -- the user pressing the binding
+                // doesn't tell us the actual quantity, but the auto-detect path will fill in
+                // the real number from the entity's stack count when it fires.
+                _armSplinterHotkey.Pressed += () => ArmSplinterCooldownNow(1);
                 _armSplinterHotkey.TryRegister(
                     _sharedSettings.SplinterArmHotkeyModifiers,
                     _sharedSettings.SplinterArmHotkeyVk);
@@ -199,7 +202,9 @@ public sealed class DpsOverlayPresenter : IDisposable
         w.ClearDpsRequested    += ClearDpsNow;
         w.ResetMaxHitRecordRequested += ResetMaxHitRecordNow;
         w.ResetSplinterCooldownRequested += ResetSplinterCooldownNow;
-        w.ArmSplinterCooldownRequested   += ArmSplinterCooldownNow;
+        // Live-view button / Settings tab button both arm with count=1 (the auto-detect path
+        // is the canonical source for splinter quantity now).
+        w.ArmSplinterCooldownRequested   += () => ArmSplinterCooldownNow(1);
         // Live re-bind of the global hotkey when the user changes it in Settings -- the
         // Settings panel has already persisted to _sharedSettings, but we own the OS-level
         // registration and need to drop + re-add the binding for it to take effect.
@@ -360,11 +365,13 @@ public sealed class DpsOverlayPresenter : IDisposable
                 _splinterTracker.IsCooldownActive,
                 _splinterTracker.RemainingCooldown,
                 _splinterTracker.DropCount,
+                _splinterTracker.TotalSplintersThisSession,
                 justDropped);
             _mainWindow?.UpdateSplinterStatus(
                 _splinterTracker.IsCooldownActive,
                 _splinterTracker.RemainingCooldown,
                 _splinterTracker.DropCount,
+                _splinterTracker.TotalSplintersThisSession,
                 justDropped);
         }
 
@@ -711,10 +718,16 @@ public sealed class DpsOverlayPresenter : IDisposable
     /// before they launched the meter, the proto-index match failed because of a game patch,
     /// or the EntityCreate happened during a region-load packet storm that exceeded the
     /// per-session discovery log cap.</summary>
-    public void ArmSplinterCooldownNow()
+    /// <summary>Manually arm the splinter cooldown.  <paramref name="splinterCount"/> is
+    /// the actual quantity of splinters the user reports receiving from this drop event
+    /// (the game's "+9 Eternity Splinters!" popup); contributes to the session running total
+    /// in <see cref="EternitySplinterTracker.TotalSplintersThisSession"/>.  Defaults to 1
+    /// for callers that don't know or don't care (the global hotkey, the Settings tab's
+    /// quick-arm button).</summary>
+    public void ArmSplinterCooldownNow(int splinterCount = 1)
     {
-        _splinterTracker?.ArmFromNow();
-        AppendLog("DpsOverlayPresenter: splinter cooldown armed manually by user request");
+        _splinterTracker?.ArmFromNow(splinterCount);
+        AppendLog($"DpsOverlayPresenter: splinter cooldown armed manually by user (count={splinterCount})");
     }
 
     /// <summary>Live re-register the global hotkey with a new (modifiers, vk) combo.  Called
@@ -731,7 +744,7 @@ public sealed class DpsOverlayPresenter : IDisposable
             // practice -- Start() builds it -- but defensive).
             if (_mainWindow == null) return;
             _armSplinterHotkey = new GlobalHotkey(_mainWindow) { Diagnostic = AppendLog };
-            _armSplinterHotkey.Pressed += ArmSplinterCooldownNow;
+            _armSplinterHotkey.Pressed += () => ArmSplinterCooldownNow(1);
         }
         _armSplinterHotkey.TryRegister(modifiers, vk);
     }
@@ -747,7 +760,7 @@ public sealed class DpsOverlayPresenter : IDisposable
             if (_armSplinterHotkey == null)
             {
                 _armSplinterHotkey = new GlobalHotkey(_mainWindow) { Diagnostic = AppendLog };
-                _armSplinterHotkey.Pressed += ArmSplinterCooldownNow;
+                _armSplinterHotkey.Pressed += () => ArmSplinterCooldownNow(1);
             }
             _armSplinterHotkey.TryRegister(
                 _sharedSettings.SplinterArmHotkeyModifiers,

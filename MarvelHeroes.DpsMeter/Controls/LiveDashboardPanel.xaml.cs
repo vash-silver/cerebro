@@ -38,10 +38,11 @@ public partial class LiveDashboardPanel : UserControl
 
     /// <summary>Manual "I just got a splinter, start the cooldown" override.  Bubbles up to
     /// the presenter which calls <c>EternitySplinterTracker.ArmFromNow()</c>.  Same effect as
-    /// the Settings tab's "Arm Splinter cooldown now" button or the future global hotkey --
-    /// exposed prominently in the live dashboard because the in-game open-world case (lots
-    /// of other players around, auto-detection picks up everyone's drops) is the most common
-    /// moment the user needs to override the timer mid-play.</summary>
+    /// the Settings tab's "Arm Splinter cooldown now" button or the global hotkey -- exposed
+    /// prominently in the live dashboard because the in-game open-world case (lots of other
+    /// players around, auto-detection picks up everyone's drops) is the most common moment
+    /// the user needs to override the timer mid-play.  Quantity isn't passed -- it's the
+    /// auto-detection path's job to extract that from the wire archive.</summary>
     public event Action? ArmSplinterCooldownRequested;
 
     public LiveDashboardPanel()
@@ -315,13 +316,18 @@ public partial class LiveDashboardPanel : UserControl
         BossLeaderboardRows.ItemsSource = view;
     }
 
-    public void UpdateSplinterStatus(bool cooldownActive, TimeSpan remaining, int dropCount, bool justDropped)
+    public void UpdateSplinterStatus(bool cooldownActive, TimeSpan remaining, int dropCount, int totalSplinters, bool justDropped)
     {
         // The full-width banner is always visible -- even on first launch with no drops
         // yet, the "READY" state with the icon and label tells the user the feature exists.
         // Three states drive the colours / status text / progress bar; the count text on
-        // the right tallies session drops once we've seen one.
-        SplinterCountText.Text = dropCount > 0 ? $"{dropCount} this session" : string.Empty;
+        // the right tallies SPLINTERS (not drop events) this session, because each drop can
+        // yield 1, 5, 9, 14 splinters depending on loot rolls -- "27 splinters in 3 drops"
+        // is way more useful to track than "3 drops".  The smaller drop count is mentioned in
+        // parens for context.  Empty string when no drops yet so the banner stays uncluttered.
+        SplinterCountText.Text = totalSplinters > 0
+            ? $"{totalSplinters} splinters · {dropCount} drop{(dropCount == 1 ? "" : "s")}"
+            : string.Empty;
 
         if (justDropped)
         {

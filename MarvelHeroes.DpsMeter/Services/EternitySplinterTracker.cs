@@ -189,8 +189,20 @@ public sealed class EternitySplinterTracker : IDisposable
     }
 
     /// <summary>Total drops detected since the tracker started.  Useful for the overlay's
-    /// "5 splinters today" badge and for logging.</summary>
+    /// "5 splinters today" badge and for logging.  NOTE: this counts drop EVENTS, not
+    /// individual splinters -- a single drop can yield 1, 5, 14 splinters depending on
+    /// loot rolls.  Use <see cref="TotalSplintersThisSession"/> for the actual splinter
+    /// count.</summary>
     public int DropCount { get; private set; }
+
+    /// <summary>Cumulative splinter quantity received this session, summed across every
+    /// drop event.  The auto-detect path can't yet read the stack count out of the
+    /// EntityCreate archive (the wire format isn't reverse-engineered), so it contributes
+    /// a placeholder of 1 splinter per detected drop.  The manual override path
+    /// (<see cref="ArmFromNow(int)"/>) lets the user pass the actual quantity they saw
+    /// in-game, so the running total stays accurate when the user goes "I got 9, click".
+    /// Reset to zero on <see cref="Reset"/>.</summary>
+    public int TotalSplintersThisSession { get; private set; }
 
     /// <summary>Add a runtime-discovered proto ref to the match set.  Persists only for the
     /// current process; if the value turns out to be a real splinter variant, add it to
@@ -218,10 +230,14 @@ public sealed class EternitySplinterTracker : IDisposable
 
     /// <summary>Manually arm the cooldown (treats now as a fresh drop).  Useful when the
     /// detection logic missed an actual drop (e.g. the user already saw the splinter
-    /// before launching the meter) and the user wants the timer to be accurate.</summary>
-    public void ArmFromNow()
+    /// before launching the meter) and the user wants the timer to be accurate.  The
+    /// <paramref name="splinterCount"/> parameter records the number of splinters the
+    /// user actually received from this drop (the in-game UI shows it as "+9 Eternity
+    /// Splinters!" / etc); contributes to <see cref="TotalSplintersThisSession"/>.
+    /// Defaults to 1 so callers that don't care about the count still work.</summary>
+    public void ArmFromNow(int splinterCount = 1)
     {
-        OnSplinterDetected(DateTime.UtcNow, manual: true);
+        OnSplinterDetected(DateTime.UtcNow, manual: true, splinterCount: Math.Max(1, splinterCount));
     }
 
     /// <summary>Clear cooldown state.  Useful for testing and for the right-click "Reset
@@ -291,13 +307,19 @@ public sealed class EternitySplinterTracker : IDisposable
                 if (LogSuppressedDetection(e))
                     Diagnostic?.Invoke(
                         $"EternitySplinterTracker: suppressed false-positive EntityCreate -- " +
-                        $"protoIdx={e.PrototypeEnumIndex} entityId={e.EntityId} at {e.UtcTime:HH:mm:ss} " +
+                        $"protoIdx={e.PrototypeEnumIndex} entityId={e.EntityId} stackCount={e.StackCount} at {e.UtcTime:HH:mm:ss} " +
                         $"(cooldown still has {RemainingCooldown.TotalSeconds:0}s left; the server " +
                         $"can't legitimately drop a 2nd splinter inside the throttle window).  " +
                         $"This proto index probably shares with a non-splinter entity.");
                 return;
             }
-            OnSplinterDetected(e.UtcTime, manual: false);
+            // StackCount is extracted from the entity's Property.InventoryStackCount in the
+            // sniffer.  Splinters spawn as currency-item entities with the actual quantity in
+            // that property.  Fall back to 1 when the parser couldn't find the property (older
+            // build, schema drift, or this turned out to not be a stackable entity after all
+            // -- in which case "1 splinter" is the closest safe assumption).
+            int splinterCount = e.StackCount > 0 ? e.StackCount : 1;
+            OnSplinterDetected(e.UtcTime, manual: false, splinterCount: splinterCount);
             return;
         }
 
@@ -377,22 +399,24 @@ public sealed class EternitySplinterTracker : IDisposable
         lock (_sync) return _suppressedProtoIndicesLoggedThisCooldown.Add(e.PrototypeEnumIndex);
     }
 
-    private void OnSplinterDetected(DateTime utc, bool manual)
+    private void OnSplinterDetected(DateTime utc, bool manual, int splinterCount = 1)
     {
+        if (splinterCount < 1) splinterCount = 1;
         lock (_sync)
         {
             _lastDropUtc          = utc;
             _cooldownExpiredFired = false;
             DropCount++;
+            TotalSplintersThisSession += splinterCount;
             // Reset the suppressed-index log set so the next cooldown window starts fresh
             // (one diagnostic line per unique proto-index per window).
             _suppressedProtoIndicesLoggedThisCooldown.Clear();
         }
         var msg = manual
-            ? $"EternitySplinterTracker: cooldown armed manually at {utc:HH:mm:ss}"
-            : $"EternitySplinterTracker: splinter drop detected at {utc:HH:mm:ss} (#{DropCount}) -- {CooldownDuration.TotalMinutes:0} min cooldown started";
+            ? $"EternitySplinterTracker: cooldown armed manually at {utc:HH:mm:ss} -- recorded {splinterCount} splinter(s) (session total now {TotalSplintersThisSession})"
+            : $"EternitySplinterTracker: splinter drop detected at {utc:HH:mm:ss} (drop #{DropCount}, +{splinterCount} = {TotalSplintersThisSession} total) -- {CooldownDuration.TotalMinutes:0} min cooldown started";
         Diagnostic?.Invoke(msg);
-        try { SplinterDropped?.Invoke(this, new SplinterDroppedEventArgs(utc, manual)); }
+        try { SplinterDropped?.Invoke(this, new SplinterDroppedEventArgs(utc, manual, splinterCount)); }
         catch { /* listener exceptions don't kill the parser */ }
     }
 
@@ -411,28 +435,34 @@ public sealed class EternitySplinterTracker : IDisposable
     // TestInjectDamage / TestInjectEntityKilled.
 
     /// <summary>Test-only entry point that runs the same OnEntityCreated logic the sniffer
-    /// would trigger.  Used by tests to verify proto-index matching and cooldown
-    /// suppression without needing a live capture.</summary>
-    internal void TestInjectEntityCreate(uint protoIdx, ulong entityId, bool isAvatar, DateTime utc)
+    /// would trigger.  Used by tests to verify proto-index matching, cooldown suppression,
+    /// and stack-count accumulation without needing a live capture.</summary>
+    internal void TestInjectEntityCreate(uint protoIdx, ulong entityId, bool isAvatar, DateTime utc, int stackCount = 0)
         => OnEntityCreated(this, new EntityCreatedEvent
         {
             PrototypeEnumIndex = protoIdx,
             EntityId           = entityId,
             DatabaseUniqueId   = 0,
             IsAvatar           = isAvatar,
+            StackCount         = stackCount,
             UtcTime            = utc,
         });
 }
 
 public sealed class SplinterDroppedEventArgs : EventArgs
 {
-    public SplinterDroppedEventArgs(DateTime utc, bool manual)
+    public SplinterDroppedEventArgs(DateTime utc, bool manual, int splinterCount = 1)
     {
-        Utc    = utc;
-        Manual = manual;
+        Utc            = utc;
+        Manual         = manual;
+        SplinterCount  = splinterCount;
     }
     public DateTime Utc    { get; }
     /// <summary>True when the user armed the cooldown via <see cref="EternitySplinterTracker.ArmFromNow"/>
     /// instead of the sniffer detecting an actual drop.</summary>
     public bool     Manual { get; }
+    /// <summary>Number of splinters credited to this drop event.  Auto-detect path always
+    /// passes 1 (the wire-level stack count isn't extracted yet); the manual override path
+    /// passes whatever quantity the user entered.  Always &gt;= 1.</summary>
+    public int      SplinterCount { get; }
 }

@@ -93,6 +93,15 @@ internal sealed class GazillionArchiveReader
     public uint ReadVarUInt32() => _cis.ReadRawVarint32();
     public ulong ReadVarUInt64() => _cis.ReadRawVarint64();
 
+    /// <summary>
+    /// Reads a 4-byte little-endian uint that <c>MHServerEmu.Core.Serialization.Archive.WriteUnencodedStream(uint)</c>
+    /// emits in a few places where a varint isn't appropriate -- specifically, the
+    /// "number of properties" prefix at the start of <c>PropertyCollection.SerializeWithDefault</c>.
+    /// The width has to be fixed because the writer back-patches it at a known offset after
+    /// streaming all the property entries; varint would shift everything around.
+    /// </summary>
+    public uint ReadRawUInt32LittleEndian() => _cis.ReadRawLittleEndian32();
+
     public int ReadVarInt32()
     {
         uint raw = _cis.ReadRawVarint32();

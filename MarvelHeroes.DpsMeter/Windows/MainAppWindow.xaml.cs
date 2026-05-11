@@ -191,14 +191,14 @@ public partial class MainAppWindow : Window
             bossDps, bossTotalDamage60s, bossTopHeroes, bossEncounter, powerBreakdown);
     }
 
-    public void UpdateSplinterStatus(bool cooldownActive, TimeSpan remaining, int dropCount, bool justDropped)
+    public void UpdateSplinterStatus(bool cooldownActive, TimeSpan remaining, int dropCount, int totalSplinters, bool justDropped)
     {
         if (!Dispatcher.CheckAccess())
         {
             Dispatcher.BeginInvoke(new Action(() =>
-                LivePanel.UpdateSplinterStatus(cooldownActive, remaining, dropCount, justDropped)));
+                LivePanel.UpdateSplinterStatus(cooldownActive, remaining, dropCount, totalSplinters, justDropped)));
             return;
         }
-        LivePanel.UpdateSplinterStatus(cooldownActive, remaining, dropCount, justDropped);
+        LivePanel.UpdateSplinterStatus(cooldownActive, remaining, dropCount, totalSplinters, justDropped);
     }
 }
