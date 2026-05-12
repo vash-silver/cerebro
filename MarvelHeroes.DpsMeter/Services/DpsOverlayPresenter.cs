@@ -111,7 +111,14 @@ public sealed class DpsOverlayPresenter : IDisposable
         // (via Tick()), so it doesn't need the same hop.
         _splinterTracker.SplinterDropped += (_, args) =>
         {
-            AppendLog($"DpsOverlayPresenter: splinter dropped at {args.Utc:HH:mm:ss} -- {EternitySplinterTracker.CooldownDuration.TotalMinutes:0} min cooldown armed");
+            AppendLog($"DpsOverlayPresenter: splinter dropped at {args.Utc:HH:mm:ss} ({(args.Manual ? "manual" : "auto-detect")}) -- {EternitySplinterTracker.CooldownDuration.TotalMinutes:0} min cooldown armed");
+            // Skip the audio alert for MANUAL arms (the live-view button, the global hotkey,
+            // the Settings tab's "Arm Splinter cooldown now" button).  The user just clicked
+            // / pressed the binding -- they already know a splinter dropped, beeping at them
+            // is just noise.  The auto-detect path still plays the alert (that's where the
+            // "you might have missed it" warning actually has value); the cooldown-expired
+            // event is also still alerted (different signal: "next drop eligible now").
+            if (args.Manual) return;
             _uiDispatcher.BeginInvoke(new Action(() => PlaySplinterAlert("drop")));
         };
         _splinterTracker.CooldownExpired += (_, _) =>
