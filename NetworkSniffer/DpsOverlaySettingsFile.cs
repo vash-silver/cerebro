@@ -167,6 +167,22 @@ public sealed class DpsOverlaySettingsFile
     public bool LoggingEnabled { get; set; } = false;
 
     /// <summary>
+    /// When <c>true</c>, the log captures EVERYTHING the components emit -- including very
+    /// chatty patterns like per-community-update <c>ModifyCommunityMember</c> lines, per-mob
+    /// <c>boss-filter drop</c> / <c>prototype-cache cleanup</c> blocks, periodic
+    /// <c>DpsMeter.State</c> / <c>PowerResultStats</c> dumps, and every
+    /// <c>EntityCreate[Avatar]</c> arrival.  Useful while actively debugging a specific
+    /// system but the resulting log can easily run 10x larger than the curated default.
+    ///
+    /// <para>When <c>false</c> (the default), <c>AppendLog</c> filters those high-volume
+    /// patterns out at the write point so the log stays focused on high-signal events the
+    /// user actually cares about (splinter drops, snapshot saves, app lifecycle, errors).
+    /// Flip on via Settings → Diagnostics → "Verbose logging" when you want the full
+    /// firehose.</para>
+    /// </summary>
+    public bool VerboseDiagnostics { get; set; } = false;
+
+    /// <summary>
     /// Process-wide gate consulted by every <c>AppendLog</c> call site. Defaults to
     /// <c>true</c> on purpose — the very first log lines fire before <see cref="Load"/>
     /// has had a chance to override the gate (boot banner, Npcap probe, settings echo)
@@ -182,6 +198,12 @@ public sealed class DpsOverlaySettingsFile
     /// round-tripping through the JSON file.</para>
     /// </summary>
     public static bool IsLoggingEnabled { get; set; } = true;
+
+    /// <summary>Process-wide mirror of <see cref="VerboseDiagnostics"/>.  Same load-time
+    /// sync pattern as <see cref="IsLoggingEnabled"/>: synced from the loaded instance
+    /// when <see cref="Load"/> completes.  The <c>AppendLog</c> filter consults this on
+    /// every line to decide whether to drop known-noisy patterns.</summary>
+    public static bool IsVerboseDiagnosticsEnabled { get; set; } = false;
 
     private static readonly JsonSerializerOptions s_jsonWrite = new()
     {
@@ -229,7 +251,8 @@ public sealed class DpsOverlaySettingsFile
                         s.BossDpsOnly = false;
                     }
                     Normalize(s);
-                    IsLoggingEnabled = s.LoggingEnabled;
+                    IsLoggingEnabled            = s.LoggingEnabled;
+                    IsVerboseDiagnosticsEnabled = s.VerboseDiagnostics;
                     return s;
                 }
             }
@@ -241,7 +264,8 @@ public sealed class DpsOverlaySettingsFile
 
         var fresh = new DpsOverlaySettingsFile();
         Normalize(fresh);
-        IsLoggingEnabled = fresh.LoggingEnabled;
+        IsLoggingEnabled            = fresh.LoggingEnabled;
+        IsVerboseDiagnosticsEnabled = fresh.VerboseDiagnostics;
         return fresh;
     }
 

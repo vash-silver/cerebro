@@ -230,7 +230,14 @@
                       Checked="LoggingCheckbox_OnChecked"
                       Unchecked="LoggingCheckbox_OnUnchecked"/>
             <TextBlock Style="{StaticResource HintText}"
-                       Text="Captures per-event triage info (encounter lifecycle, peer-pet folds, hero-resolution failures, loot-drop discovery, etc.).  ~1–5 MB / hour during active play.  Toggle off when you're not debugging."/>
+                       Text="Captures the curated event log -- app lifecycle, splinter drops, snapshot saves, errors, audio playback diagnostics.  ~50-200 KB / hour during active play.  Toggle off when you're not debugging."/>
+
+            <CheckBox x:Name="VerboseLoggingCheckbox" Style="{StaticResource SettingCheckbox}"
+                      Content="Verbose logging (capture everything)"
+                      Checked="VerboseLoggingCheckbox_OnChecked"
+                      Unchecked="VerboseLoggingCheckbox_OnUnchecked"/>
+            <TextBlock Style="{StaticResource HintText}"
+                       Text="Additionally captures per-event noise from the network sniffer, DPS meter state dumps, and AOI / player-resolution traffic.  ~10x larger log file -- only turn on when actively investigating something."/>
 
             <Grid Margin="0,8,0,0">
                 <Grid.ColumnDefinitions>

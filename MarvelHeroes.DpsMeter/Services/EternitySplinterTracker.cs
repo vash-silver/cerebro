@@ -299,6 +299,16 @@ public sealed class EternitySplinterTracker : IDisposable
                 $"protoIdx={e.PrototypeEnumIndex} entityId={e.EntityId} stackCount={e.StackCount} " +
                 $"cooldownActive={IsCooldownActive} (decision: " +
                 (IsCooldownActive ? "suppress as false-positive" : "accept as fresh drop") + ")");
+
+            // Always dump the full property collection on splinter matches.  Splinters drop
+            // at most once per cooldown window (6 min) so the per-drop dump is ~20 lines of
+            // log every 6 minutes -- a negligible cost that gives us a complete record of
+            // which PropertyEnum the server is actually using for the splinter quantity.
+            // Critical for figuring out per-server-build variance: if your server has
+            // ItemCurrency at enum=623 instead of 540, the dump shows it immediately.
+            MhMissionSniffer.DumpPropertyCollection(
+                e.RawArchive, Diagnostic,
+                contextTag: $"splinter entityId={e.EntityId}");
             // Cooldown-active suppression: the server-side splinter throttle is ~7 min per
             // player, so a SECOND real drop arriving while our cooldown timer is still
             // running is physically impossible.  If we observe an EntityCreate with a known

@@ -483,12 +483,47 @@ public sealed class DpsOverlayPresenter : IDisposable
     private static void AppendLog(string line)
     {
         if (!DpsOverlaySettingsFile.IsLoggingEnabled) return;
+        // Verbose-noise filter: when verbose-diagnostics is OFF, drop the high-volume
+        // patterns that the network sniffer / DPS meter / per-tick state dumps would
+        // otherwise flood the file with.  These are debug-only signals -- splinter drops,
+        // snapshot saves, app lifecycle, errors all still log.  See IsNoiseLine for the
+        // exact list of dropped prefixes / substrings.
+        if (!DpsOverlaySettingsFile.IsVerboseDiagnosticsEnabled && IsNoiseLine(line)) return;
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(DiagnosticLogPath)!);
             File.AppendAllText(DiagnosticLogPath, $"[{DateTime.UtcNow:HH:mm:ss.fff}] {line}{Environment.NewLine}");
         }
         catch { }
+    }
+
+    /// <summary>Returns true if a log line is part of the curated "verbose only" set --
+    /// patterns the components emit at high volume that are only useful when actively
+    /// debugging that specific subsystem.  Curated by reading real-world logs and picking
+    /// out the lines that dominate the file size without contributing to high-level
+    /// understanding of what the app is doing.  New noisy patterns should be added here
+    /// when they're discovered; the alternative (changing every Diagnostic call site) is
+    /// way more invasive for a debug-tier toggle.</summary>
+    private static bool IsNoiseLine(string line)
+    {
+        // Cheap substring checks -- ordered roughly by frequency in actual logs so the
+        // common case short-circuits early.  Each pattern is a SUBSTRING (not a regex) so
+        // a class that emits double-logged variants (some components log the same event
+        // twice, once via their own Diagnostic and once via the host's) catches both.
+        return line.Contains("ModifyCommunityMember")        // every player community update
+            || line.Contains("boss-filter drop")              // every non-boss damage event
+            || line.Contains("prototype-cache cleanup")       // every mob death (verbose paragraph)
+            || line.Contains("DpsMeter.State:")               // periodic state dump (every few sec)
+            || line.Contains("PowerResultStats:")             // 5s sniffer-health heartbeat
+            || line.Contains("EntityCreate[Avatar]")          // every avatar load
+            || line.Contains("AOI-nearby add")                // every nearby player
+            || line.Contains("paired avatar entityId")        // player-name resolver internals
+            || line.Contains("unknown non-avatar EntityCreate") // discovery log (one per uniq idx)
+            || line.Contains("queued hero avatar")            // hero-pairing internals
+            || line.Contains("learned nickname")              // nickname resolver internals
+            || line.Contains("community-slot hero")           // hero-from-community internals
+            || line.Contains("PowerResult#")                  // per-damage-event verbose trace
+            ;
     }
 
     public void Dispose() => Stop();

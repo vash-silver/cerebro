@@ -201,6 +201,16 @@ public sealed class EntityCreatedEvent
     /// the actual quantity rather than just "a splinter dropped".</summary>
     public int StackCount { get; init; }
 
+    /// <summary>Raw <c>archiveData</c> bytes from the NetMessageEntityCreate.  Populated for
+    /// non-avatar entities ONLY (avatars don't carry useful stack-count-style payloads and
+    /// the per-event allocation would be wasteful in dense crowds).  Consumers like
+    /// <c>EternitySplinterTracker</c> use this to dump the entity's full property collection
+    /// when actively debugging "the splinter dropped but the count came back as zero" --
+    /// a property-by-property dump immediately reveals which <c>PropertyEnum</c> the server
+    /// build is using for the currency amount, even if it differs from the value our parser
+    /// expects.  Null for avatars and for events older than the dump infrastructure.</summary>
+    public byte[]? RawArchive { get; init; }
+
     /// <summary>Player nickname as broadcast on the Avatar's <c>_playerName</c>
     /// RepString, when we were able to extract it from the archive blob. Unlike the
     /// <c>NetMessageModifyCommunityMember</c> path (which only fires for
@@ -1355,13 +1365,19 @@ public sealed class MhMissionSniffer : IDisposable
             // avatar EntityCreate cuts dead work in dense crowds.  Failures (corrupt archive,
             // schema drift, archive that doesn't lead with a property collection) return 0 and
             // we proceed normally -- the splinter tracker treats 0 as "unknown, default to 1".
+            //
+            // Also carries the raw archive bytes through on the event so debug consumers can
+            // dump the full property collection on-demand (currently the splinter tracker does
+            // this on every matched drop -- it's the fastest way to reverse-engineer per-server
+            // wire-format differences without adding round-trip telemetry).
             int stackCount = 0;
+            byte[]? rawArchive = null;
             if (!isAvatar)
             {
                 try
                 {
-                    byte[] archiveBytes = msg.ArchiveData.ToByteArray();
-                    TryExtractStackCount(archiveBytes, out stackCount);
+                    rawArchive = msg.ArchiveData.ToByteArray();
+                    TryExtractStackCount(rawArchive, out stackCount);
                 }
                 catch { /* swallow; stack-count extraction is best-effort */ }
             }
@@ -1375,6 +1391,7 @@ public sealed class MhMissionSniffer : IDisposable
                 PlayerName         = avatarName,
                 OwnerPlayerDbId    = ownerDbId,
                 StackCount         = stackCount,
+                RawArchive         = rawArchive,
                 UtcTime            = DateTime.UtcNow,
             });
         }
@@ -1471,6 +1488,66 @@ public sealed class MhMissionSniffer : IDisposable
     /// up an MhMissionSniffer instance.</summary>
     internal static bool TestTryExtractStackCount(byte[] archive, out int stackCount)
         => TryExtractStackCount(archive, out stackCount);
+
+    /// <summary>
+    /// Decode an entity archive's property collection and emit one diagnostic line per
+    /// property: <c>prop[i] enum=N params=0x... value_int=N value_raw=0x...</c>.  Intended
+    /// for one-off "what's actually in this archive?" investigations -- the
+    /// <c>EternitySplinterTracker</c> calls this on every matched splinter so the log
+    /// captures the full property bag, which is the fastest way to reverse-engineer
+    /// per-server wire-format differences (different PropertyEnum values, additional
+    /// properties before the one we expect, etc.) without adding round-trip telemetry.
+    ///
+    /// <para>Best-effort: corrupt / truncated / non-property-collection archives emit a
+    /// single error line and bail out rather than propagating an exception.</para>
+    /// </summary>
+    public static void DumpPropertyCollection(byte[]? archive, Action<string>? diagnostic, string contextTag = "")
+    {
+        if (diagnostic == null) return;
+        if (archive == null || archive.Length < 5)
+        {
+            diagnostic($"DumpPropertyCollection({contextTag}): archive null or too small ({archive?.Length ?? -1} bytes)");
+            return;
+        }
+        try
+        {
+            var r = new GazillionArchiveReader(archive);
+            r.ReadReplicationHeader();
+            uint numProperties = r.ReadRawUInt32LittleEndian();
+            if (numProperties > 4096)
+            {
+                // Sanity check failed -- log first 32 bytes of the archive as hex so we can
+                // see what we're actually looking at and adjust the parser accordingly.
+                int hexLen = Math.Min(archive.Length, 32);
+                diagnostic($"DumpPropertyCollection({contextTag}): numProperties={numProperties} > 4096 (likely format mismatch).  archive[0..{hexLen}]={BitConverter.ToString(archive, 0, hexLen)}");
+                return;
+            }
+            diagnostic($"DumpPropertyCollection({contextTag}): {numProperties} properties, archiveLen={archive.Length}");
+            for (uint i = 0; i < numProperties; i++)
+            {
+                ulong wireRaw = r.ReadVarUInt64();
+                ulong valueBits = r.ReadVarUInt64();
+
+                ulong raw       = System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(wireRaw);
+                uint  enumValue = (uint)(raw >> 53);
+                ulong paramBits = raw & 0x1FFFFFFFFFFFFFul;
+
+                // Try all common decode interpretations so the user-facing log can be
+                // pattern-matched without us having to know the property's DataType yet.
+                long  intValue   = (long)((valueBits >> 1) | (valueBits << 63));  // Integer decode
+                float floatValue = BitConverter.UInt32BitsToSingle((uint)valueBits);  // Real decode
+
+                diagnostic(
+                    $"  prop[{i}] enum={enumValue} params=0x{paramBits:X14} " +
+                    $"raw=0x{raw:X16} valueBits=0x{valueBits:X} " +
+                    $"int={intValue} float={floatValue:0.###}");
+            }
+        }
+        catch (Exception ex)
+        {
+            diagnostic($"DumpPropertyCollection({contextTag}): parse threw {ex.GetType().Name}: {ex.Message}");
+        }
+    }
 
     private static bool TryExtractStackCount(byte[] archive, out int stackCount)
     {

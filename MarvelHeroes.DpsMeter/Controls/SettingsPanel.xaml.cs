@@ -45,6 +45,7 @@ public partial class SettingsPanel : UserControl
     private bool _suppressSplinterVolume;
     private bool _suppressSplinterArmHotkey;
     private bool _suppressLogging;
+    private bool _suppressVerboseLogging;
     private bool _suppressScale;
 
     // ── Events surfaced upward ────────────────────────────────────────────────────────────────
@@ -111,6 +112,7 @@ public partial class SettingsPanel : UserControl
 
         // Diagnostics
         SetChecked(LoggingCheckbox,             settings.LoggingEnabled,             ref _suppressLogging);
+        SetChecked(VerboseLoggingCheckbox,      settings.VerboseDiagnostics,         ref _suppressVerboseLogging);
 
         // Scale slider -- snap initial position without firing the ValueChanged path.
         _suppressScale = true;
@@ -294,6 +296,21 @@ public partial class SettingsPanel : UserControl
         if (_suppressLogging || _settings == null) return;
         _settings.LoggingEnabled = false;
         DpsOverlaySettingsFile.IsLoggingEnabled = false;
+        Save();
+    }
+
+    private void VerboseLoggingCheckbox_OnChecked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressVerboseLogging || _settings == null) return;
+        _settings.VerboseDiagnostics = true;
+        DpsOverlaySettingsFile.IsVerboseDiagnosticsEnabled = true;
+        Save();
+    }
+    private void VerboseLoggingCheckbox_OnUnchecked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressVerboseLogging || _settings == null) return;
+        _settings.VerboseDiagnostics = false;
+        DpsOverlaySettingsFile.IsVerboseDiagnosticsEnabled = false;
         Save();
     }
 
