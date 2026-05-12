@@ -1465,6 +1465,13 @@ public sealed class MhMissionSniffer : IDisposable
     /// exact Raw.  Matching on enum alone is safe for splinter entities -- they carry exactly
     /// one ItemCurrency property (their own currency), so any match IS the value we want.</para>
     /// </summary>
+    /// <summary>Test hook -- the regular consumer of this method is <c>ParseEntityCreate</c>
+    /// (private to the sniffer).  Exposed as internal so unit tests in
+    /// <c>MarvelHeroes.DpsMeter.Tests</c> can pin the wire-format math without spinning
+    /// up an MhMissionSniffer instance.</summary>
+    internal static bool TestTryExtractStackCount(byte[] archive, out int stackCount)
+        => TryExtractStackCount(archive, out stackCount);
+
     private static bool TryExtractStackCount(byte[] archive, out int stackCount)
     {
         stackCount = 0;

@@ -175,6 +175,20 @@ public sealed class DpsOverlayPresenter : IDisposable
         _meter.BossOnlyMode = initialBossOnly;
 
         AppendLog($"DpsOverlayPresenter started (sniffer running={_sniffer.IsRunning}, overlayVisible={_overlayVisible})");
+
+        // Log the build version + informational version (which the csproj can stamp with the
+        // commit SHA) on every Start.  This is purely a diagnostic for triage: "your log
+        // shows stackCount=0 -- which build are you on?" becomes a grep instead of a
+        // back-and-forth.  Cerebro builds embed AssemblyInformationalVersionAttribute
+        // automatically; if not set, we fall back to the regular AssemblyVersion.
+        try
+        {
+            var asm  = System.Reflection.Assembly.GetExecutingAssembly();
+            var info = System.Reflection.CustomAttributeExtensions.GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>(asm);
+            var fileVer = System.Diagnostics.FileVersionInfo.GetVersionInfo(asm.Location);
+            AppendLog($"Cerebro build: AsmVer={asm.GetName().Version} InfoVer='{info?.InformationalVersion ?? "<none>"}' FileVer='{fileVer.FileVersion}'");
+        }
+        catch { /* version-stamp diagnostic is best-effort -- never block startup */ }
     }
 
     private void WireWindowEvents(DpsOverlayWindow w)

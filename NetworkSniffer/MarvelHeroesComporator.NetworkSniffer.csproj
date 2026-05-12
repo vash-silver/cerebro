@@ -16,6 +16,15 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Lets MarvelHeroes.DpsMeter.Tests reach the private archive parsers (the property-
+         collection walker is wire-format critical and we want unit tests that pin its
+         behaviour without going through the full network sniffer / packet capture path). -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>MarvelHeroes.DpsMeter.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Gazillion\Gazillion.csproj" />
   </ItemGroup>
 
