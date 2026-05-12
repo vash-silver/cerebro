@@ -146,6 +146,15 @@
                 -->
                 <controls:SettingsPanel x:Name="SettingsTab"/>
             </TabItem>
+            <TabItem Header="Diagnostics">
+                <!--
+                    Live log viewer for triage.  Tails dps-meter.log on disk so the user (or a
+                    tester) can see what the sniffer / DPS meter / splinter tracker is doing
+                    without having to alt-tab to Explorer.  Filterable, copyable, bounded
+                    memory.  See LogViewerPanel.cs class doc for the design notes.
+                -->
+                <controls:LogViewerPanel x:Name="DiagnosticsTab"/>
+            </TabItem>
         </TabControl>
 
         <!-- ── Footer status strip ───────────────────────────────────────────────── -->

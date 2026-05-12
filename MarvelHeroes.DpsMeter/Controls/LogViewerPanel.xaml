@@ -1,0 +1,144 @@
+<UserControl x:Class="MarvelHeroes.DpsMeter.Controls.LogViewerPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="#0F0F0F"
+             Foreground="#DDFFFFFF"
+             FontFamily="Segoe UI"
+             FontSize="12">
+
+    <UserControl.Resources>
+        <!-- Per-line row: monospace, tight padding, subtle alternation handled in code-behind
+             via a Severity tag so coloured highlights for "error" / warning lines fall out for
+             free.  Bound via plain string + a converter would be cleaner but for now we
+             inline the colouring choice in code (one less moving part). -->
+        <Style x:Key="LogLine" TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="Consolas"/>
+            <Setter Property="FontSize"   Value="11"/>
+            <Setter Property="Padding"    Value="6,1"/>
+            <Setter Property="TextWrapping" Value="NoWrap"/>
+            <Setter Property="Foreground" Value="#CCFFFFFF"/>
+        </Style>
+
+        <Style x:Key="ToolbarButton" TargetType="Button">
+            <Setter Property="Background"      Value="#222"/>
+            <Setter Property="BorderBrush"     Value="#44FFFFFF"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Foreground"      Value="#DDFFFFFF"/>
+            <Setter Property="Padding"         Value="10,4"/>
+            <Setter Property="Margin"          Value="4,0,0,0"/>
+            <Setter Property="FontFamily"      Value="Segoe UI"/>
+            <Setter Property="FontSize"        Value="11"/>
+            <Setter Property="Cursor"          Value="Hand"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#2E7FFF33"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="ToolbarCheck" TargetType="CheckBox">
+            <Setter Property="Foreground"  Value="#CCFFFFFF"/>
+            <Setter Property="FontFamily"  Value="Segoe UI"/>
+            <Setter Property="FontSize"    Value="11"/>
+            <Setter Property="Margin"      Value="10,0,0,0"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>  <!-- toolbar -->
+            <RowDefinition Height="*"/>     <!-- log -->
+            <RowDefinition Height="Auto"/>  <!-- status / hint -->
+        </Grid.RowDefinitions>
+
+        <!-- ── Toolbar ──────────────────────────────────────────────────────────── -->
+        <Border Grid.Row="0" Background="#181818" BorderBrush="#33FFFFFF" BorderThickness="0,0,0,1"
+                Padding="10,8">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0" Text="Filter:" VerticalAlignment="Center"
+                           Foreground="#88FFFFFF" Margin="0,0,6,0"/>
+                <TextBox  Grid.Column="1" x:Name="FilterBox"
+                          Background="#0F0F0F" Foreground="#DDFFFFFF"
+                          BorderBrush="#44FFFFFF" BorderThickness="1"
+                          Padding="6,3" VerticalContentAlignment="Center"
+                          FontFamily="Consolas"
+                          TextChanged="FilterBox_TextChanged"
+                          ToolTip="Substring filter, case-insensitive.  Live as you type."/>
+
+                <CheckBox Grid.Column="2" x:Name="AutoRefreshCheck" Style="{StaticResource ToolbarCheck}"
+                          Content="Auto-refresh" IsChecked="True"
+                          Checked="AutoRefresh_OnChecked"
+                          Unchecked="AutoRefresh_OnUnchecked"
+                          ToolTip="Poll the log file 2x/second and append new lines."/>
+                <CheckBox Grid.Column="3" x:Name="AutoScrollCheck" Style="{StaticResource ToolbarCheck}"
+                          Content="Auto-scroll" IsChecked="True"
+                          ToolTip="Scroll to the latest line whenever new content arrives."/>
+
+                <Button Grid.Column="4" x:Name="ReloadButton" Style="{StaticResource ToolbarButton}"
+                        Content="Reload"
+                        Click="ReloadButton_Click"
+                        ToolTip="Re-read the log from disk."/>
+                <Button Grid.Column="5" x:Name="CopyButton" Style="{StaticResource ToolbarButton}"
+                        Content="Copy visible"
+                        Click="CopyButton_Click"
+                        ToolTip="Copy the currently-visible (filtered) lines to the clipboard."/>
+                <Button Grid.Column="6" x:Name="OpenFolderButton" Style="{StaticResource ToolbarButton}"
+                        Content="Open folder"
+                        Click="OpenFolderButton_Click"
+                        ToolTip="Open %LocalAppData%\MarvelHeroesComporator in Explorer."/>
+            </Grid>
+        </Border>
+
+        <!-- ── Log content ──────────────────────────────────────────────────────── -->
+        <!-- Virtualizing ListBox so a 5000-line buffer renders in O(visible_rows), not O(N).
+             Plain string items + a DataTemplate keeps the memory footprint to one TextBlock per
+             onscreen row. -->
+        <ListBox Grid.Row="1" x:Name="LogList"
+                 Background="#0A0A0A" BorderBrush="Transparent" BorderThickness="0"
+                 Foreground="#CCFFFFFF"
+                 ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                 ScrollViewer.VerticalScrollBarVisibility="Visible"
+                 VirtualizingPanel.IsVirtualizing="True"
+                 VirtualizingPanel.VirtualizationMode="Recycling"
+                 SelectionMode="Extended">
+            <ListBox.ItemContainerStyle>
+                <Style TargetType="ListBoxItem">
+                    <Setter Property="Padding" Value="0"/>
+                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                    <Setter Property="Background" Value="Transparent"/>
+                    <Setter Property="BorderBrush" Value="Transparent"/>
+                    <Setter Property="Foreground" Value="#CCFFFFFF"/>
+                    <Style.Triggers>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter Property="Background" Value="#2E7FFF55"/>
+                        </Trigger>
+                    </Style.Triggers>
+                </Style>
+            </ListBox.ItemContainerStyle>
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <TextBlock Text="{Binding}" Style="{StaticResource LogLine}"/>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+
+        <!-- ── Status strip ─────────────────────────────────────────────────────── -->
+        <Border Grid.Row="2" Background="#181818" BorderBrush="#33FFFFFF" BorderThickness="0,1,0,0"
+                Padding="10,4">
+            <TextBlock x:Name="StatusText"
+                       Foreground="#88FFFFFF" FontSize="10"
+                       Text="loading..."/>
+        </Border>
+    </Grid>
+</UserControl>
