@@ -290,6 +290,15 @@ public sealed class EternitySplinterTracker : IDisposable
 
         if (matched)
         {
+            // Trace EVERY splinter-index match before any other decision.  Helps debug "the
+            // sniffer received the event but Cerebro didn't react" vs. "the sniffer never saw
+            // the entity in the first place" -- the former shows up here, the latter doesn't.
+            // Cheap (one log line per detection) and only fires for matches so it's not noisy.
+            Diagnostic?.Invoke(
+                $"EternitySplinterTracker: matched splinter EntityCreate -- " +
+                $"protoIdx={e.PrototypeEnumIndex} entityId={e.EntityId} stackCount={e.StackCount} " +
+                $"cooldownActive={IsCooldownActive} (decision: " +
+                (IsCooldownActive ? "suppress as false-positive" : "accept as fresh drop") + ")");
             // Cooldown-active suppression: the server-side splinter throttle is ~7 min per
             // player, so a SECOND real drop arriving while our cooldown timer is still
             // running is physically impossible.  If we observe an EntityCreate with a known
