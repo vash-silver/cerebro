@@ -1443,15 +1443,27 @@ public sealed class MhMissionSniffer : IDisposable
     ///   [varint: replication policy]
     ///   [4 bytes LE uint: numProperties]
     ///   for each property:
-    ///     [varint ulong: PropertyId.Raw]    -- PropertyEnum = Raw &gt;&gt; 53, params in low 53 bits
-    ///     [varint ulong: value bits]        -- Integer type decodes as (bits &gt;&gt; 1) | (bits &lt;&lt; 63)
+    ///     [varint ulong: BYTE-REVERSED PropertyId.Raw]  -- see Serializer.Transfer(ref PropertyId)
+    ///     [varint ulong: value bits]                     -- Integer type decodes as (bits &gt;&gt; 1) | (bits &lt;&lt; 63)
     /// </code>
     /// The 4-byte-LE count is unusual -- it's a back-patch in the writer that requires fixed
-    /// width.  We match the property enum (top 11 bits of Raw) rather than the full Raw value,
-    /// because <c>ItemCurrency</c> takes a CurrencyRef parameter packed into the low bits
-    /// and we don't have the client's prototype-enum table to reconstruct the exact Raw.
-    /// Matching on enum alone is safe for splinter entities -- they carry exactly one
-    /// ItemCurrency property (their own currency), so any match IS the value we want.</para>
+    /// width.</para>
+    ///
+    /// <para><b>The byte-reversal gotcha</b>: MHServerEmu's <c>Serializer.Transfer(ref PropertyId)</c>
+    /// calls <c>ioData.Raw.ReverseBytes()</c> before writing the varint (and reverses again
+    /// on read).  This puts the property enum (originally in the high 11 bits of Raw) into
+    /// the LOW bits of the on-wire ulong, which makes the small enum values varint-encode
+    /// efficiently in 1-3 bytes instead of the 10 bytes a value with bit 63 set would
+    /// require.  Side effect: the wire value's "enum" position is the low byte, so to
+    /// recover PropertyId.Raw we have to reverse the bytes again after reading.  My v1 and
+    /// v2 parsers both got this wrong; the user's "stackCount=0" log line is the smoking
+    /// gun -- without the reversal, no property comparison ever matches.</para>
+    ///
+    /// <para>We match the property enum (top 11 bits of the recovered Raw) rather than the
+    /// full Raw value, because <c>ItemCurrency</c> takes a CurrencyRef parameter packed into
+    /// the low bits and we don't have the client's prototype-enum table to reconstruct the
+    /// exact Raw.  Matching on enum alone is safe for splinter entities -- they carry exactly
+    /// one ItemCurrency property (their own currency), so any match IS the value we want.</para>
     /// </summary>
     private static bool TryExtractStackCount(byte[] archive, out int stackCount)
     {
@@ -1482,10 +1494,15 @@ public sealed class MhMissionSniffer : IDisposable
 
             for (uint i = 0; i < numProperties; i++)
             {
-                ulong propertyIdRaw = r.ReadVarUInt64();
-                ulong valueBits     = r.ReadVarUInt64();
+                ulong propertyIdWire = r.ReadVarUInt64();
+                ulong valueBits      = r.ReadVarUInt64();
 
-                uint enumValue = (uint)(propertyIdRaw >> 53);
+                // Undo the byte-reversal MHServerEmu applies to PropertyId on the wire (see
+                // class-doc comment).  Without this, propertyIdRaw is byte-flipped garbage
+                // relative to the enum-in-top-bits encoding our match expects.
+                ulong propertyIdRaw = System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(propertyIdWire);
+                uint  enumValue     = (uint)(propertyIdRaw >> 53);
+
                 if (enumValue != ItemCurrencyEnum && enumValue != InventoryStackCountEnum)
                     continue;
 
