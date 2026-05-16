@@ -1,6 +1,7 @@
 <UserControl x:Class="MarvelHeroes.DpsMeter.Controls.LiveDashboardPanel"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:MarvelHeroes.DpsMeter.Controls"
              Background="#1A1A1A"
              Foreground="#CCFFFFFF">
 
@@ -55,6 +56,8 @@
         <Grid Margin="14">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>  <!-- summary card -->
+                <RowDefinition Height="Auto"/>  <!-- stats panel (option-A buff sums) -->
+                <RowDefinition Height="Auto"/>  <!-- buff strip (two-tier) -->
                 <RowDefinition Height="Auto"/>  <!-- splinter banner -->
                 <RowDefinition Height="*"/>     <!-- leaderboard + powers -->
                 <RowDefinition Height="Auto"/>  <!-- boss-fight banner -->
@@ -154,6 +157,26 @@
             </Border>
 
             <!--
+                Live stats panel (option-A: "sum of buff property deltas").  One tile per
+                non-zero stat aggregated across all currently-active buffs.  Example:
+                "+Damage +140%" while Overwatch and Empowered are both up, "Crit Chance +12%"
+                when the stacking proc is rolling.  Tiles auto-hide when their value is zero
+                so the row only shows what's actionable.  See BuffStatCatalog for the
+                curated PropertyEnum list and BuffStatsPanel for the layout.
+            -->
+            <controls:BuffStatsPanel x:Name="BuffStats" Grid.Row="1"/>
+
+            <!--
+                Two-tier buff strip.  Top row: player-facing timed buffs (Empowered, summon
+                timers, healing potions).  Bottom row: gear-fired procs (Art / Unique /
+                Insignia / Runeword / Leg / Core).  Hidden internal state and always-on
+                passives are filtered out.  See BuffDisplayClassifier for category rules and
+                BuffStripPanel for the chip layout.  Rows collapse themselves when empty so
+                no dead space when nothing is active.
+            -->
+            <controls:BuffStripPanel x:Name="BuffStrip" Grid.Row="2" Margin="0,0,0,10"/>
+
+            <!--
                 Eternity Splinter cooldown banner.  Always visible (data or no data) so the
                 user knows the feature exists at a glance.  Three visual states driven by
                 UpdateSplinterStatus (cooldownActive / justDropped / dropCount):
@@ -165,7 +188,7 @@
                 Coloured left-edge accent + progress bar give the section a "status widget"
                 feel rather than a passive line of text.
             -->
-            <Border x:Name="SplinterBanner" Grid.Row="1" Margin="0,0,0,14"
+            <Border x:Name="SplinterBanner" Grid.Row="3" Margin="0,0,0,14"
                     CornerRadius="4" SnapsToDevicePixels="True"
                     Background="#111111" BorderBrush="#332E7FFF" BorderThickness="1"
                     Padding="0">
@@ -257,7 +280,7 @@
             </Border>
 
             <!-- ── Leaderboard + Powers (2 columns) ─────────────────────────────────── -->
-            <Grid Grid.Row="2">
+            <Grid Grid.Row="4">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"  MinWidth="320"/>
                     <ColumnDefinition Width="14"/>
@@ -430,7 +453,7 @@
                 once" without having to toggle modes: top leaderboard = all damage, bottom
                 section = boss-specific damage with its own mini leaderboard.
             -->
-            <Border x:Name="BossFightBanner" Grid.Row="3"
+            <Border x:Name="BossFightBanner" Grid.Row="5"
                     Style="{StaticResource Card}" Margin="0,14,0,0"
                     BorderBrush="#66FF6B00" Background="#1A1410"
                     Visibility="Collapsed">

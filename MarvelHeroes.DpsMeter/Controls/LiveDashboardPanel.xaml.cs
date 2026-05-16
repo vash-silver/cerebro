@@ -316,6 +316,62 @@ public partial class LiveDashboardPanel : UserControl
         BossLeaderboardRows.ItemsSource = view;
     }
 
+    // User's "Show buffs and procs" preference -- when false we short-circuit the two buff
+    // updaters AND force the controls Collapsed.  Default true: opt-in feature surface,
+    // visible out of the box.  Toggled at runtime via SetBuffPanelsVisible from Settings.
+    private bool _buffPanelsVisible = true;
+
+    /// <summary>Forwards a snapshot of active buffs to the embedded two-tier buff strip.
+    /// Called from <c>DpsOverlayPresenter</c> on every decay tick (4 Hz).  No-op-cheap when
+    /// the snapshot is empty; the strip's rows collapse themselves in that case.  Skipped
+    /// entirely when the user has disabled buff panels in Settings -- saves the per-tick
+    /// classification cost when the feature is off.</summary>
+    public void UpdateBuffs(IReadOnlyList<ActiveBuff> active, DateTime nowUtc)
+    {
+        if (!_buffPanelsVisible) return;
+        BuffStrip.UpdateBuffs(active, nowUtc);
+    }
+
+    /// <summary>Forwards the live <c>BuffTracker</c> to the stats panel so it can compute
+    /// per-tile property sums.  Called from <c>DpsOverlayPresenter</c> alongside
+    /// <see cref="UpdateBuffs"/>.  Passing the tracker (not a precomputed snapshot) lets the
+    /// stats panel ask only for the enums in its catalog -- avoids us building a generic
+    /// "all property sums" dictionary on every tick.  Skipped when buff panels are
+    /// hidden.</summary>
+    public void UpdateBuffStats(BuffTracker? tracker)
+    {
+        if (!_buffPanelsVisible) return;
+        BuffStats.UpdateStats(tracker);
+    }
+
+    /// <summary>Show or hide BOTH buff-tracking surfaces -- the stats tiles (BuffStats) and
+    /// the two-tier chip strip (BuffStrip).  Treated as a single toggle on purpose: they're
+    /// the same feature surface from the user's perspective ("buff tracking"), and a hide
+    /// state where the stats row is gone but the chip strip remains (or vice versa) would
+    /// be confusing.  Called from the presenter when the user toggles "Show buffs and
+    /// procs" in Settings, and once at startup to honour the persisted preference.
+    ///
+    /// <para>When toggled off we force both child controls to <see cref="Visibility.Collapsed"/>
+    /// AND short-circuit future updates -- so the row stays hidden even between decay ticks
+    /// that would otherwise re-show the controls based on active-buff state.  When toggled
+    /// back on, the next decay tick's update will re-render normally.</para></summary>
+    public void SetBuffPanelsVisible(bool visible)
+    {
+        _buffPanelsVisible = visible;
+        if (!visible)
+        {
+            // Hard-collapse both -- the internal "no buffs => Collapsed" logic in each
+            // control won't run again while _buffPanelsVisible is false, so we have to set
+            // this here once to actually clear the row.
+            BuffStats.Visibility = Visibility.Collapsed;
+            BuffStrip.Visibility = Visibility.Collapsed;
+        }
+        // Re-show case: deliberately do nothing.  The next presenter tick (~250 ms later)
+        // calls UpdateBuffs / UpdateBuffStats, which will set Visibility per active-buff
+        // state.  No flicker because the user just toggled the checkbox -- they expect a
+        // brief moment before content fills back in.
+    }
+
     public void UpdateSplinterStatus(bool cooldownActive, TimeSpan remaining, int dropCount, int totalSplinters, bool justDropped)
     {
         // The full-width banner is always visible -- even on first launch with no drops

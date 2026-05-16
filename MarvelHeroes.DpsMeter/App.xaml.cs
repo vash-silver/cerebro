@@ -43,6 +43,29 @@ public partial class App : Application
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "MarvelHeroesComporator", "dps-meter.log");
 
+    /// <summary>Maximum size of <see cref="LogPath"/> before rotation triggers.  When exceeded,
+    /// the current log is renamed to <c>.log.1</c> (overwriting any previous backup) and a
+    /// fresh log starts.  Total disk footprint capped at ~2x this value.  50 MB covers
+    /// roughly a full day of light play or a few hours of verbose-on heavy combat.</summary>
+    private const long LogSizeCapBytes = 50L * 1024 * 1024;
+
+    /// <summary>How often, in successful <see cref="AppendLog"/> calls, we re-check the
+    /// file size for rotation.  Setting this too low taxes the FS (one <c>FileInfo</c> stat
+    /// per check); too high lets the file overshoot the cap during high-volume bursts.  At
+    /// 10k writes / heavy-verbose ~1k-2k lines per minute, the check fires every 5-10 min.</summary>
+    private const int LogRotationCheckInterval = 10_000;
+
+    /// <summary>Per-write counter used to trigger periodic rotation checks.  Incremented
+    /// via <c>Interlocked</c> so capture-thread writes don't drop ticks against UI-thread
+    /// writes.  Wraps cleanly at int.MaxValue; the modulo check is what matters.</summary>
+    private static int s_logWriteCount;
+
+    /// <summary>Serializes rotation operations so two threads can't race on the
+    /// File.Move(current -> .1).  Per-line append writes don't share this lock --
+    /// <c>File.AppendAllText</c> serializes its own opens, and rotation is rare enough that
+    /// the lock contention is invisible.</summary>
+    private static readonly object s_logRotationLock = new();
+
     private MhMissionSniffer? _sniffer;
     private DpsOverlayPresenter? _presenter;
     private TestModeDataFeed? _testFeed;
@@ -54,6 +77,13 @@ public partial class App : Application
     /// </summary>
     private void OnStartup(object sender, StartupEventArgs e)
     {
+        // Pre-rotate the log if a previous session left a fat file behind.  This is the
+        // common case for users hitting our growth cap: long verbose-on sessions push the
+        // log past 50 MB, and without this they'd keep growing across restarts.  We rotate
+        // BEFORE anything else writes to the log so the first session-start banner lands
+        // in the fresh file, not the old one.
+        RotateLogIfTooLarge();
+
         // Top-level catch-all: an unhandled exception during sniffer init or window creation
         // would tear down the WPF dispatcher silently (no taskbar = no obvious error). Log it
         // somewhere the user can find before the process dies.
@@ -235,8 +265,45 @@ public partial class App : Application
         {
             Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!);
             File.AppendAllText(LogPath, $"[{DateTime.UtcNow:HH:mm:ss.fff}] {line}{Environment.NewLine}");
+
+            // Periodic rotation check.  Cheap fast-path: a single Interlocked increment +
+            // modulo.  The actual FileInfo stat only fires every <see cref="LogRotationCheckInterval"/>
+            // writes (a few times per heavy-verbose session, never under light load).
+            int n = System.Threading.Interlocked.Increment(ref s_logWriteCount);
+            if (n % LogRotationCheckInterval == 0)
+                RotateLogIfTooLarge();
         }
         catch { /* logging is best-effort; never let it crash the host */ }
+    }
+
+    /// <summary>If the current log file exceeds <see cref="LogSizeCapBytes"/>, rename it
+    /// to <c>dps-meter.log.1</c> (overwriting any prior backup) so subsequent writes start
+    /// a fresh file.  Bounds total disk footprint at ~2x the cap.  Best-effort and silent
+    /// on failure -- if rotation can't proceed (lock held by external viewer, etc.) the
+    /// current file just keeps growing past the cap; not great but never crashes the host.
+    ///
+    /// <para>Called at startup (once, to pre-rotate a huge log from a previous session
+    /// before any per-event writes pile on) and periodically from <see cref="AppendLog"/>
+    /// during long sessions.</para></summary>
+    private static void RotateLogIfTooLarge()
+    {
+        lock (s_logRotationLock)
+        {
+            try
+            {
+                var fi = new FileInfo(LogPath);
+                if (!fi.Exists || fi.Length < LogSizeCapBytes) return;
+
+                string backupPath = LogPath + ".1";
+                if (File.Exists(backupPath)) File.Delete(backupPath);
+                File.Move(LogPath, backupPath);
+                // Don't AppendLog from here -- we'd re-enter AppendLog from inside its own
+                // call chain, and the very first post-rotation write will be the next
+                // regular log line anyway.  ForceAppendLog avoids the gate but is also a
+                // recursive write hazard; skip it.
+            }
+            catch { /* best-effort */ }
+        }
     }
 
     /// <summary>Bypass-the-gate writer for one-shot lines that must always reach disk

@@ -87,6 +87,20 @@
             <TextBlock Style="{StaticResource HintText}"
                        Text="Adds a per-ability breakdown of your own damage with hit counts and damage shares."/>
 
+            <CheckBox x:Name="ShowBuffPanelsCheckbox" Style="{StaticResource SettingCheckbox}"
+                      Content="Show buffs and procs"
+                      Checked="ShowBuffPanelsCheckbox_OnChecked"
+                      Unchecked="ShowBuffPanelsCheckbox_OnUnchecked"/>
+            <TextBlock Style="{StaticResource HintText}"
+                       Text="Shows the live stats tiles ('Damage +140%') and the two-tier buff strip (timed buffs on top, gear procs below).  Turn off to declutter the dashboard if you don't use buff tracking."/>
+
+            <CheckBox x:Name="ShowOverlayDpsSummaryCheckbox" Style="{StaticResource SettingCheckbox}"
+                      Content="Show DPS summary in overlay"
+                      Checked="ShowOverlayDpsSummaryCheckbox_OnChecked"
+                      Unchecked="ShowOverlayDpsSummaryCheckbox_OnUnchecked"/>
+            <TextBlock Style="{StaticResource HintText}"
+                       Text="Floating overlay only.  When off, hides the big DPS number, the 'DPS' title, the max-hit triplet, and the idle/status text.  Leaves the leaderboard, ES badge, and boss section visible (those have their own toggles)."/>
+
             <CheckBox x:Name="ShowSplinterCheckbox" Style="{StaticResource SettingCheckbox}"
                       Content="Show Eternity Splinter tracker"
                       Checked="ShowSplinterCheckbox_OnChecked"
@@ -95,23 +109,78 @@
                        Text="Shows a status pill with the 6-minute countdown between Eternity Splinter drops."/>
 
             <CheckBox x:Name="SplinterSoundCheckbox" Style="{StaticResource SettingCheckbox}"
-                      Content="Play sound on Splinter drop AND when cooldown ends"
+                      Content="Play sound on Splinter events"
                       Checked="SplinterSoundCheckbox_OnChecked"
                       Unchecked="SplinterSoundCheckbox_OnUnchecked"/>
             <TextBlock Style="{StaticResource HintText}"
-                       Text="Same sound fires for both events: once the moment a Splinter drops in-game (so you don't miss the pile on the ground) and again when the 6-minute cooldown expires (so you know the next drop is eligible).  Routes through Windows' notification channel so OS volume / mute applies."/>
+                       Text="Master toggle.  When on, plays distinct sounds for the two Splinter events: 'drop' fires the moment a Splinter lands on the ground (don't miss it), and 'cooldown ready' fires when the 6-minute throttle expires (next drop is eligible).  Configure separate sound files below; leave the drop sound blank to use the same file for both events."/>
 
-            <Grid Margin="22,6,0,2">
+            <!-- Drop sound: file + volume.  Falls back to the cooldown sound below when blank. -->
+            <TextBlock Margin="22,8,0,2"
+                       FontFamily="Segoe UI" FontSize="11" FontWeight="SemiBold"
+                       Foreground="#CCFFFFFF"
+                       Text="On Splinter drop:"/>
+            <Grid Margin="22,2,0,2">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,0"
+                           FontFamily="Segoe UI" FontSize="11" Foreground="#AAFFFFFF"
+                           Text="Sound:"/>
+                <TextBox x:Name="SplinterDropSoundPathText" Grid.Column="1"
+                         FontFamily="Consolas" FontSize="11"
+                         Background="#1E1E1E" Foreground="#DDFFFFFF"
+                         BorderBrush="#44FFFFFF" BorderThickness="1"
+                         Padding="4,3" VerticalContentAlignment="Center"
+                         IsReadOnly="True"
+                         Text="(same as cooldown sound)"
+                         ToolTip="Optional separate sound for the drop event.  Leave blank to use the cooldown sound for both."/>
+                <Button Grid.Column="2" Content="Browse…" Margin="6,0,0,0"
+                        Style="{StaticResource SettingsButton}"
+                        Click="BrowseSplinterDropSoundButton_Click"/>
+                <Button Grid.Column="3" Content="Clear" Margin="6,0,0,0"
+                        Style="{StaticResource SettingsButton}"
+                        Click="ClearSplinterDropSoundButton_Click"/>
+            </Grid>
+            <Grid Margin="22,4,0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,0"
                            FontFamily="Segoe UI" FontSize="11" Foreground="#AAFFFFFF"
-                           Text="Custom sound:"/>
+                           Text="Volume:"/>
+                <Slider x:Name="SplinterDropVolumeSlider" Grid.Column="1"
+                        Minimum="0" Maximum="1" SmallChange="0.05" LargeChange="0.2"
+                        TickFrequency="0.1" TickPlacement="BottomRight"
+                        IsSnapToTickEnabled="False" VerticalAlignment="Center"
+                        ValueChanged="SplinterDropVolumeSlider_ValueChanged"/>
+                <TextBlock x:Name="SplinterDropVolumeReadout" Grid.Column="2"
+                           VerticalAlignment="Center" Margin="10,0,0,0"
+                           FontFamily="Segoe UI" FontSize="12" Foreground="#FFCC66"
+                           MinWidth="40" TextAlignment="Right"
+                           Text="100%"/>
+            </Grid>
+
+            <!-- Cooldown-ready sound: the original sound block. -->
+            <TextBlock Margin="22,10,0,2"
+                       FontFamily="Segoe UI" FontSize="11" FontWeight="SemiBold"
+                       Foreground="#CCFFFFFF"
+                       Text="When cooldown ends:"/>
+            <Grid Margin="22,2,0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,0"
+                           FontFamily="Segoe UI" FontSize="11" Foreground="#AAFFFFFF"
+                           Text="Sound:"/>
                 <TextBox x:Name="SplinterSoundPathText" Grid.Column="1"
                          FontFamily="Consolas" FontSize="11"
                          Background="#1E1E1E" Foreground="#DDFFFFFF"
@@ -127,10 +196,7 @@
                         Style="{StaticResource SettingsButton}"
                         Click="ClearSplinterSoundButton_Click"/>
             </Grid>
-            <TextBlock Style="{StaticResource HintText}"
-                       Text="If set, this file plays instead of the Windows asterisk.  Missing / unreadable files silently fall back to the system sound."/>
-
-            <Grid Margin="22,8,0,2">
+            <Grid Margin="22,4,0,2">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
@@ -151,7 +217,7 @@
                            Text="100%"/>
             </Grid>
             <TextBlock Style="{StaticResource HintText}"
-                       Text="Affects custom sound files only.  When the system fallback plays, volume is controlled by Windows' notification-sound level instead."/>
+                       Text="Volume sliders affect custom sound files only.  When a path is blank, the Windows asterisk plays and OS-level notification volume controls it.  Drop sound falls back to cooldown sound when its own field is empty."/>
 
             <!-- Global "I got a splinter" hotkey.  Workaround for crowded open-world maps
                  where auto-detection picks up every nearby player's drops. -->

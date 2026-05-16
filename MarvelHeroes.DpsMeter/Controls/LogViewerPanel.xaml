@@ -57,13 +57,14 @@
                 Padding="10,8">
             <Grid>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>  <!-- "Filter:" label -->
+                    <ColumnDefinition Width="*"/>     <!-- filter textbox -->
+                    <ColumnDefinition Width="Auto"/>  <!-- auto-refresh checkbox -->
+                    <ColumnDefinition Width="Auto"/>  <!-- auto-scroll checkbox -->
+                    <ColumnDefinition Width="Auto"/>  <!-- Clear button -->
+                    <ColumnDefinition Width="Auto"/>  <!-- Reload button -->
+                    <ColumnDefinition Width="Auto"/>  <!-- Copy visible button -->
+                    <ColumnDefinition Width="Auto"/>  <!-- Open folder button -->
                 </Grid.ColumnDefinitions>
 
                 <TextBlock Grid.Column="0" Text="Filter:" VerticalAlignment="Center"
@@ -85,15 +86,19 @@
                           Content="Auto-scroll" IsChecked="True"
                           ToolTip="Scroll to the latest line whenever new content arrives."/>
 
-                <Button Grid.Column="4" x:Name="ReloadButton" Style="{StaticResource ToolbarButton}"
+                <Button Grid.Column="4" x:Name="ClearButton" Style="{StaticResource ToolbarButton}"
+                        Content="Clear"
+                        Click="ClearButton_Click"
+                        ToolTip="Wipe the on-screen buffer so subsequent log activity is easier to read.  Doesn't touch the file on disk -- Reload brings the history back."/>
+                <Button Grid.Column="5" x:Name="ReloadButton" Style="{StaticResource ToolbarButton}"
                         Content="Reload"
                         Click="ReloadButton_Click"
                         ToolTip="Re-read the log from disk."/>
-                <Button Grid.Column="5" x:Name="CopyButton" Style="{StaticResource ToolbarButton}"
+                <Button Grid.Column="6" x:Name="CopyButton" Style="{StaticResource ToolbarButton}"
                         Content="Copy visible"
                         Click="CopyButton_Click"
                         ToolTip="Copy the currently-visible (filtered) lines to the clipboard."/>
-                <Button Grid.Column="6" x:Name="OpenFolderButton" Style="{StaticResource ToolbarButton}"
+                <Button Grid.Column="7" x:Name="OpenFolderButton" Style="{StaticResource ToolbarButton}"
                         Content="Open folder"
                         Click="OpenFolderButton_Click"
                         ToolTip="Open %LocalAppData%\MarvelHeroesComporator in Explorer."/>

@@ -141,15 +141,20 @@ public sealed class EternitySplinterTrackerTests
     }
 
     [Fact]
-    public void DefaultKnownProtoIndices_ContainsTheEmpiricallyDiscoveredSplinterIndex()
+    public void DefaultKnownProtoIndices_ContainsTheCanonicalSplinterIndex()
     {
-        // Smoke check: 13341 was the strongest-pattern intersection candidate across two
-        // discovery-log sessions (lone EntityCreate ~1s after a mob-kill loot burst, present
-        // in both sessions, not in any known mob/boss/hero list).  If a refactor accidentally
-        // drops or changes this value the tracker silently goes back to never firing on
-        // EntityCreated, so we pin it.  Update the constant -- and this test -- if a future
-        // session proves a different index is the right one.
-        Assert.Contains(13341u, EternitySplinterTracker.DefaultKnownProtoIndices);
+        // Smoke check: 56091 is the proto enum index for
+        // "Entity/Items/CurrencyItems/EternitySplinter.prototype" per Calligraphy.sip
+        // (confirmed via scripts/PrototypeEnumDumper).  If a refactor changes the
+        // hardcoded constant the tracker silently goes back to never firing on
+        // EntityCreated, so we pin it.  Update the constant -- and this test -- if a
+        // future Calligraphy version reshuffles the prototype enum table.
+        //
+        // History: the previous default was 13341u, derived empirically from a session
+        // intersection heuristic.  Turned out to be a false-positive -- the dumper
+        // confirms 13341 = "ScarletWitch/Rework/UltimateNoMorePrepareEndExplosion".
+        // See EternitySplinterTracker.DefaultKnownProtoIndices for the full story.
+        Assert.Contains(56091u, EternitySplinterTracker.DefaultKnownProtoIndices);
     }
 
     [Fact]
@@ -165,14 +170,14 @@ public sealed class EternitySplinterTrackerTests
         t.SplinterDropped += (_, _) => dropEvents++;
 
         // First create with the canonical index -- this IS the legit drop.
-        t.TestInjectEntityCreate(protoIdx: 13341u, entityId: 1, isAvatar: false, utc: DateTime.UtcNow);
+        t.TestInjectEntityCreate(protoIdx: 56091u, entityId: 1, isAvatar: false, utc: DateTime.UtcNow);
         Assert.Equal(1, dropEvents);
         Assert.Equal(1, t.DropCount);
         Assert.True(t.IsCooldownActive);
 
         // Second create -- 42 seconds later, well inside the cooldown.  This is the user's
         // reported false-positive pattern (16:49:29 → 16:50:11 in the field log).
-        t.TestInjectEntityCreate(protoIdx: 13341u, entityId: 2, isAvatar: false, utc: DateTime.UtcNow);
+        t.TestInjectEntityCreate(protoIdx: 56091u, entityId: 2, isAvatar: false, utc: DateTime.UtcNow);
         Assert.Equal(1, dropEvents);   // <-- still 1; suppressed
         Assert.Equal(1, t.DropCount);  // <-- still 1; suppressed
     }
@@ -188,12 +193,12 @@ public sealed class EternitySplinterTrackerTests
         // otherwise drop the second.
         using var t = new EternitySplinterTracker(null);
 
-        t.TestInjectEntityCreate(protoIdx: 13341u, entityId: 1, isAvatar: false, utc: DateTime.UtcNow, stackCount: 9);
+        t.TestInjectEntityCreate(protoIdx: 56091u, entityId: 1, isAvatar: false, utc: DateTime.UtcNow, stackCount: 9);
         Assert.Equal(1, t.DropCount);
         Assert.Equal(9, t.TotalSplintersThisSession);
         t.Reset();
 
-        t.TestInjectEntityCreate(protoIdx: 13341u, entityId: 2, isAvatar: false, utc: DateTime.UtcNow, stackCount: 14);
+        t.TestInjectEntityCreate(protoIdx: 56091u, entityId: 2, isAvatar: false, utc: DateTime.UtcNow, stackCount: 14);
         Assert.Equal(2, t.DropCount);
         Assert.Equal(23, t.TotalSplintersThisSession);  // 9 + 14 -- total persists across Reset
     }
@@ -208,7 +213,7 @@ public sealed class EternitySplinterTrackerTests
         // a worse-than-the-old-behaviour regression.
         using var t = new EternitySplinterTracker(null);
 
-        t.TestInjectEntityCreate(protoIdx: 13341u, entityId: 1, isAvatar: false, utc: DateTime.UtcNow, stackCount: 0);
+        t.TestInjectEntityCreate(protoIdx: 56091u, entityId: 1, isAvatar: false, utc: DateTime.UtcNow, stackCount: 0);
         Assert.Equal(1, t.DropCount);
         Assert.Equal(1, t.TotalSplintersThisSession);
     }
@@ -249,12 +254,12 @@ public sealed class EternitySplinterTrackerTests
         int dropEvents = 0;
         t.SplinterDropped += (_, _) => dropEvents++;
 
-        t.TestInjectEntityCreate(protoIdx: 13341u, entityId: 1, isAvatar: false, utc: DateTime.UtcNow);
+        t.TestInjectEntityCreate(protoIdx: 56091u, entityId: 1, isAvatar: false, utc: DateTime.UtcNow);
         Assert.Equal(1, dropEvents);
         t.Reset();
         Assert.False(t.IsCooldownActive);
 
-        t.TestInjectEntityCreate(protoIdx: 13341u, entityId: 2, isAvatar: false, utc: DateTime.UtcNow);
+        t.TestInjectEntityCreate(protoIdx: 56091u, entityId: 2, isAvatar: false, utc: DateTime.UtcNow);
         Assert.Equal(2, dropEvents);
     }
 }

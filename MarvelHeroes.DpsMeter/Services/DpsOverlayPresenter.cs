@@ -28,6 +28,16 @@ public sealed class DpsOverlayPresenter : IDisposable
     private DpsMeter? _meter;
     private DpsMeter? _bossMeter;
     private EternitySplinterTracker? _splinterTracker;
+    private BuffTracker? _buffTracker;
+    private LootScannerDiagnostic? _lootScanner;
+
+    /// <summary>How many hero rows the main app's Live dashboard leaderboard requests per
+    /// tick.  Raids run 10-15 players, so we ship 15 by default to fit a full raid roster.
+    /// The floating overlay (<c>DpsDisplayPanel</c>) is still capped at 5 by its hardcoded
+    /// XAML row slots -- changing that requires refactoring the overlay to a data-driven
+    /// <c>ItemsControl</c>, which isn't done yet.  See call sites in
+    /// <c>SelectTopHeroesForOverlay</c> and <c>SnapshotBossMeter</c>.</summary>
+    private const int MaxLeaderboardRows = 15;
     private DpsOverlayWindow? _overlayWindow;
     private MainAppWindow? _mainWindow;
     private DpsOverlaySettingsFile? _sharedSettings;
@@ -112,19 +122,75 @@ public sealed class DpsOverlayPresenter : IDisposable
         _splinterTracker.SplinterDropped += (_, args) =>
         {
             AppendLog($"DpsOverlayPresenter: splinter dropped at {args.Utc:HH:mm:ss} ({(args.Manual ? "manual" : "auto-detect")}) -- {EternitySplinterTracker.CooldownDuration.TotalMinutes:0} min cooldown armed");
-            // Skip the audio alert for MANUAL arms (the live-view button, the global hotkey,
-            // the Settings tab's "Arm Splinter cooldown now" button).  The user just clicked
-            // / pressed the binding -- they already know a splinter dropped, beeping at them
-            // is just noise.  The auto-detect path still plays the alert (that's where the
-            // "you might have missed it" warning actually has value); the cooldown-expired
-            // event is also still alerted (different signal: "next drop eligible now").
-            if (args.Manual) return;
+            // Play the drop alert for BOTH auto-detect AND manual arms (live-view button,
+            // global hotkey, Settings tab's "Arm now" button).  The hotkey case is the
+            // important one: it fires while the user is focused on the game and CAN'T see
+            // the overlay, so the audio cue is the only confirmation that the binding
+            // actually registered.  The previous behaviour skipped manual arms on the
+            // assumption "you pressed it, you already know" -- but that's exactly wrong for
+            // the use case where the user pressed a global hotkey blindly.
             _uiDispatcher.BeginInvoke(new Action(() => PlaySplinterAlert("drop")));
         };
         _splinterTracker.CooldownExpired += (_, _) =>
         {
             AppendLog("DpsOverlayPresenter: splinter cooldown expired -- next drop eligible");
             PlaySplinterAlert("cooldown-expired");
+        };
+
+        // Buff tracker -- owns the active-buffs dictionary, fires events on add/remove.
+        // SelfOwnerId is pushed in OnDecayTick from _meter.LikelySelfOwnerId, since the
+        // self-owner identification can land mid-session (we need the LocalPlayer message
+        // or a self-pinning power activation before _meter.LikelySelfOwnerId becomes
+        // non-zero).  The tracker handles a 0 SelfOwnerId by ignoring events, so wiring
+        // up early is safe.
+        _buffTracker = new BuffTracker(_sniffer) { Diagnostic = AppendLog };
+
+        // Loot scanner -- recon-only diagnostic that dumps every Unique-item EntityCreate's
+        // property collection when verbose diagnostics is enabled.  Phase 1 of the
+        // loot-filter feature: confirm wire-format assumptions before we invest in the
+        // affix-range table + roll-quality scorer.  Zero overhead when verbose is off
+        // (single hash probe + early-exit per EntityCreate).
+        _lootScanner = new LootScannerDiagnostic(_sniffer)
+        {
+            Diagnostic         = AppendLog,
+            IsVerboseEnabled   = () => DpsOverlaySettingsFile.IsVerboseDiagnosticsEnabled,
+            // Provide the local avatar's prototype enum index lazily -- the value lands
+            // mid-session once the user activates a power, so the scanner re-reads it on
+            // every drop.  Returning 0 (avatar not yet identified) just skips the hunt
+            // match silently; the rest of the scanner still works.
+            SelfPrototypeIndex = () => _meter?.LikelySelfPrototypeIndex ?? 0u,
+        };
+        // Hunt-match sound: marshal to UI dispatcher because WPF's MediaPlayer is
+        // Freezable-bound to its creating thread.  HuntMatched fires from the capture
+        // thread (EntityCreated path), so we'd silently misbehave without the hop.
+        _lootScanner.HuntMatched += (_, args) =>
+        {
+            _uiDispatcher.BeginInvoke(new Action(() => PlayHuntMatchAlert(args)));
+        };
+
+        // Discovery hook -- ONLY when verbose diagnostics is enabled.  Dumps the full
+        // property collection of every matched condition so we can identify new buffs by
+        // their effect (DamagePctBonus etc) the way we identified Empowered.  In normal
+        // operation the BuffTracker's one-line "+ Overwatch (5.0s)" summary is plenty.
+        _sniffer.ConditionAdded += (_, ev) =>
+        {
+            if (!DpsOverlaySettingsFile.IsVerboseDiagnosticsEnabled) return;
+            ulong selfOwner = _meter?.LikelySelfOwnerId ?? 0uL;
+            bool isSelf = selfOwner != 0 && ev.OwnerEntityId == selfOwner;
+            bool isMine = selfOwner != 0 && (ev.CreatorEntityId == selfOwner || ev.UltimateCreatorEntityId == selfOwner);
+            if (!isSelf && !isMine) return;
+            // PowerNamesByProto (root Prototype enum) -- buff sources arrive via
+            // Serializer.Transfer(ref PrototypeId) which keys against the root enum.
+            // PowerNames is for NetMessagePowerResult damage events (Power-specific enum).
+            string powerName = PowerNamesByProto.Get((uint)ev.CreatorPowerPrototypeRef) ?? "<unmapped>";
+            // Pass PropertyEnumNames.Get as the symbolic-name resolver so the dump shows
+            // "enum=283 DamagePctBonus" instead of "enum=283 ?", speeding up discovery of
+            // new buff properties.  The resolver is optional; old call sites that don't pass
+            // one still get the raw-enum log line.
+            MhMissionSniffer.DumpPropertyCollectionAt(
+                ev.RawProperties, ev.PropertyCollectionOffset, AppendLog,
+                contextTag: $"BUFFDBG condId={ev.ConditionId} \"{powerName}\"",
+                propertyEnumNameResolver: PropertyEnumNames.Get);
         };
 
         {
@@ -139,6 +205,11 @@ public sealed class DpsOverlayPresenter : IDisposable
         {
             _sharedSettings = DpsOverlaySettingsFile.Load();
             _overlayVisible = _sharedSettings.ShowOverlay;
+
+            // Load the loot-hunt config from its own JSON file and publish as the
+            // current.  The LootScannerPanel reads from Current on its first paint; the
+            // live HuntCriteria reads on every loot scan.
+            LootHuntConfig.ReplaceCurrent(LootHuntConfig.Load());
 
             // App-first layout: the main window is created and shown unconditionally; the
             // floating overlay is created up front too (so we can push DPS updates to it
@@ -237,6 +308,24 @@ public sealed class DpsOverlayPresenter : IDisposable
 
         // Header "Show overlay" checkbox -- the canonical user-facing toggle in the new layout.
         w.ShowOverlayToggled += SetOverlayVisible;
+
+        // "Show buffs and procs" -- forwards from the Settings tab to the live dashboard.
+        // The Settings panel has already persisted the new value; the presenter just pushes
+        // it down to the live dashboard so the UI updates without an app restart.
+        w.ShowBuffPanelsToggled += enabled =>
+        {
+            _mainWindow?.SetBuffPanelsVisible(enabled);
+            AppendLog($"DpsOverlayPresenter: buff panels visible = {enabled}");
+        };
+
+        // "Show DPS summary in overlay" -- forwards from the Settings tab to the floating
+        // overlay window's DpsDisplayPanel.  Only affects the overlay; the main window's
+        // Live tab still shows the DPS number in its summary card (different surface).
+        w.ShowOverlayDpsSummaryToggled += enabled =>
+        {
+            _overlayWindow?.SetDpsSummaryVisible(enabled);
+            AppendLog($"DpsOverlayPresenter: overlay DPS summary visible = {enabled}");
+        };
     }
 
     /// <summary>Show or hide the floating overlay and persist the choice.  Keeps the main
@@ -287,6 +376,18 @@ public sealed class DpsOverlayPresenter : IDisposable
         {
             _splinterTracker.Dispose();
             _splinterTracker = null;
+        }
+
+        if (_buffTracker != null)
+        {
+            _buffTracker.Dispose();
+            _buffTracker = null;
+        }
+
+        if (_lootScanner != null)
+        {
+            _lootScanner.Dispose();
+            _lootScanner = null;
         }
 
         if (_meter != null)
@@ -341,6 +442,30 @@ public sealed class DpsOverlayPresenter : IDisposable
         _meter.Tick(DateTime.UtcNow);
         _bossMeter?.Tick(DateTime.UtcNow);
         _meter.FlushPlayerIndexIfDirty();
+
+        // Push the latest self-owner id into the buff tracker.  The meter's identification
+        // happens at session start (via NetMessageLocalPlayer or self-pinning) and on every
+        // hero swap / region change; the tracker handles 0 by ignoring events and clears
+        // its state on any non-zero transition, so this is safe to call every tick (no-op
+        // unless the value actually changed).
+        if (_buffTracker != null)
+            _buffTracker.SelfOwnerId = _meter.LikelySelfOwnerId;
+
+        // Push the latest active-buff snapshot to the dashboard's BuffStrip.  We do this
+        // every tick (4 Hz) rather than only on BuffChanged events so the chip countdowns
+        // tick smoothly between server-driven add/remove events; the strip's rebuild is
+        // cheap (typically 5-15 chips total post-classification).
+        //
+        // Also push the tracker itself to the BuffStats panel so it can recompute the
+        // option-A stat tiles ("+%damage from active buffs" etc).  Same tick rate; the
+        // panel asks the tracker for a one-pass aggregate of the curated PropertyEnum set,
+        // so the cost is the same order as the buff-strip rebuild.
+        if (_buffTracker != null && _mainWindow != null)
+        {
+            var snapshot = _buffTracker.GetActiveBuffs();
+            _mainWindow.UpdateBuffs(snapshot, DateTime.UtcNow);
+            _mainWindow.UpdateBuffStats(_buffTracker);
+        }
 
         bool bossOnly = _meter.BossOnlyMode;
         var  encounter = _meter.GetEncounterSnapshot();
@@ -413,15 +538,21 @@ public sealed class DpsOverlayPresenter : IDisposable
         // false), we also skip the auto-hide dance entirely.
         if (_overlayVisible && _overlayWindow != null)
         {
-            bool shouldShow = ShouldBeVisible?.Invoke() ?? true;
+            // PersistOverlay short-circuits the foreground check: multi-monitor users park
+            // the overlay on a secondary display and want it readable while focused on a
+            // browser / Discord / etc. on another monitor.  Single-monitor users leave it
+            // off (the default), keeping the original auto-hide-when-not-game behaviour.
+            bool shouldShow = _sharedSettings?.PersistOverlay == true
+                || (ShouldBeVisible?.Invoke() ?? true);
             if (shouldShow != _lastVisibilityDecision)
             {
                 _lastVisibilityDecision = shouldShow;
                 _overlayWindow.Visibility = shouldShow ? Visibility.Visible : Visibility.Collapsed;
                 string fg = GameForegroundWatcher.LastForegroundProcessName;
+                string reason = _sharedSettings?.PersistOverlay == true ? "persist=on" : $"foreground='{fg}'";
                 AppendLog(shouldShow
-                    ? $"DpsOverlayPresenter: overlay shown — foreground='{fg}' (game or self)"
-                    : $"DpsOverlayPresenter: overlay hidden — foreground='{fg}' (not game, not self)");
+                    ? $"DpsOverlayPresenter: overlay shown — {reason}"
+                    : $"DpsOverlayPresenter: overlay hidden — {reason}");
             }
         }
 
@@ -471,7 +602,7 @@ public sealed class DpsOverlayPresenter : IDisposable
         bossTotal60s = _bossMeter.CurrentOwnerTotal60s;
         bossEncounter = _bossMeter.GetEncounterSnapshot();
         bossTop5 = bossEncounter.IsActive || bossEncounter.IsEnded
-            ? _bossMeter.GetTopHeroesByEncounterShare(5)
+            ? _bossMeter.GetTopHeroesByEncounterShare(MaxLeaderboardRows)
             : Array.Empty<DpsMeter.HeroShareEntry>();
     }
 
@@ -481,9 +612,9 @@ public sealed class DpsOverlayPresenter : IDisposable
         DpsMeter.EncounterSnapshot encounter)
     {
         if (!bossOnly)
-            return meter.GetTopHeroesBySessionShare(5);
+            return meter.GetTopHeroesBySessionShare(MaxLeaderboardRows);
         if (encounter.IsActive || encounter.IsEnded)
-            return meter.GetTopHeroesByEncounterShare(5);
+            return meter.GetTopHeroesByEncounterShare(MaxLeaderboardRows);
         return Array.Empty<DpsMeter.HeroShareEntry>();
     }
 
@@ -829,19 +960,56 @@ public sealed class DpsOverlayPresenter : IDisposable
         }
     }
 
-    /// <summary>Play the configured splinter alert sound (custom file if set, system
-    /// asterisk fallback otherwise).  Gated on the user's enable toggle.  Used for BOTH
-    /// drop detection AND cooldown expiry -- single sound for both events keeps the
-    /// settings UI simple; the events are one CooldownDuration apart so there's no overlap.</summary>
+    /// <summary>Play a splinter alert sound, selecting the right configured file based on
+    /// which event fired.  Two event types, two file/volume pairs:
+    /// <list type="bullet">
+    ///   <item><c>"drop"</c> -- uses <c>SplinterDropSoundPath</c> when set, falls back to
+    ///         <c>SplinterCooldownSoundPath</c> (so existing single-sound configurations
+    ///         keep working unchanged after the split).</item>
+    ///   <item><c>"cooldown-expired"</c> -- always uses <c>SplinterCooldownSoundPath</c>.</item>
+    /// </list>
+    /// Both paths null/empty falls through to the Windows asterisk via
+    /// <c>SplinterCooldownSoundPlayer.Play</c>'s built-in fallback.  Gated on the shared
+    /// <c>SplinterCooldownSoundEnabled</c> master toggle -- one switch controls both events.</summary>
     private void PlaySplinterAlert(string contextForLog)
     {
         if (_sharedSettings?.SplinterCooldownSoundEnabled != true) return;
-        bool playedCustom = SplinterCooldownSoundPlayer.Play(
-            _sharedSettings.SplinterCooldownSoundPath,
-            _sharedSettings.SplinterCooldownSoundVolume);
+
+        // Pick the (path, volume) pair for this event.  Drop event prefers its own
+        // configured sound; falls back to the cooldown sound when not set so legacy
+        // single-sound configs preserve their behavior.
+        string? path;
+        double volume;
+        if (contextForLog == "drop" && !string.IsNullOrWhiteSpace(_sharedSettings.SplinterDropSoundPath))
+        {
+            path   = _sharedSettings.SplinterDropSoundPath;
+            volume = _sharedSettings.SplinterDropSoundVolume;
+        }
+        else
+        {
+            path   = _sharedSettings.SplinterCooldownSoundPath;
+            volume = _sharedSettings.SplinterCooldownSoundVolume;
+        }
+
+        bool playedCustom = SplinterCooldownSoundPlayer.Play(path, volume);
         AppendLog(playedCustom
-            ? $"DpsOverlayPresenter: played custom splinter sound for {contextForLog} ('{_sharedSettings.SplinterCooldownSoundPath}', vol={_sharedSettings.SplinterCooldownSoundVolume:0.00})"
+            ? $"DpsOverlayPresenter: played custom splinter sound for {contextForLog} ('{path}', vol={volume:0.00})"
             : $"DpsOverlayPresenter: played system asterisk for splinter {contextForLog} (vol slider doesn't apply -- Windows controls)");
+    }
+
+    /// <summary>Play the hunt-match alert sound configured in <see cref="LootHuntConfig"/>.
+    /// Reuses the splinter sound infrastructure (<c>SplinterCooldownSoundPlayer.Play</c>)
+    /// which handles the WPF MediaPlayer lifecycle, volume scaling, and asterisk fallback.
+    /// Caller must already be on the UI dispatcher (we're triggered from a BeginInvoke).</summary>
+    private void PlayHuntMatchAlert(HuntMatchEventArgs args)
+    {
+        var cfg = LootHuntConfig.Current;
+        if (!cfg.SoundEnabled) return;
+
+        bool playedCustom = SplinterCooldownSoundPlayer.Play(cfg.SoundPath, cfg.SoundVolume);
+        AppendLog(playedCustom
+            ? $"DpsOverlayPresenter: played hunt-match sound (entityId={args.EntityId} matched [{string.Join(", ", args.MatchedAffixes)}], '{cfg.SoundPath}', vol={cfg.SoundVolume:0.00})"
+            : $"DpsOverlayPresenter: played system asterisk for hunt match (entityId={args.EntityId})");
     }
 
     public void OpenReportViewer()

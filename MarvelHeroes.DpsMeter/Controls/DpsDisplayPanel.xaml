@@ -70,69 +70,78 @@
         <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
 
             <!-- ── Main section ──────────────────────────────────────────── -->
-            <Grid Width="280" Margin="0,0,0,2" HorizontalAlignment="Left">
-                <TextBlock x:Name="HeroTitleText"
-                           Text="DPS"
+            <!--
+                DpsSummarySection wraps the entire DPS summary block (title + big number +
+                max-hit triplet + idle/status text) so the user can hide the whole thing via
+                Settings ("Show DPS summary in overlay").  Visibility flipped at runtime by
+                DpsDisplayPanel.SetDpsSummaryVisible.  The ES splinter badge below uses its
+                own toggle (ShowEternitySplinterTracker), so it stays independent.
+            -->
+            <StackPanel x:Name="DpsSummarySection" Orientation="Vertical" HorizontalAlignment="Center">
+                <Grid Width="280" Margin="0,0,0,2" HorizontalAlignment="Left">
+                    <TextBlock x:Name="HeroTitleText"
+                               Text="DPS"
+                               FontFamily="{StaticResource MarvelFontSecondary}"
+                               FontSize="14"
+                               Foreground="#99FFFFFF"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"/>
+                    <TextBlock x:Name="CloseButton"
+                               Text="×"
+                               HorizontalAlignment="Right"
+                               VerticalAlignment="Center"
+                               FontSize="16"
+                               Foreground="#55FFFFFF"
+                               Cursor="Hand"
+                               Visibility="Collapsed"
+                               MouseLeftButtonDown="CloseButton_OnClick">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Style.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter Property="Foreground" Value="#CCFFFFFF"/>
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </Grid>
+                <TextBlock x:Name="DpsText"
+                           Text="—"
                            FontFamily="{StaticResource MarvelFontSecondary}"
-                           FontSize="14"
-                           Foreground="#99FFFFFF"
+                           FontSize="38"
+                           FontWeight="Bold"
+                           Foreground="#FFFFB347"
                            HorizontalAlignment="Center"
-                           VerticalAlignment="Center"/>
-                <TextBlock x:Name="CloseButton"
-                           Text="×"
-                           HorizontalAlignment="Right"
-                           VerticalAlignment="Center"
-                           FontSize="16"
-                           Foreground="#55FFFFFF"
-                           Cursor="Hand"
-                           Visibility="Collapsed"
-                           MouseLeftButtonDown="CloseButton_OnClick">
-                    <TextBlock.Style>
-                        <Style TargetType="TextBlock">
-                            <Style.Triggers>
-                                <Trigger Property="IsMouseOver" Value="True">
-                                    <Setter Property="Foreground" Value="#CCFFFFFF"/>
-                                </Trigger>
-                            </Style.Triggers>
-                        </Style>
-                    </TextBlock.Style>
+                           LineHeight="40"
+                           LineStackingStrategy="BlockLineHeight">
+                    <TextBlock.Effect>
+                        <DropShadowEffect BlurRadius="10" ShadowDepth="0" Color="#FF000000" Opacity="0.9"/>
+                    </TextBlock.Effect>
                 </TextBlock>
-            </Grid>
-            <TextBlock x:Name="DpsText"
-                       Text="—"
-                       FontFamily="{StaticResource MarvelFontSecondary}"
-                       FontSize="38"
-                       FontWeight="Bold"
-                       Foreground="#FFFFB347"
-                       HorizontalAlignment="Center"
-                       LineHeight="40"
-                       LineStackingStrategy="BlockLineHeight">
-                <TextBlock.Effect>
-                    <DropShadowEffect BlurRadius="10" ShadowDepth="0" Color="#FF000000" Opacity="0.9"/>
-                </TextBlock.Effect>
-            </TextBlock>
-            <TextBlock x:Name="MaxHitText"
-                       Text=""
-                       FontFamily="{StaticResource MarvelFontSecondary}"
-                       FontSize="13"
-                       FontWeight="SemiBold"
-                       Foreground="#FFFFE0A8"
-                       HorizontalAlignment="Center"
-                       Margin="0,4,0,0"/>
-            <TextBlock x:Name="MaxHitDetailText"
-                       Text=""
-                       FontFamily="{StaticResource MarvelFontSecondary}"
-                       FontSize="10"
-                       Foreground="#99FFE0A8"
-                       HorizontalAlignment="Center"
-                       Margin="0,1,0,0"/>
-            <TextBlock x:Name="DetailText"
-                       Text=""
-                       FontFamily="{StaticResource MarvelFontSecondary}"
-                       FontSize="11"
-                       Foreground="#80FFFFFF"
-                       HorizontalAlignment="Center"
-                       Margin="0,2,0,0"/>
+                <TextBlock x:Name="MaxHitText"
+                           Text=""
+                           FontFamily="{StaticResource MarvelFontSecondary}"
+                           FontSize="13"
+                           FontWeight="SemiBold"
+                           Foreground="#FFFFE0A8"
+                           HorizontalAlignment="Center"
+                           Margin="0,4,0,0"/>
+                <TextBlock x:Name="MaxHitDetailText"
+                           Text=""
+                           FontFamily="{StaticResource MarvelFontSecondary}"
+                           FontSize="10"
+                           Foreground="#99FFE0A8"
+                           HorizontalAlignment="Center"
+                           Margin="0,1,0,0"/>
+                <TextBlock x:Name="DetailText"
+                           Text=""
+                           FontFamily="{StaticResource MarvelFontSecondary}"
+                           FontSize="11"
+                           Foreground="#80FFFFFF"
+                           HorizontalAlignment="Center"
+                           Margin="0,2,0,0"/>
+            </StackPanel>
 
             <!-- ── Eternity Splinter tracker (toggleable via right-click menu) ─────── -->
             <Border x:Name="SplinterPanel"

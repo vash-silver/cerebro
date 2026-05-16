@@ -312,6 +312,21 @@ public partial class LogViewerPanel : UserControl
         LoadFromDisk();
     }
 
+    /// <summary>Wipe the on-screen buffer without touching the log file on disk.  After
+    /// clearing, the tail-poll continues from the current file position -- so the next
+    /// new line written to disk shows up in the (empty) view.  Lets the user "start
+    /// fresh" before reproducing a behaviour, see only what happens AFTER they hit Clear.
+    /// Reload pulls the history back in if they need it.</summary>
+    private void ClearButton_Click(object sender, RoutedEventArgs e)
+    {
+        _allLines.Clear();
+        _view.Clear();
+        _pendingLine = string.Empty;
+        // _filePosition stays put -- tail-tick keeps reading from where it was, so future
+        // appends show up but nothing from before the clear comes back.
+        UpdateStatus();
+    }
+
     private void CopyButton_Click(object sender, RoutedEventArgs e)
     {
         // If the user has selected specific lines, copy those; otherwise copy everything

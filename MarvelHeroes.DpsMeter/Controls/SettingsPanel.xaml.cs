@@ -40,9 +40,12 @@ public partial class SettingsPanel : UserControl
     private bool _suppressBossOnly;
     private bool _suppressShowBossSection;
     private bool _suppressShowPowerBreakdown;
+    private bool _suppressShowBuffPanels;
+    private bool _suppressShowOverlayDpsSummary;
     private bool _suppressShowSplinter;
     private bool _suppressSplinterSound;
     private bool _suppressSplinterVolume;
+    private bool _suppressSplinterDropVolume;
     private bool _suppressSplinterArmHotkey;
     private bool _suppressLogging;
     private bool _suppressVerboseLogging;
@@ -53,6 +56,14 @@ public partial class SettingsPanel : UserControl
     // once and let either UI surface trigger the action.
 
     public event Action<bool>? BossOnlyToggled;
+    /// <summary>Fires when the user toggles "Show buffs and procs".  The live dashboard
+    /// listens so it can hide/show the stats tile row and the two-tier buff strip in real
+    /// time without waiting for an app restart; the persisted setting controls startup state.</summary>
+    public event Action<bool>? ShowBuffPanelsToggled;
+    /// <summary>Fires when the user toggles "Show DPS summary in overlay".  The presenter
+    /// listens and pushes the new visibility down to the floating overlay's DpsDisplayPanel
+    /// so the change takes effect immediately.</summary>
+    public event Action<bool>? ShowOverlayDpsSummaryToggled;
     public event Action?       ClearDpsRequested;
     public event Action?       ResetMaxHitRecordRequested;
     public event Action?       ResetSplinterCooldownRequested;
@@ -88,21 +99,34 @@ public partial class SettingsPanel : UserControl
         SetChecked(BossOnlyCheckbox,            settings.BossDpsOnly,                ref _suppressBossOnly);
         SetChecked(ShowBossSectionCheckbox,     settings.ShowBossSection,            ref _suppressShowBossSection);
         SetChecked(ShowPowerBreakdownCheckbox,  settings.ShowPowerBreakdown,         ref _suppressShowPowerBreakdown);
+        SetChecked(ShowBuffPanelsCheckbox,      settings.ShowBuffPanels,             ref _suppressShowBuffPanels);
+        SetChecked(ShowOverlayDpsSummaryCheckbox, settings.ShowOverlayDpsSummary,    ref _suppressShowOverlayDpsSummary);
         SetChecked(ShowSplinterCheckbox,        settings.ShowEternitySplinterTracker, ref _suppressShowSplinter);
         SetChecked(SplinterSoundCheckbox,       settings.SplinterCooldownSoundEnabled, ref _suppressSplinterSound);
 
-        // Custom splinter sound path -- read-only textbox so the user always sees what's
-        // configured; "(system default)" placeholder when empty.
+        // Custom splinter cooldown-sound path -- read-only textbox so the user always sees
+        // what's configured; "(system default)" placeholder when empty.
         SplinterSoundPathText.Text = string.IsNullOrWhiteSpace(settings.SplinterCooldownSoundPath)
             ? "(system default)"
             : settings.SplinterCooldownSoundPath;
 
-        // Splinter volume slider -- snap to settings without firing the ValueChanged path
+        // Drop-sound path -- separate field.  Placeholder reads "(same as cooldown sound)"
+        // when unset because that's the actual fallback behavior in PlaySplinterAlert.
+        SplinterDropSoundPathText.Text = string.IsNullOrWhiteSpace(settings.SplinterDropSoundPath)
+            ? "(same as cooldown sound)"
+            : settings.SplinterDropSoundPath;
+
+        // Splinter volume sliders -- snap to settings without firing the ValueChanged path
         // that would re-save (would be a no-op but the suppression keeps the flow clean).
         _suppressSplinterVolume = true;
         try { SplinterVolumeSlider.Value = Math.Clamp(settings.SplinterCooldownSoundVolume, 0.0, 1.0); }
         finally { _suppressSplinterVolume = false; }
         UpdateSplinterVolumeReadout(SplinterVolumeSlider.Value);
+
+        _suppressSplinterDropVolume = true;
+        try { SplinterDropVolumeSlider.Value = Math.Clamp(settings.SplinterDropSoundVolume, 0.0, 1.0); }
+        finally { _suppressSplinterDropVolume = false; }
+        UpdateSplinterDropVolumeReadout(SplinterDropVolumeSlider.Value);
 
         // Splinter "arm cooldown" hotkey -- toggle + readable binding string.
         SetChecked(SplinterArmHotkeyCheckbox, settings.SplinterArmHotkeyEnabled, ref _suppressSplinterArmHotkey);
@@ -171,6 +195,35 @@ public partial class SettingsPanel : UserControl
     {
         if (_suppressShowPowerBreakdown || _settings == null) return;
         _settings.ShowPowerBreakdown = false; Save();
+    }
+
+    private void ShowBuffPanelsCheckbox_OnChecked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressShowBuffPanels || _settings == null) return;
+        _settings.ShowBuffPanels = true; Save();
+        // Fire the live event so the dashboard updates immediately rather than waiting for
+        // an app restart -- buff visibility is a "right now I want this gone" kind of toggle,
+        // not a startup preference.
+        ShowBuffPanelsToggled?.Invoke(true);
+    }
+    private void ShowBuffPanelsCheckbox_OnUnchecked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressShowBuffPanels || _settings == null) return;
+        _settings.ShowBuffPanels = false; Save();
+        ShowBuffPanelsToggled?.Invoke(false);
+    }
+
+    private void ShowOverlayDpsSummaryCheckbox_OnChecked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressShowOverlayDpsSummary || _settings == null) return;
+        _settings.ShowOverlayDpsSummary = true; Save();
+        ShowOverlayDpsSummaryToggled?.Invoke(true);
+    }
+    private void ShowOverlayDpsSummaryCheckbox_OnUnchecked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressShowOverlayDpsSummary || _settings == null) return;
+        _settings.ShowOverlayDpsSummary = false; Save();
+        ShowOverlayDpsSummaryToggled?.Invoke(false);
     }
 
     private void ShowSplinterCheckbox_OnChecked(object sender, RoutedEventArgs e)
@@ -401,4 +454,56 @@ public partial class SettingsPanel : UserControl
         SplinterSoundPathText.Text = "(system default)";
         Save();
     }
+
+    // ── Drop-sound handlers ──────────────────────────────────────────────────────────────
+    // Mirror the cooldown-sound handlers above, just bound to the second pair of settings
+    // fields (SplinterDropSoundPath / SplinterDropSoundVolume).  Volume changes save
+    // immediately; path changes are persisted on Browse-confirm or Clear.
+
+    private void BrowseSplinterDropSoundButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_settings == null) return;
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title  = "Pick a sound file for the Splinter DROP event",
+            Filter = "Sound files (*.wav;*.mp3;*.wma;*.aac)|*.wav;*.mp3;*.wma;*.aac"
+                   + "|WAV (*.wav)|*.wav"
+                   + "|MP3 (*.mp3)|*.mp3"
+                   + "|All files (*.*)|*.*",
+            CheckFileExists = true,
+        };
+        if (!string.IsNullOrWhiteSpace(_settings.SplinterDropSoundPath))
+        {
+            try { dialog.InitialDirectory = Path.GetDirectoryName(_settings.SplinterDropSoundPath); }
+            catch { /* invalid path -- let the dialog pick its own default */ }
+        }
+        if (dialog.ShowDialog() == true)
+        {
+            _settings.SplinterDropSoundPath = dialog.FileName;
+            SplinterDropSoundPathText.Text  = dialog.FileName;
+            Save();
+        }
+    }
+
+    private void ClearSplinterDropSoundButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_settings == null) return;
+        _settings.SplinterDropSoundPath = null;
+        // Placeholder reflects what actually happens when this is unset -- drop event falls
+        // back to the cooldown sound (see PlaySplinterAlert).  Clearer than "(system default)"
+        // because users would otherwise expect the Windows asterisk instead.
+        SplinterDropSoundPathText.Text  = "(same as cooldown sound)";
+        Save();
+    }
+
+    private void SplinterDropVolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        UpdateSplinterDropVolumeReadout(e.NewValue);
+        if (_suppressSplinterDropVolume || _settings == null) return;
+        _settings.SplinterDropSoundVolume = Math.Clamp(e.NewValue, 0.0, 1.0);
+        Save();
+    }
+
+    private void UpdateSplinterDropVolumeReadout(double value)
+        => SplinterDropVolumeReadout.Text = $"{Math.Clamp(value, 0.0, 1.0) * 100:0}%";
 }

@@ -98,13 +98,21 @@
                                Text="initializing…"/>
                 </StackPanel>
 
-                <CheckBox x:Name="ShowOverlayCheckbox"
-                          Grid.Column="1"
-                          Style="{StaticResource HeaderCheckbox}"
-                          Content="Show overlay"
-                          ToolTip="Toggle the floating always-on-top overlay window that mirrors the Live tab"
-                          Checked="ShowOverlayCheckbox_OnChecked"
-                          Unchecked="ShowOverlayCheckbox_OnUnchecked"/>
+                <StackPanel Grid.Column="1" Orientation="Vertical" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <CheckBox x:Name="ShowOverlayCheckbox"
+                              Style="{StaticResource HeaderCheckbox}"
+                              Content="Show overlay"
+                              ToolTip="Toggle the floating always-on-top overlay window that mirrors the Live tab"
+                              Checked="ShowOverlayCheckbox_OnChecked"
+                              Unchecked="ShowOverlayCheckbox_OnUnchecked"/>
+                    <CheckBox x:Name="PersistOverlayCheckbox"
+                              Style="{StaticResource HeaderCheckbox}"
+                              Content="Persist overlay"
+                              Margin="0,4,0,0"
+                              ToolTip="Will keep overlay active when you alt tab. Turn off if you're a single monitor user."
+                              Checked="PersistOverlayCheckbox_OnChanged"
+                              Unchecked="PersistOverlayCheckbox_OnChanged"/>
+                </StackPanel>
             </Grid>
         </Border>
 
@@ -145,6 +153,16 @@
                     the main window isn't in front.
                 -->
                 <controls:SettingsPanel x:Name="SettingsTab"/>
+            </TabItem>
+            <TabItem Header="Cosmic Loot Scanner">
+                <!--
+                    Cosmic Loot Scanner tab.  Configures the hunt-mode filter (which affixes count,
+                    minimum hits, rarity gate, self-equippable gate).  Saves instantly to
+                    %LocalAppData%\MarvelHeroesComporator\loot-hunt-config.json; the live
+                    LootScannerDiagnostic re-reads on every drop so changes take effect
+                    without a restart.
+                -->
+                <controls:LootScannerPanel x:Name="LootScannerTab"/>
             </TabItem>
             <TabItem Header="Diagnostics">
                 <!--

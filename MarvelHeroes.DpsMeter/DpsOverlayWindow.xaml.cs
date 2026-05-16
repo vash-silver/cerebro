@@ -122,6 +122,20 @@ public partial class DpsOverlayWindow : Window
         Panel.UpdateSplinterStatus(cooldownActive, remaining, dropCount, totalSplinters, justDropped);
     }
 
+    /// <summary>Show or hide the DPS summary block (title + big number + max-hit + status
+    /// text) on the floating overlay's panel.  Called by the presenter when the user
+    /// toggles "Show DPS summary in overlay" in Settings.  No-op-cheap; marshals to UI
+    /// thread if called off it.</summary>
+    public void SetDpsSummaryVisible(bool visible)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(() => Panel.SetDpsSummaryVisible(visible)));
+            return;
+        }
+        Panel.SetDpsSummaryVisible(visible);
+    }
+
     public void ShowWithoutActivating()
     {
         var prev = ShowActivated;

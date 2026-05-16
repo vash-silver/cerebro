@@ -228,6 +228,20 @@ public sealed class EntityCreatedEvent
     /// community-member pairing uses, so populating it lets us skip the temporal
     /// correlation entirely. Zero when unknown.</summary>
     public ulong OwnerPlayerDbId { get; init; }
+
+    /// <summary>True when the entity carries an <c>ItemCurrency</c> property with the
+    /// currency-type code we recognize as Eternity Splinter.  Server-agnostic for the
+    /// detection step; tied to a hardcoded params signature for the filter (currently
+    /// <c>0x12000000000000</c>, empirically derived).  See <see cref="CurrencyParams"/>
+    /// for the raw signature so the tracker can log + adapt.</summary>
+    public bool IsCurrencyDrop { get; init; }
+
+    /// <summary>When the entity carries an <c>ItemCurrency</c> property, the raw params
+    /// bits of that property (encodes the currency type).  Zero when no <c>ItemCurrency</c>
+    /// property was seen.  Surfaced for diagnostic logging so the splinter-tracker can
+    /// dump "saw currency type 0x... with N units" lines and we can identify each
+    /// server's splinter signature by correlating against confirmed in-game drops.</summary>
+    public ulong CurrencyParams { get; init; }
 }
 
 /// <summary>
@@ -381,6 +395,136 @@ public sealed class LootDroppedEvent
 }
 
 /// <summary>
+/// A buff / debuff (a "Condition" in MHServerEmu) was just applied to an entity.  Decoded
+/// from a server-pushed <c>NetMessageAddCondition</c>.  The same envelope carries both buffs
+/// (e.g. Cyclops's <c>Overwatch</c> applying <c>Empowered</c>) and debuffs (bleed, stun, etc.) --
+/// the distinction is in the <c>ConditionPrototypeRef</c>'s prototype data, which we don't
+/// have access to here.  Consumers can filter by <c>OwnerEntityId == LikelySelfOwnerId</c>
+/// to limit to "buffs on me", or use <c>CreatorEntityId</c> to track "buffs I applied".
+///
+/// <para><b>Discovery workflow:</b> the 64-bit prototype refs are server-stable but opaque
+/// without the client's prototype-name table.  Capture them in the log, cross-reference
+/// against MHServerEmu's <c>ConditionPrototype</c> definitions in <c>Calligraphy.sip</c>,
+/// then build a static "known buffs" table the same way <c>BossNames</c> was generated.</para>
+/// </summary>
+public sealed class ConditionAddedEvent
+{
+    /// <summary>Entity wearing the buff -- typically a player avatar or NPC.  Match against
+    /// <c>DpsMeter.LikelySelfOwnerId</c> to filter to "buffs on me".</summary>
+    public required ulong OwnerEntityId { get; init; }
+
+    /// <summary>Server-allocated condition slot id, unique per owner.  Pair this with the
+    /// owner id to identify a specific buff instance for later removal -- the
+    /// <see cref="ConditionRemovedEvent"/> echoes both ids.</summary>
+    public required ulong ConditionId { get; init; }
+
+    /// <summary>Entity that directly applied the buff -- could be a player (an aura you
+    /// extended), a pet, an NPC.  Equals <see cref="OwnerEntityId"/> for self-buffs.</summary>
+    public ulong CreatorEntityId { get; init; }
+
+    /// <summary>Root cause entity for the buff chain -- if a player's pet's aura buffed a
+    /// teammate, the pet is <see cref="CreatorEntityId"/> and the player is here.  Often
+    /// equals <see cref="CreatorEntityId"/>.</summary>
+    public ulong UltimateCreatorEntityId { get; init; }
+
+    /// <summary>Full 64-bit <c>PrototypeId</c> of the buff -- e.g. <c>Empowered</c>.  Zero
+    /// if the wire set <c>NoConditionPrototypeRef</c> (rare; usually only synthetic /
+    /// engine-internal conditions omit this).</summary>
+    public ulong ConditionPrototypeRef { get; init; }
+
+    /// <summary>Full 64-bit <c>PrototypeId</c> of the power that applied this condition --
+    /// e.g. <c>Overwatch</c>.  Zero if not set.  Useful for "this buff came from Overwatch"
+    /// labeling without needing the buff's own name.</summary>
+    public ulong CreatorPowerPrototypeRef { get; init; }
+
+    /// <summary>Duration in milliseconds.  Zero means "permanent" (most often: an aura
+    /// while the source ability is held).  Add to <see cref="UtcTime"/> for an estimated
+    /// expiry; the real expiry comes via <see cref="ConditionRemovedEvent"/>.</summary>
+    public long DurationMs { get; init; }
+
+    /// <summary>Update interval in milliseconds -- for ticking buffs (DoTs, HoTs).  Zero
+    /// means "no ticking; the buff just sits applied for its duration".</summary>
+    public int UpdateIntervalMs { get; init; }
+
+    /// <summary>Full archive bytes from the AddCondition payload.  The property collection
+    /// is embedded mid-archive (after owner id / flags / proto refs / timing fields), so
+    /// callers wanting to dump it should use <see cref="MhMissionSniffer.DumpPropertyCollectionAt"/>
+    /// with <see cref="PropertyCollectionOffset"/> as the start.</summary>
+    public byte[]? RawProperties { get; init; }
+
+    /// <summary>Byte offset into <see cref="RawProperties"/> where the
+    /// <c>PropertyCollection</c> begins (just after the condition's timing fields).
+    /// Pass this to <see cref="MhMissionSniffer.DumpPropertyCollectionAt"/> to walk the
+    /// stat effects without re-parsing the preamble.</summary>
+    public int PropertyCollectionOffset { get; init; }
+
+    /// <summary>Raw bit-mask of <c>ConditionSerializationFlags</c> -- useful for debugging
+    /// "why didn't this field decode" issues against the live server.</summary>
+    public uint SerializationFlags { get; init; }
+
+    /// <summary>Parsed property collection -- the list of stat deltas this condition applies
+    /// (e.g. <c>DamagePctBonus +0.40</c>).  Always present; empty if the property collection
+    /// failed to parse or the buff legitimately has no property effects.  Same data as
+    /// <see cref="MhMissionSniffer.DumpPropertyCollectionAt"/> emits to the diagnostic log,
+    /// but in structured form for downstream aggregation (the live-stats overlay sums these
+    /// across active buffs to show "+%damage from buffs").</summary>
+    public IReadOnlyList<BuffPropertyDelta> PropertyDeltas { get; init; } = System.Array.Empty<BuffPropertyDelta>();
+
+    public required DateTime UtcTime { get; init; }
+}
+
+/// <summary>
+/// One property entry from a condition's embedded <c>PropertyCollection</c>.  Pairs the
+/// <see cref="PropertyEnum"/> id (e.g. 283 = <c>DamagePctBonus</c>) with the value, decoded
+/// both as the raw signed integer (for int-typed properties) and as IEEE-754 float (for the
+/// float-typed properties that most damage / crit bonuses are).  The caller picks whichever
+/// representation is appropriate based on the enum's declared value type.
+/// </summary>
+/// <remarks>
+/// We carry both <c>IntValue</c> and <c>FloatValue</c> because the wire format doesn't tell us
+/// the property's underlying type -- it's encoded in MHServerEmu's PropertyEnum metadata,
+/// which we don't (yet) replicate client-side.  The downstream aggregator knows e.g.
+/// "DamagePctBonus is a float" and reads <c>FloatValue</c>; for unknown enums we surface both
+/// so the diagnostic log can show whichever makes sense.
+/// </remarks>
+public readonly struct BuffPropertyDelta
+{
+    /// <summary>PropertyEnum id (top 11 bits of the wire-format <c>PropertyId</c>).  Matches
+    /// MHServerEmu's <c>PropertyEnum</c> enum values -- e.g. 283 = DamagePctBonus.</summary>
+    public uint PropertyEnum { get; init; }
+
+    /// <summary>Param bits (the lower 53 bits of the <c>PropertyId</c>).  Most simple
+    /// properties have 0 here; parameterized properties (e.g. per-keyword bonuses) encode
+    /// their parameter prototype refs in these bits.</summary>
+    public ulong ParamBits { get; init; }
+
+    /// <summary>Signed-integer interpretation of the value bits (for int-typed properties:
+    /// stack counts, level scaling, etc).</summary>
+    public long IntValue { get; init; }
+
+    /// <summary>IEEE-754 float interpretation of the value bits (for float-typed properties:
+    /// percentage bonuses, damage scalars, etc).  Most stat-bonus properties land here.</summary>
+    public float FloatValue { get; init; }
+
+    /// <summary>Raw value bits from the wire, before either decode was applied.  Useful for
+    /// diagnostics when a new property type doesn't match either integer or float
+    /// interpretations (e.g. some properties store packed prototype refs in the value).</summary>
+    public ulong RawValueBits { get; init; }
+}
+
+/// <summary>
+/// A buff was just removed (expired, dispelled, replaced).  Pair the
+/// <c>(OwnerEntityId, ConditionId)</c> with the previous <see cref="ConditionAddedEvent"/>
+/// to identify which buff ended.
+/// </summary>
+public sealed class ConditionRemovedEvent
+{
+    public required ulong OwnerEntityId { get; init; }
+    public required ulong ConditionId { get; init; }
+    public required DateTime UtcTime { get; init; }
+}
+
+/// <summary>
 /// Passive sniffer for the Marvel Heroes / MHServerEmu Mux protocol on the game frontend port (default 4306).
 ///
 /// Reads raw TCP frames via Npcap, reassembles each TCP flow, parses Mux frames + protobuf
@@ -485,6 +629,17 @@ public sealed class MhMissionSniffer : IDisposable
     /// of the dropped item; downstream listeners (Eternity Splinter tracker, future loot
     /// trackers) match it against hardcoded constants.</summary>
     public event EventHandler<LootDroppedEvent>? LootDropped;
+
+    /// <summary>Fires for every <c>NetMessageAddCondition</c> -- a buff / debuff was just
+    /// applied to an entity.  See <see cref="ConditionAddedEvent"/> for the payload shape and
+    /// the discovery workflow for the opaque <c>PrototypeRef</c> fields.</summary>
+    public event EventHandler<ConditionAddedEvent>? ConditionAdded;
+
+    /// <summary>Fires for every <c>NetMessageDeleteCondition</c> -- a buff / debuff was just
+    /// removed (expired, dispelled, replaced).  Pair the (<see cref="ConditionRemovedEvent.OwnerEntityId"/>,
+    /// <see cref="ConditionRemovedEvent.ConditionId"/>) with the previous
+    /// <see cref="ConditionAddedEvent"/> to identify which buff ended.</summary>
+    public event EventHandler<ConditionRemovedEvent>? ConditionRemoved;
 
     private TcpReassembler? _reassembler;
     private readonly List<ICaptureDevice> _openDevices = new();
@@ -720,6 +875,8 @@ public sealed class MhMissionSniffer : IDisposable
                 case "NetMessageLocalPlayer":            ParseLocalPlayer(body); break;
                 case "NetMessageInventoryMove":          ParseInventoryMove(body); break;
                 case "NetMessageLootEntity":             ParseLootEntity(body); break;
+                case "NetMessageAddCondition":           ParseAddCondition(body); break;
+                case "NetMessageDeleteCondition":        ParseDeleteCondition(body); break;
                 case "NetMessageModifyCommunityMember":  ParseModifyCommunityMember(body); break;
                 case "NetMessageRegionChange":           ParseRegionChange(body); break;
                 case "NetMessageRegionDifficultyChange": ParseDifficultyChange(body); break;
@@ -911,6 +1068,146 @@ public sealed class MhMissionSniffer : IDisposable
         catch (Exception ex)
         {
             Diagnostic?.Invoke($"LootEntity parse failed: {ex.Message}");
+        }
+    }
+
+    // ───────────────────────── NetMessageAddCondition / NetMessageDeleteCondition ────────────────
+    //
+    // The server emits one NetMessageAddCondition per buff/debuff application and a matching
+    // NetMessageDeleteCondition when it expires / is dispelled / replaced.  AddCondition carries
+    // a single archive blob; DeleteCondition is a plain protobuf with (idEntity, key).
+    //
+    // AddCondition archiveData layout (post-replication-header; from MHServerEmu's
+    // Condition.Serialize and the IsTransient branch -- replication mode IS transient):
+    //   [varint ulong:  ownerEntityId]                  // who's wearing the buff
+    //   [varint uint:   serializationFlags]             // bitmask, gates the optional fields
+    //   [varint ulong:  conditionId]                    // per-owner buff slot id
+    //   [varint ulong:  creatorId]                      // omitted if CreatorIsOwner (bit 0)
+    //   [varint ulong:  ultimateCreatorId]              // omitted if CreatorIsUltimateCreator (bit 1)
+    //   [varint ulong:  conditionPrototypeRef]          // omitted if NoConditionPrototypeRef (bit 2)
+    //   [varint ulong:  creatorPowerPrototypeRef]       // omitted if NoCreatorPowerPrototypeRef (bit 3)
+    //   [varint uint:   creatorPowerIndex]              // only if HasCreatorPowerIndex (bit 4)
+    //   [varint ulong:  ownerAssetRef]                  // only if HasOwnerAssetRefOverride (bit 9)
+    //   [zigzag long:   startTime]                      // ms since Game.StartTime
+    //   [zigzag long:   pauseTime]                      // only if HasPauseTime (bit 6)
+    //   [zigzag long:   durationMs]                     // only if HasDuration (bit 7)
+    //   [zigzag int:    updateIntervalMs]               // only if HasUpdateIntervalOverride (bit 10)
+    //   [PropertyCollection: properties]                // the stat effects (DamagePercentBonus etc)
+    //   [varint uint:   cancelOnFlags]                  // only if HasCancelOnFlagsOverride (bit 11)
+    //
+    // The PrototypeRefs are full 64-bit DataRef values (same encoding as splinter PrototypeId).
+    // Match against hardcoded constants once the buff is identified empirically -- e.g.
+    // Cyclops's Empowered buff and the Overwatch power that applies it both have stable Ids.
+    private void ParseAddCondition(byte[] body)
+    {
+        if (ConditionAdded is null) return;
+        try
+        {
+            var msg = NetMessageAddCondition.ParseFrom(body);
+            byte[] archive = msg.ArchiveData.ToByteArray();
+            var r = new GazillionArchiveReader(archive);
+            r.ReadReplicationHeader();
+
+            ulong ownerEntityId       = r.ReadVarUInt64();
+            uint  serializationFlags  = r.ReadVarUInt32();
+            ulong conditionId         = r.ReadVarUInt64();
+
+            // ConditionSerializationFlags (MHServerEmu.Games.Powers.Conditions/ConditionSerializationFlags.cs):
+            //   bit 0 (0x001) CreatorIsOwner                -- omit creatorId
+            //   bit 1 (0x002) CreatorIsUltimateCreator      -- omit ultimateCreatorId
+            //   bit 2 (0x004) NoConditionPrototypeRef       -- omit conditionPrototypeRef
+            //   bit 3 (0x008) NoCreatorPowerPrototypeRef    -- omit creatorPowerPrototypeRef
+            //   bit 4 (0x010) HasCreatorPowerIndex
+            //   bit 6 (0x040) HasPauseTime
+            //   bit 7 (0x080) HasDuration
+            //   bit 9 (0x200) HasOwnerAssetRefOverride
+            //   bit 10 (0x400) HasUpdateIntervalOverride
+            //   bit 11 (0x800) HasCancelOnFlagsOverride
+            const uint F_CreatorIsOwner            = 0x001;
+            const uint F_CreatorIsUltimateCreator  = 0x002;
+            const uint F_NoConditionPrototypeRef   = 0x004;
+            const uint F_NoCreatorPowerPrototypeRef= 0x008;
+            const uint F_HasCreatorPowerIndex      = 0x010;
+            const uint F_HasPauseTime              = 0x040;
+            const uint F_HasDuration               = 0x080;
+            const uint F_HasOwnerAssetRefOverride  = 0x200;
+            const uint F_HasUpdateIntervalOverride = 0x400;
+
+            ulong creatorId             = (serializationFlags & F_CreatorIsOwner)           != 0 ? ownerEntityId : r.ReadVarUInt64();
+            ulong ultimateCreatorId     = (serializationFlags & F_CreatorIsUltimateCreator) != 0 ? creatorId    : r.ReadVarUInt64();
+            ulong conditionPrototypeRef = (serializationFlags & F_NoConditionPrototypeRef)  != 0 ? 0uL          : r.ReadVarUInt64();
+            ulong creatorPowerProtoRef  = (serializationFlags & F_NoCreatorPowerPrototypeRef) != 0 ? 0uL        : r.ReadVarUInt64();
+            if ((serializationFlags & F_HasCreatorPowerIndex)     != 0) _ = r.ReadVarUInt32();   // creatorPowerIndex, unused for tracking
+            if ((serializationFlags & F_HasOwnerAssetRefOverride) != 0) _ = r.ReadVarUInt64();   // ownerAssetRef, unused for tracking
+            _ = r.ReadVarInt64();                                                                // startTime (zigzag long, ms-since-game-start)
+            if ((serializationFlags & F_HasPauseTime) != 0) _ = r.ReadVarInt64();                // pauseTime
+            long durationMs        = (serializationFlags & F_HasDuration)               != 0 ? r.ReadVarInt64() : 0L;
+            int  updateIntervalMs  = (serializationFlags & F_HasUpdateIntervalOverride) != 0 ? r.ReadVarInt32() : 0;
+
+            // Skip the ReplicatedPropertyCollection's _replicationId varint -- the condition's
+            // _properties field is typed ReplicatedPropertyCollection (not plain PropertyCollection),
+            // and ReplicatedPropertyCollection.SerializeWithDefault writes an extra ulong before
+            // delegating to the base class in replication mode (see
+            // MHServerEmu.Games.Properties/ReplicatedPropertyCollection.cs:80).  Without this skip
+            // the next 4 bytes we'd read as the property count are actually the replication-id's
+            // varint bytes, which decode to garbage and trip the >4096 sanity check.
+            _ = r.ReadVarUInt64();
+
+            // PropertyCollection starts at the current reader offset.  Capture it -- the host
+            // calls DumpPropertyCollectionAt(archive, offset, ...) to walk the properties for
+            // discovery logging without us having to do the (potentially heavy) walk on every
+            // condition application.
+            int propertyCollectionOffset = r.CurrentOffset;
+
+            // Parse the property collection into structured (enum, value) pairs.  Cost is
+            // negligible -- conditions carry a handful of properties at most, and AddCondition
+            // fires at most a few times per second per character.  Doing it eagerly here means
+            // downstream consumers (BuffTracker / live-stats overlay) don't each have to
+            // re-walk the archive; they just read .PropertyDeltas off the event.  On parse
+            // failure ParsePropertyCollectionAt returns an empty list -- the buff is still
+            // useful as a "buff X is active" indicator even when we can't pull its numbers.
+            IReadOnlyList<BuffPropertyDelta> propertyDeltas =
+                ParsePropertyCollectionAt(archive, propertyCollectionOffset);
+
+            ConditionAdded?.Invoke(this, new ConditionAddedEvent
+            {
+                OwnerEntityId            = ownerEntityId,
+                ConditionId              = conditionId,
+                CreatorEntityId          = creatorId,
+                UltimateCreatorEntityId  = ultimateCreatorId,
+                ConditionPrototypeRef    = conditionPrototypeRef,
+                CreatorPowerPrototypeRef = creatorPowerProtoRef,
+                DurationMs               = durationMs,
+                UpdateIntervalMs         = updateIntervalMs,
+                RawProperties            = archive,
+                PropertyCollectionOffset = propertyCollectionOffset,
+                SerializationFlags       = serializationFlags,
+                PropertyDeltas           = propertyDeltas,
+                UtcTime                  = DateTime.UtcNow,
+            });
+        }
+        catch (Exception ex)
+        {
+            Diagnostic?.Invoke($"AddCondition parse failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private void ParseDeleteCondition(byte[] body)
+    {
+        if (ConditionRemoved is null) return;
+        try
+        {
+            var msg = NetMessageDeleteCondition.ParseFrom(body);
+            ConditionRemoved?.Invoke(this, new ConditionRemovedEvent
+            {
+                OwnerEntityId = msg.IdEntity,
+                ConditionId   = msg.Key,
+                UtcTime       = DateTime.UtcNow,
+            });
+        }
+        catch (Exception ex)
+        {
+            Diagnostic?.Invoke($"DeleteCondition parse failed: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -1371,13 +1668,15 @@ public sealed class MhMissionSniffer : IDisposable
             // this on every matched drop -- it's the fastest way to reverse-engineer per-server
             // wire-format differences without adding round-trip telemetry).
             int stackCount = 0;
+            bool isCurrencyDrop = false;
+            ulong currencyParams = 0ul;
             byte[]? rawArchive = null;
             if (!isAvatar)
             {
                 try
                 {
                     rawArchive = msg.ArchiveData.ToByteArray();
-                    TryExtractStackCount(rawArchive, out stackCount);
+                    TryExtractStackCount(rawArchive, out stackCount, out isCurrencyDrop, out currencyParams);
                 }
                 catch { /* swallow; stack-count extraction is best-effort */ }
             }
@@ -1392,6 +1691,8 @@ public sealed class MhMissionSniffer : IDisposable
                 OwnerPlayerDbId    = ownerDbId,
                 StackCount         = stackCount,
                 RawArchive         = rawArchive,
+                IsCurrencyDrop     = isCurrencyDrop,
+                CurrencyParams     = currencyParams,
                 UtcTime            = DateTime.UtcNow,
             });
         }
@@ -1501,7 +1802,7 @@ public sealed class MhMissionSniffer : IDisposable
     /// <para>Best-effort: corrupt / truncated / non-property-collection archives emit a
     /// single error line and bail out rather than propagating an exception.</para>
     /// </summary>
-    public static void DumpPropertyCollection(byte[]? archive, Action<string>? diagnostic, string contextTag = "")
+    public static void DumpPropertyCollection(byte[]? archive, Action<string>? diagnostic, string contextTag = "", Func<uint, string?>? propertyEnumNameResolver = null)
     {
         if (diagnostic == null) return;
         if (archive == null || archive.Length < 5)
@@ -1513,35 +1814,12 @@ public sealed class MhMissionSniffer : IDisposable
         {
             var r = new GazillionArchiveReader(archive);
             r.ReadReplicationHeader();
-            uint numProperties = r.ReadRawUInt32LittleEndian();
-            if (numProperties > 4096)
-            {
-                // Sanity check failed -- log first 32 bytes of the archive as hex so we can
-                // see what we're actually looking at and adjust the parser accordingly.
-                int hexLen = Math.Min(archive.Length, 32);
-                diagnostic($"DumpPropertyCollection({contextTag}): numProperties={numProperties} > 4096 (likely format mismatch).  archive[0..{hexLen}]={BitConverter.ToString(archive, 0, hexLen)}");
-                return;
-            }
-            diagnostic($"DumpPropertyCollection({contextTag}): {numProperties} properties, archiveLen={archive.Length}");
-            for (uint i = 0; i < numProperties; i++)
-            {
-                ulong wireRaw = r.ReadVarUInt64();
-                ulong valueBits = r.ReadVarUInt64();
-
-                ulong raw       = System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(wireRaw);
-                uint  enumValue = (uint)(raw >> 53);
-                ulong paramBits = raw & 0x1FFFFFFFFFFFFFul;
-
-                // Try all common decode interpretations so the user-facing log can be
-                // pattern-matched without us having to know the property's DataType yet.
-                long  intValue   = (long)((valueBits >> 1) | (valueBits << 63));  // Integer decode
-                float floatValue = BitConverter.UInt32BitsToSingle((uint)valueBits);  // Real decode
-
-                diagnostic(
-                    $"  prop[{i}] enum={enumValue} params=0x{paramBits:X14} " +
-                    $"raw=0x{raw:X16} valueBits=0x{valueBits:X} " +
-                    $"int={intValue} float={floatValue:0.###}");
-            }
+            // Skip the ReplicatedPropertyCollection's _replicationId varint -- Entity.Properties
+            // is typed ReplicatedPropertyCollection, not plain PropertyCollection, and the
+            // replication-mode override writes an extra ulong before the property count.
+            // See MHServerEmu.Games.Properties/ReplicatedPropertyCollection.cs:80.
+            _ = r.ReadVarUInt64();
+            DumpPropertyCollectionFromReader(r, diagnostic, contextTag, archive, propertyEnumNameResolver);
         }
         catch (Exception ex)
         {
@@ -1549,15 +1827,375 @@ public sealed class MhMissionSniffer : IDisposable
         }
     }
 
+    /// <summary>
+    /// Dump the <c>PropertyCollection</c> embedded at <paramref name="startOffset"/> in
+    /// <paramref name="archive"/>.  Used for buff payloads where the property bag isn't at
+    /// the start of the archive -- the condition packet has owner-id / flags / proto refs /
+    /// timing fields preceding it.
+    ///
+    /// <para>The <see cref="ConditionAddedEvent.PropertyCollectionOffset"/> field is
+    /// populated by the sniffer's parser specifically to feed this method.</para>
+    /// </summary>
+    public static void DumpPropertyCollectionAt(byte[]? archive, int startOffset, Action<string>? diagnostic, string contextTag = "", Func<uint, string?>? propertyEnumNameResolver = null)
+    {
+        if (diagnostic == null) return;
+        if (archive == null || startOffset < 0 || startOffset >= archive.Length)
+        {
+            diagnostic($"DumpPropertyCollectionAt({contextTag}): bad inputs archive={archive?.Length ?? -1} offset={startOffset}");
+            return;
+        }
+        try
+        {
+            var r = new GazillionArchiveReader(archive);
+            if (startOffset > 0) r.ReadRawBytes(startOffset);
+            DumpPropertyCollectionFromReader(r, diagnostic, contextTag, archive, propertyEnumNameResolver);
+        }
+        catch (Exception ex)
+        {
+            diagnostic($"DumpPropertyCollectionAt({contextTag}): parse threw {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Structured-result variant of <see cref="DumpPropertyCollectionAt"/>: walks the same
+    /// property collection and returns the parsed (enum, params, value) tuples instead of
+    /// logging them.  Used by the buff tracker to accumulate stat bonuses across all active
+    /// buffs ("how much +%damage am I getting right now?") without going through the
+    /// diagnostic log + regex roundtrip.
+    ///
+    /// <para>Returns an empty list on any parse failure -- the buff is still useful as a
+    /// generic "Empowered is active" entry even if we can't pull its numeric effects out,
+    /// so we degrade gracefully rather than throwing.</para>
+    /// </summary>
+    public static IReadOnlyList<BuffPropertyDelta> ParsePropertyCollectionAt(byte[]? archive, int startOffset)
+    {
+        if (archive == null || startOffset < 0 || startOffset >= archive.Length)
+            return System.Array.Empty<BuffPropertyDelta>();
+        try
+        {
+            var r = new GazillionArchiveReader(archive);
+            if (startOffset > 0) r.ReadRawBytes(startOffset);
+            uint numProperties = r.ReadRawUInt32LittleEndian();
+            // Sanity bound (same as the dump path): real conditions have a handful of
+            // properties at most.  Anything past 4096 is a parse misalignment.
+            if (numProperties > 4096) return System.Array.Empty<BuffPropertyDelta>();
+            var list = new List<BuffPropertyDelta>((int)numProperties);
+            for (uint i = 0; i < numProperties; i++)
+            {
+                ulong wireRaw   = r.ReadVarUInt64();
+                ulong valueBits = r.ReadVarUInt64();
+                ulong raw       = System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(wireRaw);
+                uint  enumValue = (uint)(raw >> 53);
+                ulong paramBits = raw & 0x1FFFFFFFFFFFFFul;
+                long  intValue   = (long)((valueBits >> 1) | (valueBits << 63));
+                float floatValue = BitConverter.UInt32BitsToSingle((uint)valueBits);
+                list.Add(new BuffPropertyDelta
+                {
+                    PropertyEnum = enumValue,
+                    ParamBits    = paramBits,
+                    IntValue     = intValue,
+                    FloatValue   = floatValue,
+                    RawValueBits = valueBits,
+                });
+            }
+            return list;
+        }
+        catch
+        {
+            return System.Array.Empty<BuffPropertyDelta>();
+        }
+    }
+
+    /// <summary>
+    /// Inner-loop variant of <see cref="DumpPropertyCollection"/> for callers that have already
+    /// advanced the reader past whatever header / preamble precedes the property collection.
+    /// The condition wire format embeds a property collection deep inside the archive (after
+    /// owner id / flags / proto refs / timing fields), so we can't just point
+    /// <see cref="DumpPropertyCollection"/> at the start of the buffer -- we need to dump
+    /// from wherever the caller is.
+    ///
+    /// <para>Identical reader semantics to the full <c>DumpPropertyCollection</c>: 4-byte LE
+    /// count, then (PropertyId byte-reversed varint, value-bits varint) pairs.</para>
+    /// </summary>
+    private static void DumpPropertyCollectionFromReader(
+        GazillionArchiveReader r, Action<string>? diagnostic, string contextTag, byte[] archiveForHexFallback,
+        Func<uint, string?>? propertyEnumNameResolver = null)
+    {
+        if (diagnostic == null) return;
+        uint numProperties = r.ReadRawUInt32LittleEndian();
+        if (numProperties > 4096)
+        {
+            int hexLen = Math.Min(archiveForHexFallback.Length, 32);
+            diagnostic($"DumpPropertyCollection({contextTag}): numProperties={numProperties} > 4096 (likely format mismatch).  archive[0..{hexLen}]={BitConverter.ToString(archiveForHexFallback, 0, hexLen)}");
+            return;
+        }
+        diagnostic($"DumpPropertyCollection({contextTag}): {numProperties} properties, archiveLen={archiveForHexFallback.Length}");
+        for (uint i = 0; i < numProperties; i++)
+        {
+            ulong wireRaw = r.ReadVarUInt64();
+            ulong valueBits = r.ReadVarUInt64();
+
+            ulong raw       = System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(wireRaw);
+            uint  enumValue = (uint)(raw >> 53);
+            ulong paramBits = raw & 0x1FFFFFFFFFFFFFul;
+            long  intValue   = (long)((valueBits >> 1) | (valueBits << 63));
+            float floatValue = BitConverter.UInt32BitsToSingle((uint)valueBits);
+            // Resolve the PropertyEnum to its symbolic name when the caller passed a
+            // resolver (DpsOverlayPresenter hands us PropertyEnumNames.Get for verbose dumps).
+            // Without this the log shows raw "enum=283" -- you'd have to grep MHServerEmu
+            // source every time a new buff shows up.  Falls back to "?" when the resolver is
+            // absent or doesn't know the enum (newer server build than our table).
+            string enumName = propertyEnumNameResolver != null
+                ? (propertyEnumNameResolver(enumValue) ?? "?")
+                : "?";
+            // Include the contextTag on every prop line so a single PowerShell Select-String
+            // (or the in-app Diagnostics filter) catches the header AND all per-property
+            // detail with one pattern.  Without this, filtering on "BUFFDBG" hides the
+            // body of the dump and the user only sees the count, which is useless for
+            // identifying the buff's effects.
+            diagnostic(
+                $"  ({contextTag}) prop[{i}] enum={enumValue} {enumName} params=0x{paramBits:X14} " +
+                $"raw=0x{raw:X16} valueBits=0x{valueBits:X} " +
+                $"int={intValue} float={floatValue:0.###}");
+        }
+    }
+
+    /// <summary>One rolled affix on an item, decoded from the wire's
+    /// <c>AffixSpec</c> entry.  Three fields are everything the server replicates -- the
+    /// actual rolled value is computed client-side by running the affix prototype's
+    /// roll formula against <see cref="Seed"/>.</summary>
+    public readonly struct LootAffixSpec
+    {
+        /// <summary>Root-enum index of the AffixPrototype (lookup via <c>AffixNames</c>).</summary>
+        public uint AffixProtoEnumIndex { get; init; }
+        /// <summary>Root-enum index of the affix's scope prototype.  For "+DR to Melee
+        /// Powers" this points to the Melee keyword.  Zero for unscoped affixes (most pure
+        /// stat affixes like +DamageRating).</summary>
+        public uint ScopeProtoEnumIndex { get; init; }
+        /// <summary>RNG seed used to roll the value.  We don't replicate the roll math
+        /// yet (Phase 2); ship-it scoring weighs affix PRESENCE, not roll quality.</summary>
+        public int  Seed { get; init; }
+    }
+
+    /// <summary>Parsed result of an item's <c>ItemSpec</c>: which item, what rarity, at
+    /// what item level, and the list of rolled affixes.  Returned by
+    /// <see cref="TryParseItemSpec"/>.</summary>
+    public sealed class LootItemSpec
+    {
+        public uint ItemProtoEnumIndex   { get; init; }
+        public uint RarityProtoEnumIndex { get; init; }
+        public int  ItemLevel { get; init; }
+        public IReadOnlyList<LootAffixSpec> AffixSpecs { get; init; } = System.Array.Empty<LootAffixSpec>();
+        public int  ItemSeed { get; init; }
+        /// <summary>Prototype enum index of the avatar this item is equippable by.  Same
+        /// encoding as <see cref="ItemProtoEnumIndex"/> -- plain varint uint that's the
+        /// root-Prototype enum index from the server's data directory.  Server-agnostic
+        /// signal: doesn't depend on items.txt enum table matching the server, because the
+        /// user's own avatar entity carries the same value and we can match runtime-to-
+        /// runtime.  Used by the hunt-mode filter to identify "is this item for MY hero?"
+        /// without needing the server's prototype-name mapping.  Zero when not set (e.g.
+        /// universal items equippable by any hero).</summary>
+        public uint EquippableByEnumIndex { get; init; }
+    }
+
+    /// <summary>
+    /// Parse an item entity's <c>ItemSpec</c> out of its <c>EntityCreate</c> archive.  The
+    /// archive contains the full <c>Item.Serialize</c> output, which is more than just the
+    /// property collection -- the WorldEntity base class layers in four extra sub-collections
+    /// between the properties and the ItemSpec.  All four are zero-count for ground-dropped
+    /// items, but we still have to read their varint zeros to land at the right offset.
+    ///
+    /// <para>Full wire layout (from <c>Item.Serialize</c> &rarr; <c>WorldEntity.Serialize</c>
+    /// &rarr; <c>Entity.Serialize</c>):</para>
+    /// <code>
+    ///   [Replication header]
+    ///   [ReplicatedPropertyCollection._replicationId varint]
+    ///   [PropertyCollection: 4-byte LE count + N (key,value) pairs]
+    ///   [EntityTrackingContextMap: varint count + entries]      -- IsTransient block
+    ///   [ConditionCollection: varint count + entries]           -- IsTransient block
+    ///   [PowerCollection: varint count + records]               -- IsReplication+Proximity
+    ///   [int32 ioData = 0]                                      -- IsReplication block
+    ///   [ItemSpec:
+    ///      PrototypeId itemProtoRef       -- varint, byte-reversed; top 11 bits = enum
+    ///      PrototypeId rarityProtoRef
+    ///      int32 itemLevel                -- zigzag varint
+    ///      uint32 creditsAmount           -- plain varint
+    ///      uint32 affixListCount          -- plain varint
+    ///      for each affix:
+    ///        PrototypeId affixProtoRef
+    ///        PrototypeId scopeProtoRef
+    ///        int32 seed
+    ///      int32 itemSeed
+    ///      PrototypeId equippableBy ]
+    /// </code>
+    ///
+    /// <para><b>Origin of the bug-and-fix</b>: my v1 parser walked properties then tried to
+    /// read ItemSpec immediately, missing the four sub-collections in between.  Result was
+    /// 100% parse failures because the first "ItemSpec" varint was actually the
+    /// trackingContextMap count -- which for ground items is 0, so the parser read 0 as the
+    /// itemProtoRef wire value, then drifted into garbage downstream and tripped the
+    /// affixCount > 64 sanity bound on every attempt.</para>
+    ///
+    /// <para>Returns <c>false</c> on any parse failure (corrupt archive, count out of
+    /// sanity bound, non-zero sub-collection counts).  Non-zero sub-collection counts are
+    /// surfaced as a specific failure mode -- they would mean a ground item with attached
+    /// conditions or powers, which is uncommon and would require us to skip variable-length
+    /// records.  For now we bail so the caller knows to fall back to a property dump.</para>
+    /// </summary>
+    public static bool TryParseItemSpec(byte[]? archive, out LootItemSpec spec)
+        => TryParseItemSpec(archive, out spec, out _);
+
+    /// <summary>Parse + return a failure-reason string for diagnostics.  Empty string on
+    /// success; the caller surfaces failure-reason in the log so we can tell parse-fail
+    /// modes apart at a glance (sub-collection non-zero vs. affix-count overflow vs.
+    /// exception).</summary>
+    public static bool TryParseItemSpec(byte[]? archive, out LootItemSpec spec, out string failureReason)
+    {
+        spec = new LootItemSpec();
+        failureReason = string.Empty;
+        if (archive == null || archive.Length < 10) { failureReason = "archive null or too short"; return false; }
+
+        try
+        {
+            var r = new GazillionArchiveReader(archive);
+            r.ReadReplicationHeader();
+            // ReplicatedPropertyCollection's _replicationId varint -- same skip as
+            // TryExtractStackCount and ParsePropertyCollectionAt.
+            _ = r.ReadVarUInt64();
+            uint numProperties = r.ReadRawUInt32LittleEndian();
+            if (numProperties > 4096) { failureReason = $"numProperties={numProperties} > 4096 (parse misalignment)"; return false; }
+            // Skip the property collection -- we don't need its content here, just need to
+            // advance the reader past it.
+            for (uint i = 0; i < numProperties; i++)
+            {
+                _ = r.ReadVarUInt64();  // wire-format property id
+                _ = r.ReadVarUInt64();  // value bits
+            }
+
+            // Four sub-collections WorldEntity layers in before the ItemSpec.  For
+            // ground-dropped items every count is 0, so each is a single 0x00 byte.  Bail
+            // when any is non-zero -- handling those would mean walking variable-length
+            // sub-records (Condition.Serialize, PowerCollectionRecord.Serialize), which we
+            // don't need for the common case.  Report the exact non-zero count so the
+            // diagnostic can show which sub-collection blocked us.
+            ulong trackingMapCount = r.ReadVarUInt64();
+            if (trackingMapCount != 0) { failureReason = $"trackingMapCount={trackingMapCount} != 0 (item has tracking entries)"; return false; }
+            uint conditionCount = r.ReadVarUInt32();
+            if (conditionCount != 0) { failureReason = $"conditionCount={conditionCount} != 0 (item has attached conditions)"; return false; }
+            uint powerRecordCount = r.ReadVarUInt32();
+            if (powerRecordCount != 0) { failureReason = $"powerRecordCount={powerRecordCount} != 0 (item has attached powers)"; return false; }
+            // Trailing int from WorldEntity.Serialize's IsReplication block -- always 0.
+            _ = r.ReadVarInt32();
+
+            // Now positioned at the ItemSpec start.
+            //
+            // PrototypeId encoding gotcha: in REPLICATION mode (EntityCreate's archive type),
+            // Serializer.Transfer(ref PrototypeId) writes a plain uint varint whose value
+            // IS the root-Prototype enum index -- no byte reversal, no top-11-bits decode.
+            // This is different from PropertyId's encoding (which DOES byte-reverse and
+            // top-bit-shift), and different from PrototypeId in PERSISTENT mode (which
+            // writes a 64-bit PrototypeGuid).  See MHServerEmu's
+            // Serializer.Transfer(ref PrototypeId) -- the !IsPersistent branch is what
+            // we're decoding here.
+            uint itemProtoEnum   = r.ReadVarUInt32();
+            uint rarityProtoEnum = r.ReadVarUInt32();
+            int  itemLevel       = r.ReadVarInt32();
+            _ = r.ReadVarInt32();   // creditsAmount (int, zigzag); ignored
+
+            // AffixSpec list -- prefixed with a count.  The wire type is `ulong` (see
+            // Serializer.Transfer<T>(ref List<T>): `ulong ioData2 = (ulong)ioData.Count`),
+            // NOT uint.  For real items this is at most ~10, so varint byte-consumption is
+            // the same as uint -- but reading the right type keeps us correct if a future
+            // server build ever ships an item with >65k affixes.
+            ulong affixCount = r.ReadVarUInt64();
+            if (affixCount > 64) { failureReason = $"affixCount={affixCount} > 64 (likely drift)"; return false; }
+            var affixes = new List<LootAffixSpec>((int)affixCount);
+            for (ulong i = 0; i < affixCount; i++)
+            {
+                uint affixProto = r.ReadVarUInt32();   // same plain-varint enum-index encoding
+                uint scopeProto = r.ReadVarUInt32();
+                int  seed       = r.ReadVarInt32();
+                affixes.Add(new LootAffixSpec
+                {
+                    AffixProtoEnumIndex = affixProto,
+                    ScopeProtoEnumIndex = scopeProto,
+                    Seed                = seed,
+                });
+            }
+
+            int  itemSeed       = r.ReadVarInt32();
+            uint equippableBy   = r.ReadVarUInt32();   // PrototypeId, same encoding as itemProto
+
+            spec = new LootItemSpec
+            {
+                ItemProtoEnumIndex    = itemProtoEnum,
+                RarityProtoEnumIndex  = rarityProtoEnum,
+                ItemLevel             = itemLevel,
+                AffixSpecs            = affixes,
+                ItemSeed              = itemSeed,
+                EquippableByEnumIndex = equippableBy,
+            };
+            return true;
+        }
+        catch (Exception ex)
+        {
+            // Reader walked off the end of the buffer or hit malformed bytes.  Either way
+            // the parse is unrecoverable; surface the exception type so we can tell read
+            // failures (truncated archive) apart from format failures.
+            failureReason = $"exception {ex.GetType().Name}: {ex.Message}";
+            return false;
+        }
+    }
+
+    /// <summary>Decode a wire-format <c>PrototypeId</c> to its root-enum index.  The wire
+    /// stores it byte-reversed so that small enum values varint-encode efficiently (see
+    /// <c>Serializer.Transfer(ref PrototypeId)</c> -- it reverses raw bytes before writing).
+    /// To recover the enum we reverse again, then take the top 11 bits.</summary>
+    private static uint DecodePrototypeIdEnum(ulong wireRaw)
+    {
+        ulong raw = System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(wireRaw);
+        return (uint)(raw >> 53);
+    }
+
+    /// <summary>Backward-compatible overload that drops the extra signal out-params.
+    /// New callers should use the 4-arg form so they can tell currency drops from regular
+    /// stackable items AND can recover the currency-type code for diagnostic logging.</summary>
     private static bool TryExtractStackCount(byte[] archive, out int stackCount)
+        => TryExtractStackCount(archive, out stackCount, out _, out _);
+
+    /// <summary>Extracts the stack count plus two diagnostic signals:
+    /// <list type="bullet">
+    /// <item><c>isCurrencyDrop</c> = true iff the entity carries an <c>ItemCurrency</c>
+    ///       property whose params match the known Eternity Splinter code.  Used by the
+    ///       splinter tracker for auto-detect on servers where the canonical splinter
+    ///       prototype enum index doesn't match items.txt.</item>
+    /// <item><c>currencyParams</c> = the raw params bits of the <c>ItemCurrency</c>
+    ///       property (encodes the currency type), or 0 if no <c>ItemCurrency</c> was
+    ///       present.  Surfaced regardless of whether the params matched the known
+    ///       splinter signature, so callers can log "saw type 0xN" lines and identify
+    ///       each server's splinter code empirically by correlating against in-game drops.</item>
+    /// </list></summary>
+    private static bool TryExtractStackCount(byte[] archive, out int stackCount, out bool isCurrencyDrop, out ulong currencyParams)
     {
         stackCount = 0;
+        isCurrencyDrop = false;
+        currencyParams = 0ul;
         if (archive == null || archive.Length < 5) return false;  // need at least header + count
 
         try
         {
             var r = new GazillionArchiveReader(archive);
             r.ReadReplicationHeader();
+            // Skip the ReplicatedPropertyCollection's _replicationId varint -- Entity.Properties
+            // is typed ReplicatedPropertyCollection (not bare PropertyCollection), and the
+            // replication-mode override prepends an extra ulong before delegating to the
+            // base property-count + pairs serialization.  Without this skip, the next 4 bytes
+            // we'd read as the count are actually the tail of the replication-id varint, which
+            // decodes to a huge value, fails the >4096 sanity bound, and returns "no stack count
+            // found".  This was the root cause of "10 splinters shows as 1" -- the parser was
+            // bailing out at the count check, falling back to 1.  See
+            // MHServerEmu.Games.Properties/ReplicatedPropertyCollection.cs:80.
+            _ = r.ReadVarUInt64();
             // 4-byte LE uint, NOT a varint -- see XML doc comment for rationale.
             uint numProperties = r.ReadRawUInt32LittleEndian();
             // Sanity bound: real entities have at most a few hundred properties.  Tens of
@@ -1571,10 +2209,20 @@ public sealed class MhMissionSniffer : IDisposable
             const uint ItemCurrencyEnum        = 540;
             const uint InventoryStackCountEnum = 525;
 
-            // Track both candidate values; prefer ItemCurrency when present.
+            // Param bits to match for the Eternity Splinter currency type.  Confirmed by
+            // empirical correlation: the user got "+12 Eternity Splinters!" in-game and
+            // the diagnostic logged a currency-bearing EntityCreate with
+            // currencyParams=0x10000000000000 (proto idx 13073, stackCount=12) at the
+            // matching wall-clock time.  Other currency codes seen on this server:
+            // 0x12000000000000 fires on Skrull terminal mob spawns (NOT splinters --
+            // confirmed false positive).  If a future server uses a different code we'll
+            // see it via the diagnostic line that logs every ItemCurrency entity's
+            // currencyParams value.
+            const ulong SplinterCurrencyParams = 0x10000000000000ul;
+
             int  itemCurrencyValue        = 0;
             int  inventoryStackCountValue = 0;
-            bool sawItemCurrency          = false;
+            bool sawSplinterCurrency      = false;
 
             for (uint i = 0; i < numProperties; i++)
             {
@@ -1586,6 +2234,7 @@ public sealed class MhMissionSniffer : IDisposable
                 // relative to the enum-in-top-bits encoding our match expects.
                 ulong propertyIdRaw = System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(propertyIdWire);
                 uint  enumValue     = (uint)(propertyIdRaw >> 53);
+                ulong paramBits     = propertyIdRaw & 0x1FFFFFFFFFFFFFul;
 
                 if (enumValue != ItemCurrencyEnum && enumValue != InventoryStackCountEnum)
                     continue;
@@ -1599,7 +2248,14 @@ public sealed class MhMissionSniffer : IDisposable
                 if (enumValue == ItemCurrencyEnum)
                 {
                     itemCurrencyValue = (int)value;
-                    sawItemCurrency   = true;
+                    // Capture the raw params bits regardless of value -- used by callers
+                    // to identify each server's splinter currency code empirically.
+                    currencyParams = paramBits;
+                    // Splinter signal: ItemCurrency property AND its params match the
+                    // splinter-currency code.  Filtering by currency-type avoids firing on
+                    // mobs whose loot tables carry credits / Odin Marks / boss currencies.
+                    if (paramBits == SplinterCurrencyParams)
+                        sawSplinterCurrency = true;
                 }
                 else
                 {
@@ -1610,7 +2266,15 @@ public sealed class MhMissionSniffer : IDisposable
             // Prefer ItemCurrency.  This is the value the game UI shows in the
             // "+10 Eternity Splinters!" popup.  Fall back to InventoryStackCount for
             // regular stackable items (potions etc) that don't have a currency property.
-            stackCount = sawItemCurrency ? itemCurrencyValue : inventoryStackCountValue;
+            stackCount     = sawSplinterCurrency || itemCurrencyValue > 0
+                ? itemCurrencyValue
+                : inventoryStackCountValue;
+            // Currency-drop signal: ItemCurrency property with splinter-specific params.
+            // This intentionally also matches when the entity has combat properties
+            // (Health/Rank/CombatLevel) -- splinters often arrive as a hint on the
+            // dropping mob, not as a separate ground item.  False-positives on non-splinter
+            // currencies are eliminated by the param-bits match.
+            isCurrencyDrop = sawSplinterCurrency;
             return stackCount > 0;
         }
         catch

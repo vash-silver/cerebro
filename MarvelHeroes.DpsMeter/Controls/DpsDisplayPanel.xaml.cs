@@ -64,6 +64,13 @@ public partial class DpsDisplayPanel : UserControl
         finally { _suppressShowSplinterTrackerMenuEvents = false; }
         SplinterPanel.Visibility = settings.ShowEternitySplinterTracker ? Visibility.Visible : Visibility.Collapsed;
 
+        // Honour the persisted "Show DPS summary" preference at startup.  No menu item /
+        // suppression flag like the other toggles -- this one is Settings-only (mirrors the
+        // ShowBuffPanels pattern) so there's no in-place context-menu state to keep in sync.
+        DpsSummarySection.Visibility = settings.ShowOverlayDpsSummary
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
         _splinterCooldownSound = settings.SplinterCooldownSoundEnabled;
         _suppressSplinterCooldownSoundMenuEvents = true;
         try { SplinterCooldownSoundMenuItem.IsChecked = settings.SplinterCooldownSoundEnabled; }
@@ -73,6 +80,14 @@ public partial class DpsDisplayPanel : UserControl
 
         SetDisplayMode(isOverlayMode);
     }
+
+    /// <summary>Show or hide the entire DPS summary block (title + big number + max-hit +
+    /// status text) on the floating overlay.  Called by the presenter when the user toggles
+    /// the Settings checkbox; called once at construction to honour the persisted setting
+    /// (the Initialize() path also applies this -- this method exists for the runtime-
+    /// toggle case where the panel is already initialized).</summary>
+    public void SetDpsSummaryVisible(bool visible)
+        => DpsSummarySection.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
 
     public void SetDisplayMode(bool isOverlayMode)
     {

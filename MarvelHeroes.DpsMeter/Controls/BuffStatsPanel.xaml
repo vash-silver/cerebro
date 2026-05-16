@@ -1,0 +1,80 @@
+<UserControl x:Class="MarvelHeroes.DpsMeter.Controls.BuffStatsPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="Transparent">
+
+    <!--
+        Live "stats from active buffs" strip.  Renders one tile per stat that has a non-zero
+        sum across all currently-active buffs.  Tiles auto-hide when their value is zero, so
+        the strip is empty mid-pull and fills in as procs / buffs fire.
+
+        Visual ordering is driven by BuffStatCatalog.Entries[].Order (so headline offensive
+        stats sit on the left, defensive / utility on the right).
+
+        Refresh model: the host rebuilds the ItemsSource on every decay tick, same as the
+        buff strip below it.  Each tick triggers a layout pass over ~5-10 tiles, which is
+        cheap enough that we don't bother with INotifyPropertyChanged plumbing.
+    -->
+    <ItemsControl x:Name="StatTilesRow"
+                  Visibility="Collapsed"
+                  Margin="0,0,0,6">
+        <ItemsControl.ItemsPanel>
+            <ItemsPanelTemplate>
+                <WrapPanel Orientation="Horizontal"/>
+            </ItemsPanelTemplate>
+        </ItemsControl.ItemsPanel>
+        <ItemsControl.ItemTemplate>
+            <DataTemplate>
+                <!--
+                    The ToolTip text comes from the VM's TooltipText, built in code-behind
+                    from the per-buff breakdown.  Reads like:
+                        Damage from:
+                          Empowered  +100%
+                          Overwatch  +40%
+                    Consolas keeps the columns aligned so a glance at the column edge tells
+                    you which buff is the biggest contributor.
+                -->
+                <Border Background="#1A66CCFF" BorderBrush="#5566CCFF" BorderThickness="1"
+                        CornerRadius="3" Padding="8,4" Margin="0,0,6,0"
+                        SnapsToDevicePixels="True"
+                        ToolTipService.InitialShowDelay="200"
+                        ToolTipService.ShowDuration="20000"
+                        ToolTipService.Placement="Bottom">
+                    <!--
+                        Explicit ToolTip wrapper (not a bare TextBlock) so we control the
+                        chrome.  Without this, WPF wraps our content in the system-themed
+                        default tooltip, which is light-grey on Windows.  Our near-white text
+                        is invisible against it, looking like an empty white box.  Explicit
+                        ToolTip element here lets us pin Background / BorderBrush / Padding
+                        to match the app's dark theme.  HasDropShadow="False" + Placement
+                        below the tile also stop the tooltip from overlapping the source
+                        Border (which causes mouse-leave / re-enter flicker).
+                    -->
+                    <Border.ToolTip>
+                        <ToolTip Background="#222222"
+                                 BorderBrush="#66FFFFFF" BorderThickness="1"
+                                 Padding="8,6"
+                                 HasDropShadow="False">
+                            <TextBlock Text="{Binding TooltipText}"
+                                       FontFamily="Consolas" FontSize="11"
+                                       Foreground="#FFEEEEEE"
+                                       TextWrapping="NoWrap"/>
+                        </ToolTip>
+                    </Border.ToolTip>
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding Label}"
+                                   FontFamily="Segoe UI" FontSize="11"
+                                   Foreground="#FFCCDDEE"
+                                   VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding ValueText}"
+                                   FontFamily="Segoe UI Semibold" FontSize="12"
+                                   FontWeight="SemiBold"
+                                   Foreground="#FF99FF99"
+                                   Margin="6,0,0,0"
+                                   VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Border>
+            </DataTemplate>
+        </ItemsControl.ItemTemplate>
+    </ItemsControl>
+</UserControl>

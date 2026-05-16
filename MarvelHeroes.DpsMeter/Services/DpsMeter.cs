@@ -622,6 +622,22 @@ public sealed class DpsMeter : IDisposable
     /// seen enough traffic to pick a leader.</summary>
     public ulong LikelySelfOwnerId { get { lock (_sync) return _likelySelfOwnerId; } }
 
+    /// <summary>Prototype enum index of the local avatar's hero -- e.g. Nightcrawler's proto.
+    /// Returns <c>0</c> until the local avatar is identified AND its EntityCreate was
+    /// observed.  Used by hunt-mode filters that match item drops to the local hero via
+    /// <c>EquippableBy</c> instead of fragile items.txt path-substring lookups (which break
+    /// across server-merge-style enum table reshuffles).  Server-agnostic: the index is
+    /// whatever the running server assigns to the user's hero, no client-side table needed.</summary>
+    public uint LikelySelfPrototypeIndex
+    {
+        get
+        {
+            ulong owner = LikelySelfOwnerId;
+            if (owner == 0) return 0;
+            return _prototypeByEntityId.TryGetValue(owner, out uint proto) ? proto : 0;
+        }
+    }
+
     /// <summary>Instantaneous DPS over <see cref="InstantWindow"/> for the
     /// <see cref="LikelySelfOwnerId"/> entity.  <c>0</c> when there's no data yet.</summary>
     public double CurrentDps { get; private set; }

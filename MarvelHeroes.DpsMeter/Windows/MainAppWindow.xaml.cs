@@ -31,6 +31,13 @@ public partial class MainAppWindow : Window
     // Forwarded panel events -- same set DpsLiveWindow / DpsOverlayWindow expose so the
     // presenter's wiring code doesn't have to special-case this window.
     public event Action<bool>?   BossOnlyToggled;
+    /// <summary>Forwarded from the Settings tab's "Show buffs and procs" checkbox.  The
+    /// presenter listens to flip both buff-tracking surfaces on/off in real time.</summary>
+    public event Action<bool>?   ShowBuffPanelsToggled;
+    /// <summary>Forwarded from the Settings tab's "Show DPS summary in overlay" checkbox.
+    /// The presenter listens and pushes the new visibility down to the floating overlay's
+    /// DpsDisplayPanel.</summary>
+    public event Action<bool>?   ShowOverlayDpsSummaryToggled;
     // SwitchModeRequested kept for API parity with the overlay window so the presenter's
     // WireWindowEvents overload signatures stay symmetric.  The main window itself has no
     // way to fire it (no "switch mode" surface) -- suppress the never-used warning.
@@ -61,6 +68,12 @@ public partial class MainAppWindow : Window
     public event Action<bool>?   ShowOverlayToggled;
 
     private bool _suppressShowOverlayCheckboxEvents;
+    private bool _suppressPersistOverlayCheckboxEvents;
+    /// <summary>Stashed reference to the shared settings object so the persist-overlay
+    /// checkbox handler can mutate + persist without going through an event-roundtrip to
+    /// the presenter (the presenter polls the field every decay tick, so a direct write +
+    /// Save is sufficient -- no event needed to flush a stale visibility decision).</summary>
+    private DpsOverlaySettingsFile? _settings;
     private bool _closingByPresenter;
 
     public MainAppWindow(DpsOverlaySettingsFile settings)
@@ -71,12 +84,25 @@ public partial class MainAppWindow : Window
         // We snapshot the persisted "boss only" preference here so the presenter can set
         // _meter.BossOnlyMode at startup without going through the now-absent panel hook.
         InitialBossOnlyPreference = settings.BossDpsOnly;
+        _settings = settings;
         SettingsTab.Initialize(settings);
         SetShowOverlayChecked(settings.ShowOverlay);
+        // Persist-overlay checkbox initial state -- bootstrap-suppressed like Show overlay
+        // so we don't fire the toggle event back at the presenter just from setting the
+        // initial state from disk.
+        _suppressPersistOverlayCheckboxEvents = true;
+        try { PersistOverlayCheckbox.IsChecked = settings.PersistOverlay; }
+        finally { _suppressPersistOverlayCheckboxEvents = false; }
+        // Honour the persisted buff-panels preference at startup -- the LiveDashboardPanel
+        // defaults to visible, so we only need to push down the explicit-off case here.
+        // (Pushing down "on" would be a no-op but keeps the code path symmetric.)
+        LivePanel.SetBuffPanelsVisible(settings.ShowBuffPanels);
 
         // Settings tab raises the same events the overlay's right-click menu does so the
         // presenter only needs to subscribe once and either UI surface can drive the action.
         SettingsTab.BossOnlyToggled                 += v  => BossOnlyToggled?.Invoke(v);
+        SettingsTab.ShowBuffPanelsToggled           += v  => ShowBuffPanelsToggled?.Invoke(v);
+        SettingsTab.ShowOverlayDpsSummaryToggled    += v  => ShowOverlayDpsSummaryToggled?.Invoke(v);
         SettingsTab.ClearDpsRequested               += () => ClearDpsRequested?.Invoke();
         SettingsTab.ResetMaxHitRecordRequested      += () => ResetMaxHitRecordRequested?.Invoke();
         SettingsTab.ResetSplinterCooldownRequested  += () => ResetSplinterCooldownRequested?.Invoke();
@@ -152,6 +178,18 @@ public partial class MainAppWindow : Window
         ShowOverlayToggled?.Invoke(false);
     }
 
+    /// <summary>"Persist overlay" toggle.  Writes directly to the shared settings file and
+    /// persists -- no event roundtrip needed because the presenter polls
+    /// <c>_sharedSettings.PersistOverlay</c> every decay tick (250 ms), so a flag flip is
+    /// visible within one tick.  Same Checked / Unchecked handler since the only state
+    /// it cares about is the IsChecked bool.</summary>
+    private void PersistOverlayCheckbox_OnChanged(object sender, RoutedEventArgs e)
+    {
+        if (_suppressPersistOverlayCheckboxEvents || _settings == null) return;
+        _settings.PersistOverlay = PersistOverlayCheckbox.IsChecked == true;
+        DpsOverlaySettingsFile.Save(_settings);
+    }
+
     // ── Forwarded UpdateDps / UpdateSplinterStatus ────────────────────────────────────────────
     //
     // Mirrors DpsLiveWindow.UpdateDps exactly so DpsOverlayPresenter.PushUpdateToWindows can
@@ -201,4 +239,36 @@ public partial class MainAppWindow : Window
         }
         LivePanel.UpdateSplinterStatus(cooldownActive, remaining, dropCount, totalSplinters, justDropped);
     }
+
+    /// <summary>Forwards an active-buffs snapshot to the Live dashboard's two-tier strip.
+    /// Marshals to the UI thread when called from the sniffer/decay timer thread.</summary>
+    public void UpdateBuffs(System.Collections.Generic.IReadOnlyList<MarvelHeroes.DpsMeter.Services.ActiveBuff> active, DateTime nowUtc)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(() => LivePanel.UpdateBuffs(active, nowUtc)));
+            return;
+        }
+        LivePanel.UpdateBuffs(active, nowUtc);
+    }
+
+    /// <summary>Forwards the live <c>BuffTracker</c> to the Live dashboard's stats panel
+    /// (the option-A "sum of buff property deltas" tile strip).  Marshals to the UI thread
+    /// when called off the decay/sniffer thread.</summary>
+    public void UpdateBuffStats(MarvelHeroes.DpsMeter.Services.BuffTracker? tracker)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(() => LivePanel.UpdateBuffStats(tracker)));
+            return;
+        }
+        LivePanel.UpdateBuffStats(tracker);
+    }
+
+    /// <summary>Show or hide BOTH buff-tracking surfaces on the live dashboard.  Passed
+    /// through to <c>LivePanel.SetBuffPanelsVisible</c>; the presenter calls this when the
+    /// user toggles "Show buffs and procs" in Settings.  No marshalling needed -- callers
+    /// are already on the UI thread (Settings checkbox handlers fire there).</summary>
+    public void SetBuffPanelsVisible(bool visible)
+        => LivePanel.SetBuffPanelsVisible(visible);
 }

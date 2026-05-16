@@ -41,6 +41,13 @@ public sealed class StackCountParserTests
         // Replication policy varint -- value doesn't matter for the parser, just needs to be
         // a valid varint that ReadReplicationHeader will consume.  Pick 1 (AOIChannelProximity).
         WriteVarint(ms, 1);
+        // ReplicatedPropertyCollection._replicationId varint -- ReplicatedPropertyCollection
+        // overrides SerializeWithDefault to write this extra ulong before delegating to the
+        // base PropertyCollection serialization in replication mode.  See
+        // MHServerEmu.Games.Properties/ReplicatedPropertyCollection.cs:80.  The parser skips
+        // it, so the synthetic archive needs it for the byte alignment to be correct.  Value
+        // is arbitrary (a real server allocates this at bind time).
+        WriteVarint(ms, 0x12345);
         // Property count -- fixed-width 4-byte little-endian uint (not a varint).
         Span<byte> countBytes = stackalloc byte[4];
         BinaryPrimitives.WriteUInt32LittleEndian(countBytes, (uint)properties.Length);

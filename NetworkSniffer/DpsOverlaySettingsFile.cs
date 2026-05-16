@@ -67,6 +67,22 @@ public sealed class DpsOverlaySettingsFile
     /// top powers by damage with hit counts for proc identification.</summary>
     public bool ShowPowerBreakdown { get; set; } = false;
 
+    /// <summary>When <c>true</c> the live dashboard renders the buff-tracking UI: the
+    /// summed-stats panel ("Damage +140%" tiles) plus the two-tier buff strip (player-facing
+    /// buffs on top, gear procs underneath).  Default <c>true</c> -- the feature is the
+    /// primary surface of the buff-tracking work.  Users who find the chip strip noisy (a
+    /// well-geared rotation can produce 15+ active buffs) can disable it from Settings; both
+    /// rows then collapse and the leaderboard moves up to fill the space.</summary>
+    public bool ShowBuffPanels { get; set; } = true;
+
+    /// <summary>When <c>true</c> the floating overlay shows its DPS summary block (the "DPS"
+    /// title, the large DPS number, max-hit triplet, and "idle / waiting for damage" status
+    /// text).  When <c>false</c> only the leaderboard rows / Eternity Splinter badge / boss
+    /// fight section render -- useful when the user wants a compact peer leaderboard without
+    /// the big personal-DPS number stealing attention.  ES badge and boss section have their
+    /// own toggles and are unaffected.  Default <c>true</c>.</summary>
+    public bool ShowOverlayDpsSummary { get; set; } = true;
+
     /// <summary>When <c>true</c> the Eternity Splinter tracker status line is shown beneath the
     /// main DPS number.  Tracks the cooldown countdown between splinter drops so the
     /// user knows when killing another mob has a chance of yielding a splinter.  Default
@@ -94,6 +110,20 @@ public sealed class DpsOverlaySettingsFile
     /// control and uses whatever the user has configured at the Windows level.  Values
     /// outside [0.0, 1.0] are clamped at use time.</summary>
     public double SplinterCooldownSoundVolume { get; set; } = 1.0;
+
+    /// <summary>Optional separate sound file for the "Splinter dropped" event.  When set,
+    /// fires INSTEAD of <see cref="SplinterCooldownSoundPath"/> at drop time -- the cooldown
+    /// path still fires when the 6-minute cooldown expires.  Lets the user distinguish
+    /// "I just got loot" from "I'm eligible for another drop" by ear.  When null/empty,
+    /// the drop event falls back to <see cref="SplinterCooldownSoundPath"/> so existing
+    /// single-sound configurations keep working unchanged.</summary>
+    public string? SplinterDropSoundPath { get; set; }
+
+    /// <summary>Playback volume for the drop-specific sound.  Independent of
+    /// <see cref="SplinterCooldownSoundVolume"/> so users can have the drop sound louder
+    /// (more urgent: "go grab it") and the cooldown-ready sound quieter (less urgent:
+    /// "next drop is available").  Default 1.0; clamped to [0.0, 1.0].</summary>
+    public double SplinterDropSoundVolume { get; set; } = 1.0;
 
     /// <summary>When <c>true</c> a global system-wide hotkey starts a fresh splinter cooldown
     /// from the moment it's pressed -- same effect as clicking "Arm Splinter cooldown now" in
@@ -128,6 +158,15 @@ public sealed class DpsOverlaySettingsFile
     /// header of <c>MainAppWindow</c>.  Defaults to <c>false</c> -- new users get just the
     /// main app on first launch and opt into the overlay when they want it over the game.</summary>
     public bool ShowOverlay { get; set; } = false;
+
+    /// <summary>When <c>true</c>, the floating overlay stays visible even when neither the
+    /// game nor Cerebro is the foreground window.  Designed for multi-monitor users who
+    /// park the overlay on a secondary screen and want it readable while focused on
+    /// Discord / a browser / another app on a different monitor.  Single-monitor users
+    /// should leave this off -- the default foreground-aware auto-hide stops the overlay
+    /// from covering whatever else they're working on.  No effect when
+    /// <see cref="ShowOverlay"/> is false.</summary>
+    public bool PersistOverlay { get; set; } = false;
 
     /// <summary>Primary game mux / frontend TCP port (default 4306 when missing or invalid).</summary>
     public int GameTcpPort { get; set; }

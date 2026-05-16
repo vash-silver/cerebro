@@ -1,0 +1,99 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    One-shot console app that loads MHServerEmu's GameDatabase from a Calligraphy.sip
+    archive and dumps (protoEnumIndex, fullPath) for every Power, Condition, and
+    Item prototype.  The .txt files it produces feed `GeneratePowerNames.ps1` (and
+    siblings) which turn the dumps into static C# Dictionary<uint, string> tables
+    for the buff / item-quantity trackers.
+
+    Usage:
+      1. Set MHServerEmuPath below to the directory containing MHServerEmu.exe and
+         Data/Game/Calligraphy.sip.  Both MHServerEmu-0.3.0 and 1.0.x distributions
+         work (the data format is consistent across versions).
+      2. `dotnet build` this project.
+      3. Run the resulting PrototypeEnumDumper.exe from the output directory; the
+         csproj copies Data/ and Config.ini into the output dir at build time so
+         the EXE can find Calligraphy.sip on launch.
+      4. Outputs powers.txt / conditions.txt / items.txt next to the EXE.
+
+    The dumper does NOT modify the MHServerEmu directory.  It only reads the .sip
+    archive and writes its output to the working directory.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>MarvelHeroes.DpsMeter.PrototypeEnumDumper</RootNamespace>
+    <!--
+      Path to a working MHServerEmu install.  Needs MHServerEmu.Games.dll plus
+      Data/Game/Calligraphy.sip in there.  EDIT THIS to match your local layout.
+      The two distributions on the field machine are:
+        C:\Users\robin\Downloads\MHServerEmu-0.3.0\MHServerEmu  (has Calligraphy.sip)
+        C:\Users\robin\Code\MHServerEmu-1.0.1\MHServerEmu       (no .sip shipped)
+      We pin to 0.3.0 because that's the one that already ships the data.
+    -->
+    <MHServerEmuPath>C:\Users\robin\Downloads\MHServerEmu-0.3.0\MHServerEmu</MHServerEmuPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Reference MHServerEmu's runtime DLLs by direct path.  We need everything in
+      the chain that GameDatabase pulls in transitively: Games (the typed prototype
+      classes + DataDirectory), Core (Archive / serializer / file IO + logging),
+      and the protobuf framework.  Marked Private=true so they're copied next to
+      our EXE on build, so the dumper then runs anywhere we put it.
+    -->
+    <Reference Include="MHServerEmu.Games">
+      <HintPath>$(MHServerEmuPath)\MHServerEmu.Games.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="MHServerEmu.Core">
+      <HintPath>$(MHServerEmuPath)\MHServerEmu.Core.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Gazillion">
+      <HintPath>$(MHServerEmuPath)\Gazillion.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="K4os.Compression.LZ4">
+      <HintPath>$(MHServerEmuPath)\K4os.Compression.LZ4.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Google.ProtocolBuffers">
+      <HintPath>$(MHServerEmuPath)\Google.ProtocolBuffers.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Free.Ports.zLib">
+      <HintPath>$(MHServerEmuPath)\Free.Ports.zLib.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="INIFileParser">
+      <HintPath>$(MHServerEmuPath)\INIFileParser.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!--
+    Copy the source MHServerEmu's Data folder + Config.ini into our output dir at
+    build time.  GameDatabase looks for both relative to the working directory at
+    init time; without them the dumper crashes on startup with "Calligraphy.sip
+    not found".  Once the EXE is run, our output dir mirrors a stripped-down
+    MHServerEmu install with just enough to load the game database.
+  -->
+  <Target Name="CopyMHServerEmuData" AfterTargets="Build">
+    <ItemGroup>
+      <MHEmuDataFiles Include="$(MHServerEmuPath)\Data\**\*.*" />
+      <MHEmuConfigFile Include="$(MHServerEmuPath)\Config.ini" />
+    </ItemGroup>
+    <Copy SourceFiles="@(MHEmuDataFiles)"
+          DestinationFiles="@(MHEmuDataFiles->'$(OutDir)Data\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(MHEmuConfigFile)"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

@@ -78,22 +78,23 @@ public sealed class EternitySplinterTracker : IDisposable
     /// the value to add.</para></summary>
     public static readonly HashSet<uint> DefaultKnownProtoIndices = new()
     {
-        // Discovered empirically via two-session intersection of the discovery-log
-        // EntityCreate dumps:
-        //   Session 1 (12 unique non-avatar indices): 8813 11533 6714 7041 1542 11745
-        //     16014 13341 536 19207 13073 4683
-        //   Session 2 (23 unique): ...
-        //   Intersection minus already-known mob/boss/hero entries:
-        //     536  6714  8813  13073  13341
+        // 56091 = "Entity/Items/CurrencyItems/EternitySplinter.prototype" -- the canonical
+        // currency item entity the server spawns for a ground splinter drop.  Confirmed
+        // against MHServerEmu 0.3.0's Calligraphy.sip via scripts/PrototypeEnumDumper.
         //
-        // 13341 matches the strongest "splinter drop" pattern: a *lone* EntityCreate
-        // that spawns ~1 second after a mob-kill loot burst (rather than inside the
-        // same-millisecond cluster of gear / credits / fortune-card entities).  That
-        // timing is consistent with how Eternity Splinters visually plop down a beat
-        // after the mob actually dies.  Tentative -- if field-testing shows the pill
-        // doesn't flash on real splinter drops, try 13073 next (the only other lone-
-        // pattern intersection candidate).
-        13341u,
+        // History: the previous default was 13341u, derived empirically via a two-session
+        // intersection of "lone EntityCreate ~1s after mob-kill" candidates.  That heuristic
+        // turned out to be a false-positive correlation -- the dumper confirms 13341 is
+        // actually "Powers/Player/ScarletWitch/Rework/UltimateNoMorePrepareEndExplosion".
+        // Those original sessions must have been on a Scarlet Witch (or near one), and her
+        // "No More" ult happened to fire on a ~7-min cadence that aligned with the splinter
+        // cooldown.  When the same code was tested on Cyclops, no Scarlet Witch ult fired,
+        // and auto-detection silently stopped working -- which is exactly the regression
+        // the user reported.
+        //
+        // Lesson: empirical proto-idx discovery on its own is brittle.  We now rely on
+        // the canonical name lookup from PrototypeEnumDumper to confirm any future entries.
+        56091u,
     };
 
     private readonly MhMissionSniffer? _sniffer;
@@ -285,17 +286,55 @@ public sealed class EternitySplinterTracker : IDisposable
         // IsAvatar keeps the discovery log from drowning in hero / costume swaps.
         if (e.IsAvatar) return;
 
-        bool matched;
-        lock (_sync) matched = _knownProtoIndices.Contains(e.PrototypeEnumIndex);
+        // Diagnostic line for ANY entity carrying an ItemCurrency property -- regardless of
+        // whether the currency-type code matches our hardcoded splinter signature.  Lets
+        // the user correlate a confirmed in-game splinter drop against a specific
+        // (entityId, protoIdx, currencyParams, stackCount) tuple, so we can identify the
+        // right param-bits signature for THIS server.  Once we know the right value, the
+        // SplinterCurrencyParams constant in MhMissionSniffer.TryExtractStackCount gets
+        // updated and this log line stops being useful -- but the cost (one line per
+        // currency-bearing entity create, rare in normal play) is fine to keep.
+        if (e.CurrencyParams != 0 && e.StackCount > 0)
+        {
+            Diagnostic?.Invoke(
+                $"EternitySplinterTracker: SAW currency entity -- entityId={e.EntityId} " +
+                $"protoIdx={e.PrototypeEnumIndex} stackCount={e.StackCount} " +
+                $"currencyParams=0x{e.CurrencyParams:X14}  " +
+                $"(splinterMatchExpected={e.IsCurrencyDrop})  " +
+                $"-- if you JUST got splinters in-game, this is likely the splinter line; " +
+                $"note its currencyParams and update SplinterCurrencyParams to it.");
+        }
+
+        // Two-tier match: hardcoded prototype-enum index (DefaultKnownProtoIndices) catches
+        // the canonical case when our items.txt enum table matches the running server.
+        // Server-agnostic fallback fires on the IsCurrencyDrop signal -- any non-avatar
+        // entity carrying an ItemCurrency property with a positive stack count looks like
+        // a currency drop, which is overwhelmingly splinters in practice.  False positives
+        // on Odin Marks / boss currencies are possible but rare and self-correcting (the
+        // 6-min throttle suppresses spurious chained matches; the user can reset if a real
+        // drop got eaten by a false-positive currency before it).
+        bool matchedByIndex;
+        lock (_sync) matchedByIndex = _knownProtoIndices.Contains(e.PrototypeEnumIndex);
+        bool matchedByCurrency = e.IsCurrencyDrop && e.StackCount > 0;
+        bool matched = matchedByIndex || matchedByCurrency;
 
         if (matched)
         {
-            // Trace EVERY splinter-index match before any other decision.  Helps debug "the
-            // sniffer received the event but Cerebro didn't react" vs. "the sniffer never saw
-            // the entity in the first place" -- the former shows up here, the latter doesn't.
-            // Cheap (one log line per detection) and only fires for matches so it's not noisy.
+            // Distinguish the two match paths in the log so we can see at-a-glance which
+            // tier fired.  If we only ever see "via currency", that's a sign we should
+            // update DefaultKnownProtoIndices to match this server's actual splinter
+            // prototype enum (cleaner precision than the property-based fallback).
+            string matchPath = matchedByIndex
+                ? "proto-index"
+                : "ItemCurrency-fallback (proto-index unknown for this server)";
+            // Trace EVERY splinter match before any other decision.  Helps debug "the
+            // sniffer received the event but Cerebro didn't react" vs. "the sniffer never
+            // saw the entity in the first place" -- the former shows up here, the latter
+            // doesn't.  Single line per detection, includes match path so we can see at-a-
+            // glance whether the canonical proto-index fired or whether the currency-fallback
+            // path picked it up.
             Diagnostic?.Invoke(
-                $"EternitySplinterTracker: matched splinter EntityCreate -- " +
+                $"EternitySplinterTracker: matched splinter EntityCreate via {matchPath} -- " +
                 $"protoIdx={e.PrototypeEnumIndex} entityId={e.EntityId} stackCount={e.StackCount} " +
                 $"cooldownActive={IsCooldownActive} (decision: " +
                 (IsCooldownActive ? "suppress as false-positive" : "accept as fresh drop") + ")");
