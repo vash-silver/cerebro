@@ -28,15 +28,28 @@ How to run
   1.  Install Npcap (link above) if you haven't already.
   2.  Start Marvel Heroes and log into the game world.
   3.  Double-click Cerebro.exe.
-  4.  A small overlay appears in the top-left corner of your screen.
-        - Left-drag to reposition.
-        - Right-click for the full settings menu (boss-only toggle,
-          window-vs-overlay mode, scale, save snapshot, view reports,
-          exit).
-        - The ✕ in the top-right of the overlay closes the app.
+  4.  The main window opens with five tabs:
+        - Live              — wide dashboard: summary card, leaderboard,
+                              ability breakdown, boss banner.
+        - Reports           — saved fight history with sortable list,
+                              filter, sparkline, copy-to-Discord.
+        - Settings          — toggles for boss-only mode, splinter
+                              tracker, overlay scale, etc.
+        - Cosmic Loot Scanner — hunt-mode config: pick the affixes you
+                              want, set min-hits threshold, optional
+                              alert sound when a drop matches.
+        - Diagnostics       — live tail of the meter's log file with
+                              filter and copy.
+  5.  Tick "Show overlay" in the header for a floating always-on-top
+      meter alongside the main window.  Tick "Persist overlay" too if
+      you're on multiple monitors and want the overlay to stay visible
+      when the game isn't the foreground window.
+  6.  Right-click either the overlay or any dashboard row for context
+      menus (save snapshot, view reports, scale, exit).
 
-The overlay auto-hides when Marvel Heroes is not the foreground window,
-so it won't get in the way when you alt-tab.
+The overlay auto-hides when Marvel Heroes is not the foreground window
+(unless you turned on "Persist overlay"), so it won't get in the way
+when you alt-tab.
 
 
 Where the app stores its data
@@ -50,7 +63,9 @@ inside the program directory, so you can move the EXE freely:
     reports\dps-*.json     saved fight snapshots
     personal_bests.json    per-hero high-score records
     dps-max-hits.json      per-power max-hit history
-    dps-meter.log          diagnostics (only when logging is enabled)
+    loot-hunt-config.json  Cosmic Loot Scanner hunt criteria
+    dps-meter.log          diagnostics (always-on, viewable in the
+                           Diagnostics tab)
 
 
 Antivirus note

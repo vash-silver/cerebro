@@ -61,15 +61,21 @@ persist across restarts.
 
 ### Two views: main app + optional overlay
 
-Cerebro starts as a normal tabbed app window with **Live / Reports / Settings**
-tabs. Tick *Show overlay* in the header for a small always-on-top floating
-meter; untick it again to put it away. Closing the overlay's ✕ just hides it —
-the main app keeps running.
+Cerebro starts as a normal tabbed app window with **Live / Reports / Settings /
+Cosmic Loot Scanner / Diagnostics** tabs. Tick *Show overlay* in the header for
+a small always-on-top floating meter; untick it again to put it away. Closing
+the overlay's ✕ just hides it — the main app keeps running.
 
 | View | Best for |
 |---|---|
-| **Main app** | Looking at the full dashboard between fights, browsing report history, adjusting settings |
+| **Main app** | Looking at the full dashboard between fights, browsing report history, adjusting settings, configuring loot hunts, tailing the diagnostic log |
 | **Overlay** | Active play — small, non-activating (never steals keyboard focus), auto-hides when Marvel Heroes isn't the foreground app |
+
+**Persist overlay** — second header checkbox, off by default. When on, the
+overlay stays visible even when Marvel Heroes isn't the foreground window
+(useful on multi-monitor setups where the game lives on a different display
+than the overlay). The tooltip reads *"Will keep overlay active when you alt
+tab. Turn off if you're a single monitor user."*
 
 ### Live dashboard
 
@@ -184,6 +190,51 @@ another mob has a chance of yielding one:
   from this moment (use if you saw a drop in-game that the meter missed,
   e.g. it dropped before you launched Cerebro).
 
+### Cosmic Loot Scanner
+
+A dedicated tab for **hunt mode** — when a drop matches a user-defined affix
+shopping list, the diagnostic log fires a special `*** HUNT MATCH ***` line
+and (optionally) plays an alert sound, so you notice the gear while it's still
+on the ground.
+
+- **Curated affix checklist** — pick from 25 grouped affixes (Offensive,
+  Defensive, Sustain, Mobility, Attributes, Specialized) with tooltips
+  describing each stat. No hardcoding required; tick / untick on the fly and
+  changes save instantly.
+- **Minimum-hits threshold** — slider 1–6 controlling how many distinct
+  selected affixes a roll has to land for the alert to fire. 2–3 catches
+  "good enough" gear; 5–6 only triggers on near-perfect rolls.
+- **Rarity gate** — *Any rarity* or *Cosmic only (endgame)* radio. Cosmic-only
+  is the default since that's the tier most users hunt.
+- **Self filter** — *Only items for my current hero* checkbox. Matches the
+  drop's `EquippableBy` field against the local avatar's prototype, so you
+  don't get alerts for gear you couldn't equip anyway. Turn it off to see
+  hunt matches for any hero (useful when shopping trades / collecting alts).
+- **Server-agnostic matching** — the self filter compares avatar prototype
+  indices from the same runtime, so server-merge-style enum reshuffles
+  don't break the "is this for MY hero" filter.
+- **Alert sound** — toggle, custom WAV/MP3/WMA/AAC file path, and volume
+  slider. Reuses the same sound-player infrastructure as the splinter
+  cooldown, falls back to the Windows asterisk when no file is set.
+- **Master enable** — top-level checkbox to silence hunt alerts entirely
+  without clearing your affix selections.
+
+Configuration persists to
+`%LocalAppData%\MarvelHeroesComporator\loot-hunt-config.json` and is re-read
+on every drop, so changes take effect without a restart.
+
+### Diagnostics tab
+
+A live, filterable log viewer that tails `dps-meter.log` on disk:
+
+- **Auto-tail** — follows new lines as they're written, bounded memory.
+- **Filter / search** — narrow by substring without touching the file.
+- **Copy** — selected rows go to the clipboard formatted for Discord.
+- **Open log folder** — jump to the log file in Explorer for archiving.
+
+Useful for triaging "why didn't this drop trigger HUNT MATCH" without alt-tabbing
+to Explorer or tailing the file by hand.
+
 ### Settings tab
 
 A proper tabbed Settings surface in the main app consolidates all the
@@ -277,10 +328,13 @@ MarvelHeroes.DpsMeter/   WPF app — main window + optional overlay, presenter, 
 │                         tracker, costume PNGs, app icon
 │  AppIcon.ico            Generated icon (see scripts/generate_appicon.ps1)
 │  Controls/              DpsDisplayPanel (compact overlay), LiveDashboardPanel (wide
-│  │                       main-app dashboard), SettingsPanel (tabbed settings tab)
+│  │                       main-app dashboard), SettingsPanel, LootScannerPanel
+│  │                       (Cosmic Loot Scanner tab), LogViewerPanel (Diagnostics tab)
 │  Models/                DpsSnapshot, DpsReportStore, PersonalBestStore
 │  Services/              DpsMeter aggregator, DpsOverlayPresenter, EternitySplinterTracker,
-│  │                       SplinterCooldownSoundPlayer, BossNames table, settings
+│  │                       SplinterCooldownSoundPlayer, BossNames table, settings,
+│  │                       LootScannerDiagnostic, HuntCriteria, LootHuntConfig,
+│  │                       AffixPatternCatalog, AffixTierCatalog
 │  Windows/               MainAppWindow, ReportViewerWindow, DpsLiveWindow (legacy mode)
 │  DpsOverlayWindow.xaml  The compact floating overlay
 NetworkSniffer/          PCAP capture, TCP reassembly, mux demux, NetMessagePowerResult /
@@ -298,12 +352,13 @@ All per-user state lives under `%LocalAppData%\MarvelHeroesComporator\`:
 
 | Path | Purpose |
 |---|---|
-| `dps-overlay.json` | Window position, mode (overlay/window), scale, visible sections |
+| `dps-overlay.json` | Window position, mode (overlay/window), scale, visible sections, persist-overlay |
 | `dps-max-hits.json` | Personal-best single hit per hero (sniffer-level) |
 | `dps-player-index.json` | Learned dbId → nickname / current-hero map |
 | `personal_bests.json` | Best DPS per hero across all sessions |
+| `loot-hunt-config.json` | Cosmic Loot Scanner config — wanted affixes, min hits, rarity gate, self filter, alert sound |
 | `reports/dps-*.json` | Individual fight snapshots (auto + manual saves) |
-| `dps-meter.log` | Diagnostic log (sniffer + meter + presenter) |
+| `dps-meter.log` | Diagnostic log (sniffer + meter + presenter, loot scanner, hunt matches) |
 
 The folder name is intentionally shared with the upstream comporator app
 so a user upgrading from the integrated overlay keeps their records.
