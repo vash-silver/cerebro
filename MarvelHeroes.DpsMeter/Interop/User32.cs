@@ -35,6 +35,25 @@ internal static class User32
     /// behaviour expected of a HUD overlay.</summary>
     public const nint WS_EX_NOACTIVATE = 0x08000000;
 
+    /// <summary>WM_NCHITTEST — sent by the OS to ask "what part of the window is at this
+    /// screen-space cursor point?".  By default WPF returns HTCLIENT for everything inside a
+    /// transparent borderless window, which means the OS-drawn resize sizing border never
+    /// activates.  We intercept this message and return one of the HT* edge codes when the
+    /// cursor is within a few pixels of an edge so the user can grab any edge / corner and
+    /// drag-to-resize — the same UX as a normal window's invisible sizing border, even
+    /// though our window has WindowStyle=None + AllowsTransparency=True.</summary>
+    public const int WM_NCHITTEST = 0x0084;
+
+    public const int HTCLIENT      = 1;
+    public const int HTLEFT        = 10;
+    public const int HTRIGHT       = 11;
+    public const int HTTOP         = 12;
+    public const int HTTOPLEFT     = 13;
+    public const int HTTOPRIGHT    = 14;
+    public const int HTBOTTOM      = 15;
+    public const int HTBOTTOMLEFT  = 16;
+    public const int HTBOTTOMRIGHT = 17;
+
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
     public static extern nint GetWindowLongPtr(IntPtr hWnd, int nIndex);
 

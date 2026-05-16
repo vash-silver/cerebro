@@ -23,13 +23,44 @@ public partial class DpsOverlayWindow : Window
     public event Action?         ResetSplinterCooldownRequested;
     public event Action?         ViewReportsRequested;
 
+    private readonly DpsOverlaySettingsFile _settings;
+
     public DpsOverlayWindow(DpsOverlaySettingsFile settings)
     {
         InitializeComponent();
 
+        _settings = settings;
         Left = settings.Left;
         Top  = settings.Top;
+        // Apply persisted size if the user has previously resized.  Zero means "no saved
+        // size yet" — leave SizeToContent=WidthAndHeight so the window auto-fits on first
+        // launch, then OnLoaded captures the resulting dimensions for next time.
+        if (settings.OverlayWidth  > 0) Width  = settings.OverlayWidth;
+        if (settings.OverlayHeight > 0) Height = settings.OverlayHeight;
         Panel.Initialize(settings, isOverlayMode: true);
+
+        // Drop content-auto-sizing once layout has settled so subsequent user-driven
+        // resizes stick instead of getting clobbered by SizeToContent recomputing on every
+        // panel layout pass.  Pair-mirrored from DpsLiveWindow's resize fix (commit 090d355).
+        Loaded += (_, _) =>
+        {
+            SizeToContent = SizeToContent.Manual;
+            // First launch: capture the auto-fit dimensions so the user's "natural" first
+            // size becomes the default on subsequent runs (instead of re-auto-fitting based
+            // on whatever the current content happens to want).
+            if (_settings.OverlayWidth  <= 0) _settings.OverlayWidth  = ActualWidth;
+            if (_settings.OverlayHeight <= 0) _settings.OverlayHeight = ActualHeight;
+        };
+
+        // Persist size on every change.  WPF fires SizeChanged for both user-driven resizes
+        // and programmatic ones; we don't gate them because the values are always current,
+        // and Panel.SaveAll's debounced disk write is cheap.
+        SizeChanged += (_, _) =>
+        {
+            _settings.OverlayWidth  = ActualWidth;
+            _settings.OverlayHeight = ActualHeight;
+            Panel.SaveAll(Left, Top);
+        };
 
         Panel.DragStarted          += () => { try { DragMove(); } catch { } };
         // Clicking the overlay's small X button used to quit the entire app -- the overlay
@@ -163,6 +194,64 @@ public partial class DpsOverlayWindow : Window
             handled = true;
             return User32.MA_NOACTIVATE;
         }
+        if (msg == User32.WM_NCHITTEST)
+        {
+            var hit = HitTestNc(lParam);
+            if (hit != 0)
+            {
+                handled = true;
+                return hit;
+            }
+        }
         return IntPtr.Zero;
+    }
+
+    /// <summary>Edge-thickness in WPF DIPs treated as a resize-grip zone.  8 px matches the
+    /// width of the system's invisible sizing border on a standard-DPI display — wide enough
+    /// to grab without precise aim, narrow enough that the body of the overlay still receives
+    /// mouse clicks for DragMove / right-click menu.</summary>
+    private const double ResizeEdgePx = 8.0;
+
+    /// <summary>Given the screen-space lParam from WM_NCHITTEST, decide whether the cursor is
+    /// on a resize edge / corner.  Returns the appropriate HT* code so Windows handles the
+    /// sizing drag natively (same behaviour as a normal window's invisible sizing border —
+    /// we have to do this ourselves because <c>WindowStyle="None"</c> + <c>AllowsTransparency</c>
+    /// hides the system frame that would otherwise own this hit test).  Returns 0 when the
+    /// cursor is outside any edge zone so the caller falls through to WPF's default
+    /// (HTCLIENT for the body, which routes the click to the panel for DragMove / context
+    /// menu).</summary>
+    private nint HitTestNc(IntPtr lParam)
+    {
+        // lParam packs the screen X / Y as two signed 16-bit values.  Use the unchecked cast
+        // path so negative coords on multi-monitor setups (window straddles the primary)
+        // still round-trip correctly.
+        int packed = unchecked((int)lParam.ToInt64());
+        short sx = (short)(packed & 0xFFFF);
+        short sy = (short)((packed >> 16) & 0xFFFF);
+
+        // PointFromScreen translates to window-local DIPs, accounting for DPI scaling and
+        // the window's current Left/Top.  Cheap (no allocation) and DPI-correct.
+        System.Windows.Point local;
+        try { local = PointFromScreen(new System.Windows.Point(sx, sy)); }
+        catch { return 0; }
+
+        double w = ActualWidth;
+        double h = ActualHeight;
+        if (w <= 0 || h <= 0) return 0;
+
+        bool onLeft   = local.X >= 0 && local.X < ResizeEdgePx;
+        bool onRight  = local.X <= w && local.X > w - ResizeEdgePx;
+        bool onTop    = local.Y >= 0 && local.Y < ResizeEdgePx;
+        bool onBottom = local.Y <= h && local.Y > h - ResizeEdgePx;
+
+        if (onLeft  && onTop)    return User32.HTTOPLEFT;
+        if (onRight && onTop)    return User32.HTTOPRIGHT;
+        if (onLeft  && onBottom) return User32.HTBOTTOMLEFT;
+        if (onRight && onBottom) return User32.HTBOTTOMRIGHT;
+        if (onLeft)              return User32.HTLEFT;
+        if (onRight)             return User32.HTRIGHT;
+        if (onTop)               return User32.HTTOP;
+        if (onBottom)            return User32.HTBOTTOM;
+        return 0;
     }
 }

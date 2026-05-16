@@ -48,6 +48,18 @@ public sealed class DpsOverlaySettingsFile
     public double Top { get; set; } = 40;
     public double Scale { get; set; } = 1.0;
 
+    /// <summary>Last user-set overlay width / height in WPF device-independent units.  Default
+    /// 0 means "no saved size" — the window auto-fits to its content on first launch via
+    /// <c>SizeToContent=WidthAndHeight</c>, then captures the resulting dimensions so subsequent
+    /// launches restore the same size.  Non-zero values are applied verbatim at startup,
+    /// overriding auto-fit, so a user who manually resized to e.g. 420x540 gets that exact
+    /// layout back next session.  Persisted independently of <see cref="Scale"/> — Scale
+    /// affects the panel's RenderTransform; Width/Height affect the window frame size.</summary>
+    public double OverlayWidth { get; set; } = 0;
+
+    /// <summary>See <see cref="OverlayWidth"/>.</summary>
+    public double OverlayHeight { get; set; } = 0;
+
     /// <summary>
     /// Boss-only filter — when <c>true</c> the leaderboard only credits damage against
     /// Boss / GroupBoss prototypes (MiniBoss is excluded by design — see

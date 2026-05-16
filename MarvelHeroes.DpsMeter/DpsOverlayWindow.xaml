@@ -8,7 +8,7 @@
         WindowStyle="None"
         AllowsTransparency="True"
         Background="Transparent"
-        ResizeMode="NoResize"
+        ResizeMode="CanResize"
         SizeToContent="WidthAndHeight"
         ShowInTaskbar="False"
         Topmost="True"
