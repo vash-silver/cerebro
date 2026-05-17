@@ -37,6 +37,7 @@ internal static class HuntCriteria
         MhMissionSniffer.LootItemSpec spec,
         IReadOnlyList<MhMissionSniffer.LootAffixSpec> affixes,
         uint selfPrototypeIndex,
+        string? selfHeroName,
         out IReadOnlyList<string> matchedAffixes)
     {
         var cfg = LootHuntConfig.Current;
@@ -50,14 +51,34 @@ internal static class HuntCriteria
         // every drop -- silent until they pick something.
         if (cfg.WantedPatterns.Count == 0) return false;
 
-        // Self-only gate: the item must be equippable by the local hero.  Self-proto = 0
-        // means we don't know who "self" is yet (login handshake pending, avatar not
-        // identified) so we conservatively don't fire either.
+        // Self-only gate: the item must be equippable by the local hero.  We compare by
+        // HERO NAME rather than raw enum equality because the item's EquippableBy field
+        // and the avatar's EntityCreate.protoIdx live in different prototype enums (root
+        // vs. AvatarPrototype-specific) -- they can NEVER match by direct numeric
+        // comparison.  See the doc on AvatarNamesByProto for the long version.
+        //
+        // Resolution chain:
+        //   itemHero = AvatarNamesByProto.Get(spec.EquippableByEnumIndex)      // "Nightcrawler"
+        //   selfHero = DpsMeter.LikelySelfHeroName (set from self-buff power source)
+        //   match    = string.Equals(itemHero, selfHero, OrdinalIgnoreCase)
+        //
+        // Empty selfHeroName means we don't know who the user is yet (no self-power
+        // activation has fired) -- fail closed so the user doesn't get phantom alerts.
+        // Empty itemHero means the drop's equippableBy isn't a shipped hero in our table
+        // (e.g. server-merged avatar we don't know about) -- also fail closed; the user
+        // explicitly opted into "my hero only" so this is the right behavior.
         if (cfg.SelfOnly)
         {
-            if (selfPrototypeIndex == 0 || spec.EquippableByEnumIndex != selfPrototypeIndex)
+            if (string.IsNullOrEmpty(selfHeroName)) return false;
+            string? itemHero = AvatarNamesByProto.Get(spec.EquippableByEnumIndex);
+            if (string.IsNullOrEmpty(itemHero)) return false;
+            if (!string.Equals(itemHero, selfHeroName, System.StringComparison.OrdinalIgnoreCase))
                 return false;
         }
+        // Suppress unused-parameter warning -- selfPrototypeIndex kept in the signature
+        // for diagnostic callers that still want to surface the raw enum (LootScannerDiagnostic
+        // logs it for transparency, even though MatchesHunt no longer consults it).
+        _ = selfPrototypeIndex;
 
         // Rarity gate.
         switch (cfg.Rarity)
@@ -83,11 +104,29 @@ internal static class HuntCriteria
             foreach (string pattern in cfg.WantedPatterns)
             {
                 if (seenPatterns.Contains(pattern)) continue;
-                if (affixPath.IndexOf(pattern, System.StringComparison.OrdinalIgnoreCase) >= 0)
+
+                // Expand the user-tracked substring to the full set of substrings the
+                // catalog considers equivalent (e.g. "CritRating" expands to
+                // ["CritRating", "CritChance"]).  Same stat appears under multiple
+                // server-internal names in MHServerEmu data -- without this expansion a
+                // user who ticked "Critical Hit Rating" would miss every modern-cosmic
+                // CritChance affix.  ExpandSubstrings returns just [pattern] when the
+                // catalog has no aliases or when the user hand-added a custom pattern.
+                var substrings = AffixPatternCatalog.ExpandSubstrings(pattern);
+                bool patternHit = false;
+                for (int s = 0; s < substrings.Count; s++)
+                {
+                    if (affixPath.IndexOf(substrings[s], System.StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        patternHit = true;
+                        break;
+                    }
+                }
+                if (patternHit)
                 {
                     matches.Add(AffixTierCatalog.ShortName(affixPath));
                     seenPatterns.Add(pattern);
-                    break;
+                    break;  // this affix counted for the pattern; move to next affix
                 }
             }
         }

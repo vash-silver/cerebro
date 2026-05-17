@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace MarvelHeroes.DpsMeter.Services;
@@ -34,15 +35,53 @@ internal static class AffixPatternCatalog
     {
         /// <summary>Human-readable label shown in the Cosmic Loot Scanner tab's checkbox list.</summary>
         public required string Label { get; init; }
-        /// <summary>Substring that <see cref="HuntCriteria"/> looks for inside the affix
-        /// prototype path.  Case-insensitive match; longer / more specific patterns win
-        /// because the matcher short-circuits on first hit per affix.</summary>
+        /// <summary>Primary substring that <see cref="HuntCriteria"/> looks for inside the
+        /// affix prototype path.  Case-insensitive match; longer / more specific patterns
+        /// win because the matcher short-circuits on first hit per affix.  Also the value
+        /// persisted into <c>loot-hunt-config.json</c>'s <c>WantedPatterns</c> when the
+        /// user ticks this row -- subsequent loads look up the pattern by primary
+        /// substring to resolve <see cref="Aliases"/>.</summary>
         public required string Substring { get; init; }
+        /// <summary>Optional alternate substrings that should also count as a match for
+        /// this row.  Same stat appears under multiple server-internal names: e.g.
+        /// "Critical Hit Rating" matches both <c>CritRating</c> (legendary affixes) and
+        /// <c>CritChance</c> (modern cosmic affixes); "Brutal Strike Rating" matches
+        /// <c>BrutalStrike</c>, <c>BrutalChance</c>, and <c>SuperCritChance</c> (all the
+        /// same stat, named differently in different prototype lineages).  Empty by
+        /// default -- only set for rows where we know multiple aliases exist on the
+        /// wire.</summary>
+        public IReadOnlyList<string> Aliases { get; init; } = Array.Empty<string>();
         /// <summary>Grouping for UI rendering -- lets us section the checkbox list by
         /// Offensive / Defensive / etc. instead of one flat 25-entry blob.</summary>
         public required Category Category { get; init; }
         /// <summary>One-line tooltip describing what this stat does in MH-O terms.</summary>
         public required string Description { get; init; }
+    }
+
+    /// <summary>Resolve a single tracked substring (the value persisted in
+    /// <c>WantedPatterns</c>) to the full set of substrings that should count as a match
+    /// for it.  Looks up the catalog entry whose <see cref="Pattern.Substring"/> equals
+    /// the input and returns <c>{ Substring } ∪ Aliases</c>; falls back to returning the
+    /// input alone when no catalog entry matches (user hand-edited the JSON to add a
+    /// custom substring).  Case-insensitive lookup.
+    ///
+    /// <para>Allocates each call -- caller's expected usage is one call per pattern per
+    /// hunt evaluation (rare, single-digit-per-second worst case during loot bursts), so
+    /// keeping the helper simple beats caching.</para></summary>
+    public static IReadOnlyList<string> ExpandSubstrings(string trackedSubstring)
+    {
+        for (int i = 0; i < Patterns.Count; i++)
+        {
+            var p = Patterns[i];
+            if (!string.Equals(p.Substring, trackedSubstring, StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (p.Aliases.Count == 0) return new[] { p.Substring };
+            var combined = new string[1 + p.Aliases.Count];
+            combined[0] = p.Substring;
+            for (int j = 0; j < p.Aliases.Count; j++) combined[j + 1] = p.Aliases[j];
+            return combined;
+        }
+        return new[] { trackedSubstring };
     }
 
     /// <summary>Full curated list, rendering order = list order so the Offensive block sits
@@ -51,11 +90,29 @@ internal static class AffixPatternCatalog
     {
         // ── Offensive headline stats ────────────────────────────────────────────────
         new() { Label = "Damage Rating",          Substring = "DamageRating",     Category = Category.Offensive,  Description = "+N raw damage (the big offensive stat)" },
-        new() { Label = "Critical Hit Rating",    Substring = "CritRating",       Category = Category.Offensive,  Description = "+N crit chance (more crits)" },
+        // CritRating + CritChance: same stat, different naming across prototype lineages.
+        // Cosmic-tier and recent loot use "CritChance" (e.g. CritChanceT1, CritChanceMark4);
+        // legendary / ring / older blessings use "CritRating" (e.g. RingAffixes/CritRating,
+        // GungnirCritRating2).  Aliases make the single user-facing row catch both.
+        new() { Label = "Critical Hit Rating",    Substring = "CritRating",       Aliases = new[] { "CritChance" },
+                Category = Category.Offensive,  Description = "+N crit chance (more crits)" },
         new() { Label = "Critical Damage Rating", Substring = "CritDamage",       Category = Category.Offensive,  Description = "+N crit damage (bigger crits)" },
-        new() { Label = "Brutal Strike Rating",   Substring = "BrutalStrike",     Category = Category.Offensive,  Description = "+N brutal-hit chance (more 'BRUTAL!' procs)" },
-        new() { Label = "Brutal Damage Rating",   Substring = "BrutalDamage",     Category = Category.Offensive,  Description = "+N brutal damage (bigger brutal hits)" },
+        // BrutalStrike / BrutalChance / SuperCritChance: three names for the same stat
+        // (the "super-crit" / "brutal" mechanic).  SuperCritRating is the legacy/legendary
+        // form, BrutalChance / BrutalStrike are the modern naming.  All four count toward
+        // a "Brutal Strike Rating" hunt.
+        new() { Label = "Brutal Strike Rating",   Substring = "BrutalStrike",     Aliases = new[] { "BrutalChance", "SuperCritChance", "SuperCritRating" },
+                Category = Category.Offensive,  Description = "+N brutal-hit chance (more 'BRUTAL!' procs)" },
+        // BrutalDamage + SuperCritDamage: same stat, different naming.  SuperCritDmg is
+        // a third spelling we see in some legacy affix paths.
+        new() { Label = "Brutal Damage Rating",   Substring = "BrutalDamage",     Aliases = new[] { "SuperCritDamage", "SuperCritDmg" },
+                Category = Category.Offensive,  Description = "+N brutal damage (bigger brutal hits)" },
         new() { Label = "Attack Speed",           Substring = "AttackSpeed",      Category = Category.Offensive,  Description = "+N% attack speed (faster basic attacks)" },
+        // Cosmic Might: the headline cosmic-armor damage multiplier (Entity/Items/Affixes/
+        // ArmorAffixes/Loot20/CosmicAffixes/CosmicMight.prototype).  Matches the demon-
+        // replacement variant and the legacy proc form (ProcCosmicMight) via the same
+        // substring -- they're all the same stat conceptually.
+        new() { Label = "Cosmic Might",           Substring = "CosmicMight",      Category = Category.Offensive,  Description = "+N% cosmic damage multiplier (best-in-slot offensive stat on cosmic armor)" },
         new() { Label = "Damage vs Bosses",       Substring = "VsBoss",           Category = Category.Offensive,  Description = "+N% damage against boss-rank enemies" },
         new() { Label = "Damage Penetration",     Substring = "Penetration",      Category = Category.Offensive,  Description = "+N% bypass enemy defense" },
 

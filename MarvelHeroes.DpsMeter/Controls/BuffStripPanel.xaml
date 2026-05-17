@@ -24,6 +24,39 @@
     -->
     <StackPanel Orientation="Vertical" Margin="0,0,0,6">
 
+        <!--
+            Row -1: Derived state pill (Stealth / Invisible).  Pre-rendered above the
+            buff strip because the state matters for damage-multiplier talents (e.g.
+            Nightcrawler's Surprise Attack talent doubles Bamf Bomb / Run Through damage
+            while stealthed-or-invisible).  Big, high-contrast, no countdown.  This is
+            an "is the bonus active" indicator, not a timer.  Hidden when no source
+            condition is active.
+        -->
+        <Border x:Name="StealthStatePill"
+                Visibility="Collapsed"
+                Background="#2EFFCC66"
+                BorderBrush="#AAFFCC66"
+                BorderThickness="1"
+                CornerRadius="4"
+                Padding="10,4"
+                Margin="0,0,0,4"
+                HorizontalAlignment="Left"
+                SnapsToDevicePixels="True"
+                ToolTip="A talent / proc has stealthed or invisible-d you. Damage-multiplier talents that gate on this state are active right now.">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock Text="⬤"
+                           FontSize="11" Foreground="#FFCC66"
+                           VerticalAlignment="Center"
+                           Margin="0,0,6,0"/>
+                <TextBlock x:Name="StealthStateLabel"
+                           FontFamily="Segoe UI Semibold" FontSize="13"
+                           FontWeight="Bold"
+                           Foreground="#FFFFCC66"
+                           VerticalAlignment="Center"
+                           Text="Stealthed"/>
+            </StackPanel>
+        </Border>
+
         <!-- Row 0: player-facing buffs -->
         <ItemsControl x:Name="PlayerFacingRow"
                       Visibility="Collapsed"
@@ -39,6 +72,13 @@
                             CornerRadius="3" Padding="8,4" Margin="0,0,6,4"
                             SnapsToDevicePixels="True">
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <!-- Optional icon: 24x24, square, only shown when the watchlist
+                                 has an icon configured for this buff's short name. -->
+                            <Image Source="{Binding IconImageSource}"
+                                   Visibility="{Binding IconVisibility}"
+                                   Width="24" Height="24" Margin="0,0,6,0"
+                                   Stretch="UniformToFill"
+                                   VerticalAlignment="Center"/>
                             <TextBlock Text="{Binding ShortName}"
                                        FontFamily="Segoe UI Semibold" FontSize="12"
                                        FontWeight="SemiBold"
@@ -76,6 +116,12 @@
                             CornerRadius="2" Padding="6,2" Margin="0,0,4,3"
                             SnapsToDevicePixels="True">
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <!-- Smaller icon for the lower-priority gear-proc row -->
+                            <Image Source="{Binding IconImageSource}"
+                                   Visibility="{Binding IconVisibility}"
+                                   Width="18" Height="18" Margin="0,0,4,0"
+                                   Stretch="UniformToFill"
+                                   VerticalAlignment="Center"/>
                             <TextBlock Text="{Binding ShortName}"
                                        FontFamily="Segoe UI" FontSize="10"
                                        Foreground="#AAFFFFFF"

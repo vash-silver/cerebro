@@ -1,0 +1,115 @@
+<Window x:Class="MarvelHeroes.DpsMeter.Windows.IconPickerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Pick a game icon"
+        Width="780" Height="600"
+        MinWidth="480" MinHeight="320"
+        Background="#1A1A1A"
+        Foreground="#CCFFFFFF"
+        FontFamily="Segoe UI"
+        FontSize="12"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>  <!-- Header / search -->
+            <RowDefinition Height="Auto"/>  <!-- Status -->
+            <RowDefinition Height="*"/>     <!-- Grid -->
+            <RowDefinition Height="Auto"/>  <!-- Footer buttons -->
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Orientation="Vertical">
+            <TextBlock Text="Pick a game icon"
+                       FontSize="16" FontWeight="SemiBold"
+                       Foreground="#DDFFFFFF"/>
+            <TextBlock FontSize="10" Foreground="#77FFFFFF" TextWrapping="Wrap"
+                       Margin="0,2,0,8"
+                       Text="Click any icon to assign it.  Type to filter the grid by basename (e.g. 'nightcrawler', 'teleport', 'bamf').  Defaults to all 2,279 bundled icons; 'Clear filter' empties the search box."/>
+            <Grid Margin="0,0,0,8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="SearchBox" Grid.Column="0"
+                         FontFamily="Consolas" FontSize="12"
+                         Background="#0F0F0F" Foreground="#DDFFFFFF"
+                         BorderBrush="#44FFFFFF" BorderThickness="1"
+                         CaretBrush="#DDFFFFFF"
+                         SelectionBrush="#552E7FFF"
+                         Padding="6,4"
+                         TextChanged="SearchBox_TextChanged"/>
+                <Button Grid.Column="1" Margin="6,0,0,0" Padding="10,4"
+                        Background="#222" BorderBrush="#44FFFFFF" BorderThickness="1"
+                        Foreground="#DDFFFFFF" Cursor="Hand"
+                        Content="Clear filter"
+                        Click="ClearFilterButton_Click"/>
+            </Grid>
+        </StackPanel>
+
+        <TextBlock x:Name="StatusLine" Grid.Row="1"
+                   Foreground="#77FFFFFF" FontSize="10"
+                   Margin="0,0,0,4"
+                   Text="loading..."/>
+
+        <Border Grid.Row="2"
+                Background="#0F0F0F" BorderBrush="#33FFFFFF" BorderThickness="1"
+                CornerRadius="3">
+            <ScrollViewer VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          Padding="6">
+                <!--
+                    ItemsControl + WrapPanel for the grid.  At ~2k icons of 40 px each we
+                    rely on WPF's lazy realization (the StackPanel/WrapPanel virtualization
+                    isn't on by default for ItemsControl, but the ScrollViewer's clip
+                    region still keeps off-screen icons cheap).  If perf becomes an issue
+                    when typing in the search box, swap to a VirtualizingStackPanel with
+                    grouping; the 40 px chip size doesn't fit cleanly in a column though.
+                -->
+                <ItemsControl x:Name="IconGrid">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <WrapPanel Orientation="Horizontal"/>
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <!--
+                                Each icon is a Button containing an Image + tooltip with
+                                the basename.  Click handler reads Tag for the basename so
+                                the host gets a clean string back without parsing.
+                            -->
+                            <Button Width="44" Height="44" Margin="2"
+                                    Background="Transparent"
+                                    BorderBrush="#33FFFFFF"
+                                    BorderThickness="1"
+                                    Cursor="Hand"
+                                    Padding="2"
+                                    Tag="{Binding Basename}"
+                                    ToolTip="{Binding Basename}"
+                                    Click="IconButton_Click">
+                                <Image Source="{Binding Image}" Stretch="UniformToFill"
+                                       SnapsToDevicePixels="True"/>
+                            </Button>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+        </Border>
+
+        <Grid Grid.Row="3" Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Foreground="#77FFFFFF" FontSize="10"
+                       VerticalAlignment="Center"
+                       Text="Tip: Esc to cancel.  Click an icon to assign."/>
+            <Button Grid.Column="1" Padding="14,4" Cursor="Hand"
+                    Background="#222" BorderBrush="#44FFFFFF" BorderThickness="1"
+                    Foreground="#DDFFFFFF"
+                    Content="Cancel"
+                    IsCancel="True"
+                    Click="CancelButton_Click"/>
+        </Grid>
+    </Grid>
+</Window>

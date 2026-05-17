@@ -1,0 +1,236 @@
+<UserControl x:Class="MarvelHeroes.DpsMeter.Controls.BuffTrackerPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="#1A1A1A"
+             Foreground="#CCFFFFFF"
+             FontFamily="Segoe UI"
+             FontSize="12">
+
+    <UserControl.Resources>
+        <Style x:Key="SectionHeader" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="FontSize"   Value="13"/>
+            <Setter Property="Foreground" Value="#FFFFB347"/>
+            <Setter Property="Margin"     Value="0,12,0,4"/>
+        </Style>
+        <Style x:Key="HintText" TargetType="TextBlock">
+            <Setter Property="FontSize"     Value="10"/>
+            <Setter Property="Foreground"   Value="#77FFFFFF"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="Margin"       Value="0,2,0,8"/>
+        </Style>
+        <Style x:Key="MasterCheck" TargetType="CheckBox">
+            <Setter Property="Foreground" Value="#CCFFFFFF"/>
+            <Setter Property="FontSize"   Value="12"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin"     Value="0,6,0,4"/>
+        </Style>
+        <Style x:Key="RowButton" TargetType="Button">
+            <Setter Property="Background"   Value="#222"/>
+            <Setter Property="BorderBrush"  Value="#44FFFFFF"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Foreground"   Value="#DDFFFFFF"/>
+            <Setter Property="Padding"      Value="8,2"/>
+            <Setter Property="FontSize"     Value="11"/>
+            <Setter Property="Cursor"       Value="Hand"/>
+        </Style>
+        <!--
+            Per-row item template shared by the Active + Recent lists.  Left column is the
+            short name (what shows up in the buff strip), middle is a small "x N" stack
+            indicator when more than one condId is currently up, right is the [Track] /
+            [Tracked ✓] button.  Bound through a code-side ViewModel (see panel.cs); we
+            don't INotifyPropertyChanged because the list is rebuilt on each refresh tick.
+        -->
+        <DataTemplate x:Key="BuffRowTemplate">
+            <Grid Margin="0,3,0,3">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>  <!-- icon preview -->
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>  <!-- set-icon button (tracked rows only) -->
+                    <ColumnDefinition Width="Auto"/>  <!-- track / untrack button -->
+                </Grid.ColumnDefinitions>
+                <!-- 18x18 icon preview.  Visibility bound to HasIcon.  Non-tracked rows
+                     and rows without a configured icon collapse this column so the row's
+                     horizontal layout stays compact. -->
+                <Image Grid.Column="0"
+                       Source="{Binding IconImageSource}"
+                       Visibility="{Binding IconImageVisibility}"
+                       Width="18" Height="18" Margin="0,0,6,0"
+                       Stretch="UniformToFill"
+                       VerticalAlignment="Center"
+                       ToolTip="{Binding IconTooltip}"/>
+                <!--
+                    Buff name.  Click-to-edit on watchlist rows so the user can rename
+                    "Teleport Stealth Combo" to "Stealth" etc; Active / Recent rows
+                    render the same TextBox but with IsReadOnly=true so it visually
+                    matches a TextBlock but the user can't accidentally edit a
+                    discovery-list entry (where renaming would have no effect because
+                    they're not in the watchlist yet).
+                -->
+                <TextBox Grid.Column="1"
+                         Text="{Binding DisplayName, Mode=OneWay}"
+                         IsReadOnly="{Binding IsNameReadOnly}"
+                         Background="Transparent"
+                         BorderThickness="0"
+                         Foreground="#DDFFFFFF"
+                         CaretBrush="#DDFFFFFF"
+                         SelectionBrush="#552E7FFF"
+                         FontSize="12"
+                         VerticalAlignment="Center"
+                         Padding="0" Margin="0"
+                         Tag="{Binding ShortName}"
+                         GotFocus="NameTextBox_GotFocus"
+                         KeyDown="NameTextBox_KeyDown"
+                         LostFocus="NameTextBox_LostFocus"
+                         ToolTip="{Binding NameTooltip}"/>
+                <!-- Stack count badge (e.g. "x4"); collapses when count == 1 -->
+                <Border Grid.Column="2" Margin="6,0,6,0"
+                        Background="#332E7FFF" BorderBrush="#552E7FFF" BorderThickness="1"
+                        CornerRadius="3" Padding="6,1"
+                        Visibility="{Binding StackBadgeVisibility}"
+                        VerticalAlignment="Center">
+                    <TextBlock Text="{Binding StackLabel}" Foreground="#DDFFFFFF" FontSize="10"/>
+                </Border>
+                <!-- Secondary metadata: total fires + last-seen age -->
+                <TextBlock Grid.Column="3" Text="{Binding Metadata}"
+                           Foreground="#77FFFFFF" FontSize="10"
+                           Margin="0,0,10,0"
+                           VerticalAlignment="Center"/>
+                <!-- Icon set / clear button.  Only visible on tracked rows.  The
+                     watchlist is the only place icons are meaningful (the active /
+                     recent lists are just discovery aids).  Label flips between
+                     "Set icon..." and "Change icon" based on HasIcon, with a small
+                     "✕" clear sibling button when an icon is set. -->
+                <StackPanel Grid.Column="4" Orientation="Horizontal"
+                            Visibility="{Binding IconButtonRowVisibility}"
+                            Margin="0,0,6,0">
+                    <Button Style="{StaticResource RowButton}"
+                            Content="Browse..."
+                            Tag="{Binding ShortName}"
+                            ToolTip="Pick from the ~2k bundled in-game power icons"
+                            Click="BrowseIconButton_Click"/>
+                    <Button Style="{StaticResource RowButton}"
+                            Content="{Binding IconButtonLabel}"
+                            Margin="4,0,0,0"
+                            Tag="{Binding ShortName}"
+                            ToolTip="Pick a custom image file (PNG/JPG/etc.)"
+                            Click="SetIconButton_Click"/>
+                    <Button Style="{StaticResource RowButton}"
+                            Content="✕"
+                            Margin="4,0,0,0"
+                            Padding="6,2"
+                            Visibility="{Binding ClearIconButtonVisibility}"
+                            Tag="{Binding ShortName}"
+                            ToolTip="Clear this buff's icon"
+                            Click="ClearIconButton_Click"/>
+                </StackPanel>
+                <!-- Track / Tracked button.  Click handler in code-behind uses
+                     button.Tag to identify the source ShortName.  Style and label both
+                     toggle when IsTracked changes (Tag is hard-bound; Style flip is the
+                     simplest way to do "checked-looking" without ToggleButton chrome). -->
+                <Button Grid.Column="5"
+                        Style="{StaticResource RowButton}"
+                        Content="{Binding TrackButtonLabel}"
+                        Background="{Binding TrackButtonBackground}"
+                        BorderBrush="{Binding TrackButtonBorder}"
+                        Tag="{Binding ShortName}"
+                        Click="TrackButton_Click"/>
+            </Grid>
+        </DataTemplate>
+    </UserControl.Resources>
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16,12,16,16">
+        <StackPanel>
+            <TextBlock FontSize="16" FontWeight="SemiBold" Foreground="#DDFFFFFF"
+                       Text="Buff Tracker"/>
+            <TextBlock Style="{StaticResource HintText}"
+                       Text="Pick the buffs / procs you care about and the chip strip on the overlay will only show those.  Walk into a fight, see what fires here, click 'Track' next to the names worth watching.  Like WeakAuras for Marvel Heroes."/>
+
+            <!-- ── Master toggles ─────────────────────────────────────────────────────── -->
+            <CheckBox x:Name="OnlyShowTrackedCheck"
+                      Style="{StaticResource MasterCheck}"
+                      Content="Only show tracked buffs in the chip strip"
+                      Checked="OnlyShowTrackedCheck_OnChanged"
+                      Unchecked="OnlyShowTrackedCheck_OnChanged"/>
+            <TextBlock Style="{StaticResource HintText}"
+                       Text="When on, the buff strip is filtered to your watchlist below.  When off, the strip shows everything the classifier deems player-facing -- the legacy noisy view."/>
+
+            <CheckBox x:Name="ShowStealthPillCheck"
+                      Style="{StaticResource MasterCheck}"
+                      Content="Show Stealthed / Invisible state pill"
+                      Checked="ShowStealthPillCheck_OnChanged"
+                      Unchecked="ShowStealthPillCheck_OnChanged"/>
+            <TextBlock Style="{StaticResource HintText}"
+                       Text="Highlights when any active condition grants stealth or invisibility (PropertyEnum 899 / 993).  Useful for talents that gate damage on stealth state -- e.g. Nightcrawler's Surprise Attack doubling Bamf Bomb / Run Through damage while stealthed.  Off by default; only useful on heroes whose talents care."/>
+
+            <!-- ── Tracked watchlist ─────────────────────────────────────────────────── -->
+            <Grid Margin="0,8,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Style="{StaticResource SectionHeader}" Text="Watchlist"/>
+                <Button   Grid.Column="1" Content="Clear all"
+                          Style="{StaticResource RowButton}"
+                          VerticalAlignment="Bottom" Margin="0,0,0,4"
+                          Click="ClearAllButton_Click"/>
+            </Grid>
+            <TextBlock x:Name="WatchlistEmptyHint"
+                       Style="{StaticResource HintText}"
+                       Text="Watchlist is empty.  Click 'Track' next to a buff below to add it."/>
+            <ItemsControl x:Name="TrackedList"
+                          ItemTemplate="{StaticResource BuffRowTemplate}"/>
+
+            <!-- ── Currently active ──────────────────────────────────────────────────── -->
+            <Grid Margin="0,12,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Style="{StaticResource SectionHeader}" Text="Currently active"/>
+                <TextBlock x:Name="ActiveCountReadout" Grid.Column="1"
+                           VerticalAlignment="Bottom" Margin="0,0,0,4"
+                           Foreground="#77FFFFFF" FontSize="11"
+                           Text="0 active"/>
+            </Grid>
+            <TextBlock x:Name="ActiveEmptyHint"
+                       Style="{StaticResource HintText}"
+                       Text="No buffs on you right now.  Buffs that apply will appear here in real time."/>
+            <ItemsControl x:Name="ActiveList"
+                          ItemTemplate="{StaticResource BuffRowTemplate}"/>
+
+            <!-- ── Recently seen ─────────────────────────────────────────────────────── -->
+            <Grid Margin="0,12,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Style="{StaticResource SectionHeader}" Text="Recently seen"/>
+                <Button   Grid.Column="1" Content="Clear history"
+                          Style="{StaticResource RowButton}"
+                          VerticalAlignment="Bottom" Margin="0,0,0,4"
+                          Click="ClearHistoryButton_Click"/>
+            </Grid>
+            <TextBlock Style="{StaticResource HintText}"
+                       Text="Buffs that fired in this session but aren't active right now.  Click 'Track' to add to your watchlist."/>
+            <TextBlock x:Name="RecentEmptyHint"
+                       Style="{StaticResource HintText}"
+                       Text="Nothing in history yet.  Engage in combat to see procs fire."/>
+            <ItemsControl x:Name="RecentList"
+                          ItemTemplate="{StaticResource BuffRowTemplate}"/>
+
+            <!-- ── Status line ────────────────────────────────────────────────────────── -->
+            <Border Margin="0,16,0,0" Padding="10,8"
+                    Background="#0F0F0F"
+                    BorderBrush="#44FFFFFF" BorderThickness="1"
+                    CornerRadius="3">
+                <TextBlock x:Name="StatusLine"
+                           Foreground="#AAFFFFFF" FontSize="11"
+                           TextWrapping="Wrap"
+                           Text="loading..."/>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

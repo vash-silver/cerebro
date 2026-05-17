@@ -120,6 +120,36 @@ public sealed class EternitySplinterTracker : IDisposable
     /// meter so a single file captures everything.</summary>
     public Action<string>? Diagnostic { get; set; }
 
+    /// <summary>Callback fired when <see cref="LastDropUtc"/> changes (a fresh detection
+    /// or a manual arm), so the host can persist the new anchor to
+    /// <c>DpsOverlaySettingsFile.LastSplinterDropUtc</c> and survive a Cerebro restart
+    /// mid-cooldown.  Runs on whichever thread triggered the change -- the host should
+    /// debounce or take its own lock if its persistence layer needs one.</summary>
+    public Action<DateTime>? LastDropTimestampChanged { get; set; }
+
+    /// <summary>Restore a previously-persisted drop timestamp at startup so the cooldown
+    /// countdown continues where it left off.  <see cref="DateTime.MinValue"/> means "no
+    /// prior drop" and is treated as a no-op (the tracker stays in its fresh-init
+    /// "eligible now" state).  Timestamps older than the cooldown window are also
+    /// effectively no-ops -- <see cref="CooldownRemaining"/> will return zero -- but we
+    /// still set the field so <see cref="LastDropUtc"/> reflects the real history.</summary>
+    public void RestoreLastDrop(DateTime utc)
+    {
+        if (utc == DateTime.MinValue) return;
+        lock (_sync)
+        {
+            _lastDropUtc = utc;
+            // Reset the one-shot expiry guard so if the persisted timestamp is just
+            // INSIDE the window, CooldownExpired still fires when it crosses zero this
+            // session.  Restoring an already-expired timestamp will fire the event
+            // immediately on the first Tick, which is fine -- a "your cooldown ended"
+            // notification on launch is informative, not noisy (one event per launch
+            // at most).
+            _cooldownExpiredFired = false;
+        }
+        Diagnostic?.Invoke($"EternitySplinterTracker: restored last-drop timestamp {utc:O} from persisted settings");
+    }
+
     /// <summary>Fires when a splinter drop is detected.  Runs on the sniffer thread --
     /// the UI should marshal to its dispatcher.</summary>
     public event EventHandler<SplinterDroppedEventArgs>? SplinterDropped;
@@ -253,6 +283,10 @@ public sealed class EternitySplinterTracker : IDisposable
             _lastDropUtc = DateTime.MinValue;
             _cooldownExpiredFired = false;
         }
+        // Persist the reset so a subsequent app restart doesn't restore the old timestamp
+        // from disk -- the user explicitly cleared it.  Done outside the lock for the same
+        // I/O-vs-readers reason as OnSplinterDetected.
+        LastDropTimestampChanged?.Invoke(DateTime.MinValue);
         if (wasActive)
             Diagnostic?.Invoke("EternitySplinterTracker: cooldown reset by user");
     }
@@ -470,6 +504,12 @@ public sealed class EternitySplinterTracker : IDisposable
             // (one diagnostic line per unique proto-index per window).
             _suppressedProtoIndicesLoggedThisCooldown.Clear();
         }
+        // Persist outside the lock -- LastDropTimestampChanged is wired to a settings.Save
+        // which does disk I/O.  Holding the tracker lock across a file write would block
+        // every reader (UI tick reading CooldownRemaining) for the duration; firing the
+        // callback unlocked is safe because the timestamp is now stable in the field and
+        // the host's save-to-disk is order-independent with respect to other tracker calls.
+        LastDropTimestampChanged?.Invoke(utc);
         var msg = manual
             ? $"EternitySplinterTracker: cooldown armed manually at {utc:HH:mm:ss} -- recorded {splinterCount} splinter(s) (session total now {TotalSplintersThisSession})"
             : $"EternitySplinterTracker: splinter drop detected at {utc:HH:mm:ss} (drop #{DropCount}, +{splinterCount} = {TotalSplintersThisSession} total) -- {CooldownDuration.TotalMinutes:0} min cooldown started";

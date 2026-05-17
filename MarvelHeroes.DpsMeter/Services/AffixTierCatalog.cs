@@ -80,17 +80,30 @@ internal static class AffixTierCatalog
         if (Contains(path, "CritDamage"))         return Tier.T2;
         if (Contains(path, "BrutalDamage"))       return Tier.T2;
         if (Contains(path, "SuperCritDamage"))    return Tier.T2;
+        if (Contains(path, "SuperCritDmg"))       return Tier.T2;   // abbreviated spelling in some legacy paths
         if (Contains(path, "MaxEndurance"))       return Tier.T2;
         if (Contains(path, "PenetrationPct"))     return Tier.T2;  // useful but situational
 
         // ── T1 HEADLINE STATS ─────────────────────────────────────────────────────────
         if (Contains(path, "DamageRating"))       return Tier.T1;   // generic DR
+        // Crit chance: same stat appears as "CritRating" on legendary / older affixes and
+        // "CritChance" on modern cosmic affixes (CritChanceT1, CritChanceMark4 etc).  Both
+        // are T1 -- the headline +crit% stat.
         if (Contains(path, "CritRating"))         return Tier.T1;
+        if (Contains(path, "CritChance"))         return Tier.T1;   // modern cosmic name
+        // Brutal-hit chance: four spellings on the wire for what's tooltipped as
+        // "Brutal Strike Rating" in-game.  All T1.
         if (Contains(path, "BrutalRating"))       return Tier.T1;
-        if (Contains(path, "BrutalStrike"))       return Tier.T1;   // actual affix path name
-                                                                     // for "+N Brutal Strike Rating";
-                                                                     // the tooltip stat label
-        if (Contains(path, "SuperCritRating"))    return Tier.T1;   // server-internal name
+        if (Contains(path, "BrutalStrike"))       return Tier.T1;
+        if (Contains(path, "BrutalChance"))       return Tier.T1;
+        if (Contains(path, "SuperCritRating"))    return Tier.T1;
+        if (Contains(path, "SuperCritChance"))    return Tier.T1;
+        // Cosmic Might: cosmic-armor exclusive damage multiplier; effectively a damage
+        // rating bonus that only rolls on Cosmic-tier gear.  T1 because at T1 rolls it's
+        // a several-percent flat DPS boost -- ranks alongside DamageRating headline stats.
+        // Includes the legacy ProcCosmicMight (proc-on-hit form) and the
+        // CosmicMightDemonReplacement variant; the substring "CosmicMight" catches all.
+        if (Contains(path, "CosmicMight"))        return Tier.T1;
 
         // Attribute affixes -- watch out for path tokens that LOOK like an attribute name
         // but aren't (e.g. "EnergyDamage" already matched T2 above; "EnergyRegen" is HP

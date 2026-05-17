@@ -57,6 +57,14 @@
       side-by-side deployment needed.  Same convention the comporator project uses.
     -->
     <Resource Include="Images\costumes\*.png" />
+    <!--
+      Power icons extracted from the MH client's ICO__MarvelUIIcons_SF.upk pack via
+      scripts/IconExtractor.  Used by the Buff Tracker tab's auto-suggest path: when the
+      user clicks "Track" on a buff, the chip auto-adopts the buff's source-power icon
+      via the PowerIconByProto root-enum lookup.  Adds ~11 MB to the published EXE; the
+      bundle pays for itself by removing the file-picker step for the common case.
+    -->
+    <Resource Include="Images\powers\*.png" />
   </ItemGroup>
 
 </Project>

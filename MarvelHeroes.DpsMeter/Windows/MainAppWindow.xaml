@@ -112,6 +112,13 @@
                               ToolTip="Will keep overlay active when you alt tab. Turn off if you're a single monitor user."
                               Checked="PersistOverlayCheckbox_OnChanged"
                               Unchecked="PersistOverlayCheckbox_OnChanged"/>
+                    <CheckBox x:Name="ShowBuffOverlayCheckbox"
+                              Style="{StaticResource HeaderCheckbox}"
+                              Content="Show buff overlay"
+                              Margin="0,4,0,0"
+                              ToolTip="Floating window that shows your tracked buffs over the game.  Configure the watchlist in the Buff Tracker tab."
+                              Checked="ShowBuffOverlayCheckbox_OnChanged"
+                              Unchecked="ShowBuffOverlayCheckbox_OnChanged"/>
                 </StackPanel>
             </Grid>
         </Border>
@@ -163,6 +170,16 @@
                     without a restart.
                 -->
                 <controls:LootScannerPanel x:Name="LootScannerTab"/>
+            </TabItem>
+            <TabItem Header="Buff Tracker">
+                <!--
+                    WeakAuras-style buff watchlist.  The user picks buff names from the live
+                    "currently active" + "recently seen" discovery lists; the chip strip on
+                    the dashboard / overlay filters down to that picked set when the master
+                    toggle is on.  Watchlist persists to
+                    %LocalAppData%\MarvelHeroesComporator\buff-watchlist.json.
+                -->
+                <controls:BuffTrackerPanel x:Name="BuffTrackerTab"/>
             </TabItem>
             <TabItem Header="Diagnostics">
                 <!--

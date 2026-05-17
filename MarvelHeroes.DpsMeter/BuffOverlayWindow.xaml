@@ -1,0 +1,33 @@
+<Window x:Class="MarvelHeroes.DpsMeter.BuffOverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:MarvelHeroes.DpsMeter.Controls"
+        Title="Buffs"
+        MinWidth="120"
+        MinHeight="60"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ResizeMode="CanResize"
+        SizeToContent="WidthAndHeight"
+        ShowInTaskbar="False"
+        Topmost="True"
+        Focusable="False"
+        WindowStartupLocation="Manual">
+    <!--
+        Wraps the existing BuffStripPanel in a transparent always-on-top frame.  Same
+        chrome handling as DpsOverlayWindow: WM_NCHITTEST routes edge clicks to the OS
+        resize path, body clicks drag the window via DragMove.  Background is dimmer than
+        the DPS overlay's #B2 since the strip already has per-chip borders/fills and a
+        full overlay-style backdrop here would compete visually.
+    -->
+    <Border x:Name="Frame"
+            Padding="8,6"
+            Background="#99000000"
+            CornerRadius="8"
+            BorderBrush="#552E7FFF"
+            BorderThickness="1"
+            MouseLeftButtonDown="Frame_MouseLeftButtonDown">
+        <controls:BuffStripPanel x:Name="Strip"/>
+    </Border>
+</Window>

@@ -350,6 +350,13 @@ public sealed class DpsMeter : IDisposable
     /// </summary>
     private readonly HashSet<ulong> _loggedCacheCleanupCombatantRemovals = new();
 
+    /// <summary>One-shot dedup for the "preserved self-avatar prototype cache" diagnostic.
+    /// EntityKilled for the local avatar can fire repeatedly across a session (death +
+    /// respawn cycles, DOT cleanup races) -- we only want to log the preservation once per
+    /// region so the diagnostic stays signal, not noise.  Reset on region change alongside
+    /// the per-region caches.</summary>
+    private bool _loggedSelfAvatarPreserve;
+
     /// <summary>Cap for <see cref="_loggedCacheCleanupCombatantRemovals"/>.  Sized at 2000 — a
     /// dense 5 min mob pull (Maggia patrol, Bovine Sentinel terminal) kills ~200–500 entities; a
     /// terminal end-boss fight kills ~50; a chapter run is rarely above 1000.  2 K headroom lets
@@ -636,6 +643,53 @@ public sealed class DpsMeter : IDisposable
             if (owner == 0) return 0;
             return _prototypeByEntityId.TryGetValue(owner, out uint proto) ? proto : 0;
         }
+    }
+
+    /// <summary>Best-guess current-hero name (e.g. <c>"Nightcrawler"</c>) inferred from
+    /// the local avatar's recent power activity.  Populated by <see cref="OnBuffApplied"/>
+    /// the moment a buff sourced from the local avatar's own ability fires (and most
+    /// gameplay produces self-buffs near-instantly: nearly every active ability applies a
+    /// hidden cooldown / channeling condition on the caster).  Empty until enough wire
+    /// traffic flows to pin down the hero; cleared on hero swap signaled by a different
+    /// hero name showing up.
+    ///
+    /// <para><b>Why not just look up <see cref="LikelySelfPrototypeIndex"/> in
+    /// <see cref="HeroPrototypes.Names"/>?</b>  That table is keyed by the
+    /// <c>AvatarPrototype</c>-specific enum which can drift on merged/public servers --
+    /// the user's avatar EntityCreate emits proto indices that don't match our table.
+    /// The buff-source -> root-power-enum -> <see cref="PowerHeroByProto"/> chain uses
+    /// the root <c>Prototype</c> enum which stays consistent with the client's
+    /// Calligraphy.sip regardless of server-side merge state.  Result: works on every
+    /// server we've seen, with the small trade-off that the hero name is empty until
+    /// the first self-buff fires (usually within a second of starting combat).</para></summary>
+    public string LikelySelfHeroName
+    {
+        get { lock (_sync) return _likelySelfHeroName ?? string.Empty; }
+    }
+
+    private string? _likelySelfHeroName;
+
+    /// <summary>Update <see cref="LikelySelfHeroName"/> when a self-owned condition is
+    /// observed with a creator power that <see cref="PowerHeroByProto"/> can resolve to
+    /// a hero basename.  Called by <see cref="DpsOverlayPresenter"/> from the BuffTracker's
+    /// add-event hook, so this class doesn't need to subscribe to the sniffer's
+    /// <c>ConditionAdded</c> directly.  Fires diagnostic logs on hero-name transitions so
+    /// the diagnostic log unambiguously records "we now know the user is Nightcrawler".</summary>
+    public void NoteSelfBuffFromPower(uint rootPowerProtoEnumIndex)
+    {
+        if (rootPowerProtoEnumIndex == 0) return;
+        string? hero = PowerHeroByProto.Get(rootPowerProtoEnumIndex);
+        if (string.IsNullOrEmpty(hero)) return;
+        string? prev;
+        lock (_sync)
+        {
+            prev = _likelySelfHeroName;
+            if (string.Equals(prev, hero, System.StringComparison.OrdinalIgnoreCase)) return;
+            _likelySelfHeroName = hero;
+        }
+        Diagnostic?.Invoke(
+            $"DpsMeter: self-hero resolved {prev ?? "<unknown>"} -> {hero} "
+          + $"(via root power proto {rootPowerProtoEnumIndex}); SelfOnly filter now armed.");
     }
 
     /// <summary>Instantaneous DPS over <see cref="InstantWindow"/> for the
@@ -1144,7 +1198,23 @@ public sealed class DpsMeter : IDisposable
         if (added)
             Diagnostic?.Invoke($"DpsMeter: local avatar registered via power activation (id={e.LocalAvatarEntityId}) — authoritative mode ON");
         if (pinFlipped)
-            Diagnostic?.Invoke($"DpsMeter: self-owner pinned {prevPin} -> {e.LocalAvatarEntityId} (from client power-activation)");
+        {
+            // Surface whether the proto cache for the new self-id is already populated.
+            // The two interesting cases:
+            //   * cache already has entry → identification will work immediately; the
+            //     loot scanner SelfOnly filter and hero-proto features are armed.
+            //   * cache is empty → we pinned self from the power packet, but the avatar's
+            //     EntityCreate hasn't been observed yet (or won't be — e.g. Cerebro
+            //     launched after the user already zoned in).  Self-proto-dependent
+            //     features will silently fail until an EntityCreate for this entity-id
+            //     arrives.
+            bool hasProto = _prototypeByEntityId.TryGetValue(e.LocalAvatarEntityId, out uint pinnedProto);
+            Diagnostic?.Invoke(
+                $"DpsMeter: self-owner pinned {prevPin} -> {e.LocalAvatarEntityId} (from client power-activation) -- "
+              + (hasProto && pinnedProto != 0
+                    ? $"proto cache already populated ({pinnedProto}); self features armed"
+                    : "proto cache EMPTY for this entity-id; self-proto features will fail closed until an EntityCreate for this id lands"));
+        }
         if (selfDbCaptured)
         {
             Diagnostic?.Invoke($"DpsMeter: self-dbId captured 0x{selfDbForLog:X16} (avatar {e.LocalAvatarEntityId}) — persisting for cross-restart binding restore");
@@ -1318,6 +1388,28 @@ public sealed class DpsMeter : IDisposable
         // during a map transition. Reads happen inside OnDamageDealt/Tick which hold _sync, but
         // ConcurrentDictionary makes that race-free without needing to upgrade this write path.
         _prototypeByEntityId[e.EntityId] = e.PrototypeEnumIndex;
+
+        // Targeted diagnostic: log specifically when the EntityCreate we just cached is
+        // for the entity the meter currently thinks is "self".  This is the bridge that
+        // makes LikelySelfPrototypeIndex start returning a non-zero value -- without an
+        // EntityCreate landing for the pinned self-id, the proto cache stays empty and
+        // every feature that gates on "is this for my hero" fails closed.  Surfacing the
+        // moment the bridge is established lets the user verify "yes, the loot scanner
+        // SelfOnly filter will work from this point on" without digging through every
+        // EntityCreate line.
+        //
+        // We deliberately do NOT gate on e.IsAvatar -- on some servers the wire flag bit
+        // for "this is an Avatar" doesn't get set even though the entity behaves like one
+        // (we've seen this on the public-server-merge build).  The cache write above is
+        // unconditional, so the value is correct regardless of IsAvatar; the diagnostic
+        // should fire whenever the self entity-id gets a cache entry, full stop.
+        if (e.EntityId == _likelySelfOwnerId && _likelySelfOwnerId != 0)
+        {
+            Diagnostic?.Invoke(
+                $"DpsMeter: self-avatar prototype captured (entityId={e.EntityId}, "
+              + $"protoIdx={e.PrototypeEnumIndex}, isAvatar={e.IsAvatar}) -- LikelySelfPrototypeIndex "
+              + $"now resolves; loot scanner SelfOnly filter and any hero-proto-based feature are now armed.");
+        }
 
         // Two concurrent book-keeping actions, both guarded by _sync:
         //   (a) Player containers carry HasDbId in the EntityCreate header — that's our LOCAL
@@ -1937,6 +2029,7 @@ public sealed class DpsMeter : IDisposable
             _loggedFirstHitEntities.Clear();
             _loggedCacheCleanupCombatantRemovals.Clear();
             _loggedCacheReuseEvents.Clear();
+            _loggedSelfAvatarPreserve = false;
             _lastFilterDedupResetUtc = nowUtc;
             Diagnostic?.Invoke($"DpsMeter: filter-dedup periodic reset — every {FilterDedupResetInterval.TotalMinutes:F0} min the per-window admit/drop/first-hit/cache-cleanup/cache-reuse caches are wiped so the next batch of diagnostic lines starts fresh. If a hit at this point still says \"silent drop\" / never appears at all, the underlying filter logic is genuinely silent; if a flurry of `combatant filter admit` / `non-combatant filter drop` / `first-hit on entity` / `prototype-cache cleanup` / `prototype-cache id-reuse` lines appears in the next few seconds, that's expected — they're rebuilding from the cleared sets.");
         }
@@ -3156,6 +3249,7 @@ public sealed class DpsMeter : IDisposable
             _loggedFirstHitEntities.Clear();
             _loggedCacheCleanupCombatantRemovals.Clear();
             _loggedCacheReuseEvents.Clear();
+            _loggedSelfAvatarPreserve = false;
             // Restart the periodic-reset clock too: the next OnDamageDealt call will stamp
             // _lastFilterDedupResetUtc and a fresh 5-min window starts from this region's
             // first hit (instead of from a stale wall-clock value carried in from the
@@ -3284,6 +3378,38 @@ public sealed class DpsMeter : IDisposable
     private void InvalidatePrototypeCacheForRemovedEntity(ulong entityId, string sourceTag)
     {
         if (entityId == 0) return;
+
+        // Guard: never evict the local-self avatar's prototype cache entry.
+        //
+        // Why: the local hero (Nightcrawler, Cyclops, etc.) is in CombatantPrototypes -- it's
+        // a playable character class, so IsCombatant returns true.  When the player dies
+        // in-game the server briefly fires EntityKilled for the avatar before respawn.
+        // Without this guard, the eviction runs and removes _prototypeByEntityId[selfId];
+        // respawn reuses the same entity id, so no fresh EntityCreate ever repopulates the
+        // cache.  Result: LikelySelfPrototypeIndex returns 0 permanently after the first
+        // death, silently breaking the loot scanner's SelfOnly filter and the
+        // hero-name-resolution path on the dashboard.
+        //
+        // Read of _likelySelfOwnerId is intentionally outside the lock: it's a single
+        // ulong field (atomic on x64), and a stale read just means we preserve a
+        // prototype that's already been replaced -- which is harmless because the
+        // post-replacement cache entry would have the new proto value anyway.  Real bug
+        // would be evicting the LIVE self entry, which the lock-free read can't cause.
+        ulong selfId = _likelySelfOwnerId;
+        if (selfId != 0 && entityId == selfId)
+        {
+            if (!_loggedSelfAvatarPreserve)
+            {
+                _loggedSelfAvatarPreserve = true;
+                Diagnostic?.Invoke(
+                    $"DpsMeter: preserved self-avatar prototype-cache entry on {sourceTag} "
+                  + $"(entityId={entityId}) -- death/respawn would otherwise null out the "
+                  + $"proto and silently break the loot scanner SelfOnly filter for the rest "
+                  + $"of the session.");
+            }
+            return;
+        }
+
         if (!_prototypeByEntityId.TryRemove(entityId, out uint removedProto)) return;
         if (removedProto == 0) return;
 

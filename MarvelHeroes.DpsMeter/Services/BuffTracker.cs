@@ -51,6 +51,21 @@ public sealed class BuffTracker : IDisposable
     /// from <see cref="ConditionAddedEvent"/> at apply time.</summary>
     private readonly Dictionary<ulong, ActiveBuff> _active = new();
 
+    /// <summary>Per-distinct-buff-name history: every name we've ever seen applied to the
+    /// current self-owner, with first/last-seen timestamps, total fire count, and current
+    /// active-stack count.  Drives the "Recently seen" discovery UI in the Buff Tracker
+    /// tab so the user can click "Track" on a name they just saw rather than having to
+    /// type it in.  Keyed by full <see cref="ActiveBuff.DisplayName"/> (not the chip-shortened
+    /// form) so two different buffs that happen to shorten to the same chip label stay
+    /// distinct here -- the panel surfaces the short label to the user but stores the
+    /// long form internally for unambiguous match.
+    ///
+    /// <para>Cleared when <see cref="SelfOwnerId"/> changes (the previous owner's history
+    /// is no longer relevant).  No size cap currently -- a heavy multi-hour session sees
+    /// on the order of ~100 distinct buff names, which is fine for a Dictionary lookup
+    /// and a short ListView.  Add a size cap if real-world usage shows otherwise.</para></summary>
+    private readonly Dictionary<string, RecentBuffEntry> _seenHistory = new();
+
     private ulong _selfOwnerId;
 
     /// <summary>Local self avatar entity id, set by the host as the DPS meter learns it.
@@ -74,6 +89,10 @@ public sealed class BuffTracker : IDisposable
                     _active.Values.CopyTo(dropped, 0);
                     _active.Clear();
                 }
+                // Discovery index is per-owner too -- the previous avatar's recent-buffs
+                // history is irrelevant once we know we're tracking a different one.  No
+                // need to fire an event; subscribers re-snapshot on the next poll tick.
+                _seenHistory.Clear();
                 _selfOwnerId = value;
             }
             Diagnostic?.Invoke($"BuffTracker: SelfOwnerId {prev} -> {value} ({dropped.Length} buffs cleared)");
@@ -267,6 +286,157 @@ public sealed class BuffTracker : IDisposable
         return snapshot;
     }
 
+    /// <summary>Snapshot of every distinct buff name we've seen applied to the current
+    /// self-owner since the tracker started (or since the last <see cref="SelfOwnerId"/>
+    /// change).  Sorted by most-recent first so the Buff Tracker tab's "Recently seen"
+    /// list shows the active rotation's buffs at the top, with stale entries falling
+    /// down naturally as new things fire.
+    ///
+    /// <para>The list includes both currently-active and historical entries -- the UI
+    /// distinguishes them via <see cref="RecentBuffSummary.CurrentlyActive"/>.  Caller
+    /// renders "actively-applied" (Active > 0) and "recently seen but not active now"
+    /// (Active == 0) as separate sections.</para></summary>
+    public IReadOnlyList<RecentBuffSummary> GetRecentBuffs()
+    {
+        RecentBuffSummary[] snapshot;
+        lock (_sync)
+        {
+            if (_seenHistory.Count == 0) return Array.Empty<RecentBuffSummary>();
+            snapshot = new RecentBuffSummary[_seenHistory.Count];
+            int i = 0;
+            foreach (var kvp in _seenHistory)
+            {
+                snapshot[i++] = new RecentBuffSummary
+                {
+                    DisplayName       = kvp.Key,
+                    ShortName         = BuffDisplayClassifier.ShortenForChip(kvp.Key),
+                    FirstSeenUtc      = kvp.Value.FirstSeenUtc,
+                    LastSeenUtc       = kvp.Value.LastSeenUtc,
+                    TotalFires        = kvp.Value.TotalFires,
+                    CurrentlyActive   = kvp.Value.CurrentlyActive,
+                    CreatorPowerProto = kvp.Value.CreatorPowerProto,
+                };
+            }
+        }
+        // Most-recent first; if two entries fired at the exact same UTC tick fall back to
+        // alphabetical for a stable order.
+        Array.Sort(snapshot, (a, b) =>
+        {
+            int byTime = b.LastSeenUtc.CompareTo(a.LastSeenUtc);
+            return byTime != 0 ? byTime : string.CompareOrdinal(a.ShortName, b.ShortName);
+        });
+        return snapshot;
+    }
+
+    // ── Derived state: Stealth / Invisible ──────────────────────────────────────────────
+    // MH "stealth" and "true invisibility" are property-based -- a buff applies one or both
+    // of these property deltas and the avatar's tooltip / damage-multiplier talents key off
+    // the derived state, not the buff's name.  Walking ACTIVE buffs' property deltas every
+    // tick gives us a derived "are you currently invisible-enough to trigger Surprise Attack
+    // damage" boolean that's:
+    //   * Resilient to renames -- doesn't matter what the buff is called, only what it does
+    //   * Resilient to multiple sources -- artifact procs + Nightcrawler teleport stealth +
+    //     costume cores can all set the same property; we OR them together
+    //   * Cheap -- one pass over active buffs per check (typically <20 buffs)
+    //
+    // PropertyEnum 899 (Stealth) -- non-zero value means stealthed.
+    // PropertyEnum 993 (Visible) -- zero value means invisible (the inverse boolean).
+    private const uint PropertyEnumStealth = 899u;
+    private const uint PropertyEnumVisible = 993u;
+
+    /// <summary>Returns the current "is the local avatar in some form of stealth or
+    /// invisibility" state by inspecting every active buff's property deltas.  Returns
+    /// the kind (text label like "Stealthed", "Invisible", or "Stealthed + Invisible") and
+    /// the list of buff names that contributed to the state -- useful for surfacing
+    /// "you're stealthed because of: [Teleport Stealth Combo]" in the diagnostic UI.
+    ///
+    /// <para>This is a buff-property-derived signal only -- if the server changes the
+    /// property via a standalone <c>NetMessageSetProperty</c> (no buff wrapper), this
+    /// API doesn't see it.  The companion path through <c>NetMessageSetProperty</c>
+    /// parsing in <c>MhMissionSniffer</c> covers that case separately.</para></summary>
+    public bool TryGetStealthState(out string label, out IReadOnlyList<string> sources)
+    {
+        var stealthSrc   = new List<string>();
+        var invisibleSrc = new List<string>();
+        lock (_sync)
+        {
+            foreach (var buff in _active.Values)
+            {
+                var deltas = buff.PropertyDeltas;
+                for (int i = 0; i < deltas.Count; i++)
+                {
+                    var d = deltas[i];
+                    // Stealth = 1 -> stealthed.  Use RawValueBits so we don't trip over
+                    // the IEEE-754 bool-as-tiny-denormal-double false-positive (a bool
+                    // property's wire encoding stores the raw 0/1 in the value bits;
+                    // FloatValue reinterpretation gives a meaningless denormal).
+                    if (d.PropertyEnum == PropertyEnumStealth && d.RawValueBits != 0)
+                        stealthSrc.Add(buff.DisplayName);
+                    // Visible = 0 -> invisible.  The buff's delta sets Visible to false.
+                    else if (d.PropertyEnum == PropertyEnumVisible && d.RawValueBits == 0)
+                        invisibleSrc.Add(buff.DisplayName);
+                }
+            }
+        }
+
+        bool hasStealth   = stealthSrc.Count > 0;
+        bool hasInvisible = invisibleSrc.Count > 0;
+        if (!hasStealth && !hasInvisible)
+        {
+            label = string.Empty;
+            sources = Array.Empty<string>();
+            return false;
+        }
+
+        label = hasStealth && hasInvisible
+            ? "Stealthed + Invisible"
+            : hasStealth ? "Stealthed" : "Invisible";
+        // Concatenate the two source lists, preserving order, dropping duplicates so a
+        // single buff that sets BOTH properties (the common case for proper "stealth"
+        // talents) doesn't appear twice.
+        var combined = new List<string>(stealthSrc.Count + invisibleSrc.Count);
+        var seen     = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+        void Add(List<string> from)
+        {
+            foreach (var s in from) if (seen.Add(s)) combined.Add(s);
+        }
+        Add(stealthSrc);
+        Add(invisibleSrc);
+        sources = combined;
+        return true;
+    }
+
+    /// <summary>Wipe the "recently seen" discovery index without touching the active-buffs
+    /// list.  Wired to a "Clear history" button in the Buff Tracker tab so a user can
+    /// reset the recent-list after a costume swap / artifact change without having to
+    /// restart the app or change zones.</summary>
+    public void ClearRecentHistory()
+    {
+        int cleared;
+        lock (_sync)
+        {
+            cleared = _seenHistory.Count;
+            _seenHistory.Clear();
+        }
+        Diagnostic?.Invoke($"BuffTracker: cleared {cleared} entries from recent-history");
+    }
+
+    /// <summary>Mutable accumulator for <see cref="_seenHistory"/>; exposed as the
+    /// immutable <see cref="RecentBuffSummary"/> via <see cref="GetRecentBuffs"/>.  Mutations
+    /// happen only inside the lock-guarded add/remove handlers above.</summary>
+    private sealed class RecentBuffEntry
+    {
+        public DateTime FirstSeenUtc;
+        public DateTime LastSeenUtc;
+        public int TotalFires;
+        public int CurrentlyActive;
+        /// <summary>Root-prototype enum index of the power that applied this buff, or 0
+        /// when the condition came without a creator power (rare -- usually item-applied
+        /// effects).  Captured on the first observation so the discovery UI can suggest
+        /// an in-game icon via <c>PowerIconByProto.Get</c> when the user clicks Track.</summary>
+        public uint CreatorPowerProto;
+    }
+
     private void OnConditionAdded(object? sender, ConditionAddedEvent ev)
     {
         ulong selfId = SelfOwnerId;
@@ -329,6 +499,29 @@ public sealed class BuffTracker : IDisposable
         {
             replaced = _active.ContainsKey(ev.ConditionId);
             _active[ev.ConditionId] = buff;
+
+            // Mirror into the "ever seen on this owner" discovery index.  Increment
+            // TotalFires on every add (even replacements -- a stack refresh is a separate
+            // fire from a fresh apply for "did this gear proc?" purposes); increment
+            // CurrentlyActive only when this is a new condId (a refresh of an existing
+            // condId doesn't change the active-stack count, it just resets the duration).
+            if (!_seenHistory.TryGetValue(displayName, out var entry))
+            {
+                entry = new RecentBuffEntry
+                {
+                    FirstSeenUtc      = ev.UtcTime,
+                    CreatorPowerProto = (uint)ev.CreatorPowerPrototypeRef,
+                };
+                _seenHistory[displayName] = entry;
+            }
+            entry.LastSeenUtc = ev.UtcTime;
+            entry.TotalFires++;
+            if (!replaced) entry.CurrentlyActive++;
+            // Late-bind the creator-power if we missed it on the first sighting (e.g. an
+            // item-applied buff that fired without a power, followed by an ability that
+            // reapplies the same condition with a creator-power attached).
+            if (entry.CreatorPowerProto == 0 && ev.CreatorPowerPrototypeRef != 0)
+                entry.CreatorPowerProto = (uint)ev.CreatorPowerPrototypeRef;
         }
 
         // One-line summary log.  Shows up by default (NOT gated on verbose) because this is
@@ -355,6 +548,11 @@ public sealed class BuffTracker : IDisposable
             {
                 _active.Remove(ev.ConditionId);
                 removed = b;
+                // Decrement the discovery-index's "currently active" count for this name.
+                // History entry stays around indefinitely -- we WANT to remember that this
+                // buff fired so the user can click "Track" on it later.
+                if (_seenHistory.TryGetValue(b.DisplayName, out var entry) && entry.CurrentlyActive > 0)
+                    entry.CurrentlyActive--;
             }
             else
             {
@@ -465,4 +663,49 @@ public sealed class ActiveBuff
     /// on this archive).  The live-stats panel sums these across all active buffs.</summary>
     public IReadOnlyList<BuffPropertyDelta> PropertyDeltas { get; init; }
         = Array.Empty<BuffPropertyDelta>();
+}
+
+/// <summary>Immutable summary of one distinct buff name's history on the current self-owner.
+/// Returned by <see cref="BuffTracker.GetRecentBuffs"/> and consumed by the Buff Tracker tab's
+/// discovery UI ("Currently active" + "Recently seen" sections).  Keyed conceptually on
+/// <see cref="DisplayName"/> (the long-form name from the buff source) but displayed via
+/// <see cref="ShortName"/> -- both are surfaced so the panel can show the friendly label and
+/// the watchlist can store whichever the user actually clicked.</summary>
+public sealed class RecentBuffSummary
+{
+    /// <summary>Long-form display name -- the chip text BEFORE
+    /// <c>BuffDisplayClassifier.ShortenForChip</c>.  Used as the unique key in the
+    /// tracker's history dictionary so two different buffs that happen to shorten to the
+    /// same chip label don't collide.</summary>
+    public required string DisplayName { get; init; }
+
+    /// <summary>Chip-shortened name -- what the user sees in the buff strip.  Also what
+    /// the watchlist tracks, so "click Track" / "show in strip" both speak the same
+    /// language.</summary>
+    public required string ShortName { get; init; }
+
+    /// <summary>UTC time we first saw this name applied to the current owner.</summary>
+    public required DateTime FirstSeenUtc { get; init; }
+
+    /// <summary>UTC time we last saw this name applied (most-recent re-apply / stack
+    /// refresh).  Drives the sort order in the discovery UI -- most-recent first.</summary>
+    public required DateTime LastSeenUtc { get; init; }
+
+    /// <summary>Total number of <c>ConditionAdded</c> events we saw for this name, including
+    /// stack refreshes.  Useful as a "how active is this proc" hint: a 50-fire artifact
+    /// during a boss fight is the main DPS contributor; a 1-fire team buff was probably a
+    /// one-off ability.</summary>
+    public required int TotalFires { get; init; }
+
+    /// <summary>How many condIds with this name are active RIGHT NOW.  Zero = the buff has
+    /// fired in this session but isn't currently up.  Non-zero = visible in the buff strip
+    /// (subject to the panel's category filter).</summary>
+    public required int CurrentlyActive { get; init; }
+
+    /// <summary>Root-prototype enum index of the power that applied this buff (the value
+    /// the Buff Tracker tab feeds into <c>PowerIconByProto.Get</c> to auto-suggest an
+    /// in-game icon when the user clicks Track).  Zero when the buff's first observed
+    /// application had no creator power -- which means we can't infer a game icon for
+    /// it and the user has to pick one via the file picker if they want imagery.</summary>
+    public uint CreatorPowerProto { get; init; }
 }

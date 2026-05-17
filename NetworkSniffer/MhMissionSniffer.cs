@@ -242,6 +242,42 @@ public sealed class EntityCreatedEvent
     /// dump "saw currency type 0x... with N units" lines and we can identify each
     /// server's splinter signature by correlating against confirmed in-game drops.</summary>
     public ulong CurrencyParams { get; init; }
+
+    /// <summary>Raw EntityCreate <c>fieldFlags</c> bitfield (the first varint after the
+    /// replication header + entityId + protoIdx in baseData).  Surfaced so downstream
+    /// consumers can apply additional filters without re-parsing baseData -- e.g. the
+    /// loot scanner uses <see cref="RawLocoFieldFlags"/> to skip peer-equipped /
+    /// inventoried items.  Known bits in this codebase: HasNonProximityInterest (1&lt;&lt;5),
+    /// HasDbId (1&lt;&lt;8), HasAvatarWorldInstanceId (1&lt;&lt;9).  Other bits are not
+    /// currently decoded but are preserved here for empirical inspection.</summary>
+    public uint RawFieldFlags { get; init; }
+
+    /// <summary>Raw EntityCreate <c>locoFieldFlags</c> bitfield (the second varint after
+    /// <see cref="RawFieldFlags"/>).  Zero for entities with no locomotion state -- which
+    /// in practice means "this entity isn't in the world" -- so it doubles as a cheap
+    /// "is this in someone's inventory / equipped slot vs on the ground" discriminator.
+    /// See <see cref="LikelyInInventory"/> for the convenience accessor.</summary>
+    public uint RawLocoFieldFlags { get; init; }
+
+    /// <summary>True when this entity almost certainly lives inside a container
+    /// (inventory / equipped slot) rather than in the world.  Heuristic: a non-avatar
+    /// entity with empty <see cref="RawLocoFieldFlags"/> has no locomotion state, which
+    /// means the server didn't emit a world position for it -- inventoried / equipped
+    /// items are the canonical case.  Ground-dropped items DO carry a position (they
+    /// sit somewhere in the region) and so have non-zero loco flags.
+    ///
+    /// <para>Used by <c>LootScannerDiagnostic</c> to skip the noise generated when you
+    /// walk into the HUB / a crowded zone and the server fires an <c>EntityCreate</c>
+    /// for every peer player's equipped gear so your client can render their costume
+    /// and stat hovers.  Without this filter the scanner sees thousands of "items"
+    /// per zone load and the hunt-match logic evaluates each of them.</para>
+    ///
+    /// <para><b>Trade-off:</b> if a future build of the server changes the loco-state
+    /// encoding such that ground items also have empty loco flags, this filter would
+    /// silently drop real drops.  The loot scanner emits a verbose-mode "filtered" line
+    /// so over-filtering can be diagnosed by glancing at the diagnostic log after a
+    /// session.</para></summary>
+    public bool LikelyInInventory => !IsAvatar && RawLocoFieldFlags == 0;
 }
 
 /// <summary>
@@ -1594,12 +1630,13 @@ public sealed class MhMissionSniffer : IDisposable
         ulong dbId = 0;
         bool isAvatar = false;
         uint fieldFlagsDbg = 0;                     // captured for diagnostic logging below
+        uint locoFieldFlagsDbg = 0;                 // captured for LikelyInInventory + diagnostic
         try
         {
             uint fieldFlags    = (uint)r.ReadVarUInt64();
             fieldFlagsDbg      = fieldFlags;
             uint locoFieldFlags = (uint)r.ReadVarUInt64();
-            _ = locoFieldFlags;
+            locoFieldFlagsDbg  = locoFieldFlags;
 
             const uint HasNonProximityInterest  = 1u << 5;
             const uint HasDbId                  = 1u << 8;
@@ -1693,6 +1730,8 @@ public sealed class MhMissionSniffer : IDisposable
                 RawArchive         = rawArchive,
                 IsCurrencyDrop     = isCurrencyDrop,
                 CurrencyParams     = currencyParams,
+                RawFieldFlags      = fieldFlagsDbg,
+                RawLocoFieldFlags  = locoFieldFlagsDbg,
                 UtcTime            = DateTime.UtcNow,
             });
         }

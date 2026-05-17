@@ -34,6 +34,20 @@ public sealed class LootScannerDiagnostic : IDisposable
 {
     private readonly MhMissionSniffer _sniffer;
 
+    /// <summary>Last <c>SelfPrototypeIndex()</c> value we observed; used to fire a one-shot
+    /// "self-proto resolved: N" log line the first time the avatar identification flow
+    /// completes (and on subsequent re-identifications after hero swap / zone change).
+    /// Provides a glanceable "is the self filter even going to work" indicator without
+    /// requiring the user to grep through dozens of "local avatar registered" / decay-tick
+    /// logs to confirm the chain.</summary>
+    private uint _lastSelfProtoSeen;
+
+    /// <summary>Last <c>SelfHeroName()</c> value we observed; mirrors
+    /// <see cref="_lastSelfProtoSeen"/> but for the hero-name path.  Used to fire one
+    /// "self-state changed" diagnostic on each hero transition so the diagnostic log shows
+    /// "I now know you are Nightcrawler" exactly once per pin event, not on every drop.</summary>
+    private string? _lastSelfHeroSeen;
+
     /// <summary>Diagnostic log sink.  Set by the host (presenter) to <c>AppendLog</c>.</summary>
     public Action<string>? Diagnostic { get; set; }
 
@@ -47,6 +61,23 @@ public sealed class LootScannerDiagnostic : IDisposable
     /// used by hunt-mode filter to match items via <c>EquippableBy</c>.  Server-agnostic --
     /// works regardless of items.txt enum table drift (server merges etc.).</summary>
     public Func<uint> SelfPrototypeIndex { get; set; } = () => 0u;
+
+    /// <summary>Function returning the local avatar's entity id, or <c>0</c> when not yet
+    /// pinned.  Plumbed from <c>DpsMeter.LikelySelfOwnerId</c>.  Surfaced separately from
+    /// <see cref="SelfPrototypeIndex"/> so the diagnostic log can distinguish "meter never
+    /// pinned self" (<c>SelfOwnerId == 0</c>) from "meter pinned self but proto cache
+    /// missed" (<c>SelfOwnerId != 0 && SelfPrototypeIndex == 0</c>) -- the two failure
+    /// modes need different fixes and the combined log lets us tell them apart at a
+    /// glance.</summary>
+    public Func<ulong> SelfOwnerId { get; set; } = () => 0uL;
+
+    /// <summary>Function returning the local hero's basename (e.g. <c>"Nightcrawler"</c>),
+    /// or empty when the hero hasn't been pinned yet.  Plumbed from
+    /// <c>DpsMeter.LikelySelfHeroName</c>; this is the authoritative input to the SelfOnly
+    /// filter's hero-name-vs-hero-name comparison.  See
+    /// <see cref="AvatarNamesByProto"/> and <see cref="PowerHeroByProto"/> for the
+    /// translation pipeline.</summary>
+    public Func<string> SelfHeroName { get; set; } = () => string.Empty;
 
     /// <summary>Fires (on the capture thread) when a drop passes the hunt criteria.  The
     /// presenter subscribes to play the alert sound -- it marshals to the UI dispatcher
@@ -65,6 +96,31 @@ public sealed class LootScannerDiagnostic : IDisposable
     {
         // Avatars are never items -- filter cheap.
         if (ev.IsAvatar) return;
+
+        // Skip items that live inside a container (inventory / equipped slot) instead of
+        // sitting in the world.  Every time a peer player enters your AOI -- say, walking
+        // into the HUB surrounded by other players -- the server sends an EntityCreate for
+        // each of their equipped items + visible inventory so your client can render
+        // costumes and tooltips.  These have the same archive layout as a fresh ground
+        // drop, so they parse cleanly as ItemSpecs and would otherwise produce a flood of
+        // "Loot drop" diagnostic lines and even fire phantom HUNT MATCH alerts on someone
+        // else's gear.  LikelyInInventory uses the locomotion-flags=0 heuristic (items in
+        // the world carry a position; items in containers don't) -- see the property doc
+        // in MhMissionSniffer for the trade-offs.
+        if (ev.LikelyInInventory)
+        {
+            // Verbose-mode visibility into the filter so a false-positive (real drop
+            // suppressed) can be diagnosed by glancing at the log after a session.  Keep
+            // the message short -- there can be thousands of these per zone load.
+            if (IsVerboseEnabled())
+            {
+                Diagnostic?.Invoke(
+                    $"LootScannerDiagnostic: skipped (in-inventory) entityId={ev.EntityId} "
+                  + $"protoIdx={ev.PrototypeEnumIndex} "
+                  + $"fieldFlags=0x{ev.RawFieldFlags:X} loco=0x{ev.RawLocoFieldFlags:X}");
+            }
+            return;
+        }
 
         // Previously we gated on RolledLootPrototypes.IsTracked here, but that filter
         // relied on items.txt enum indices matching the server's enum.  After a
@@ -131,21 +187,84 @@ public sealed class LootScannerDiagnostic : IDisposable
         // reshuffles -- the resolved path can claim an item is "GreenGoblin Unique478"
         // when it's actually a Nightcrawler bodysuit.  The numeric protos are at least
         // consistent within a session, so they're the more useful debug signal.
-        uint selfProto = SelfPrototypeIndex();
-        bool isForSelf = selfProto != 0 && spec.EquippableByEnumIndex == selfProto;
-        Diagnostic?.Invoke(
-            $"LootScannerDiagnostic: + Loot drop entityId={ev.EntityId} score={score} "
-          + $"IL={spec.ItemLevel} affixes={affixCount} "
-          + $"(T1={t1Count} T2={t2Count} T3={t3Count} ?={noneCount}) "
-          + $"itemProto={spec.ItemProtoEnumIndex} rarityProto={spec.RarityProtoEnumIndex} "
-          + $"equippableBy={spec.EquippableByEnumIndex}{(isForSelf ? " [SELF]" : "")} "
-          + $"-- [{details}]");
+        //
+        // Gated on verbose-diagnostics: in normal mode this would fire on EVERY non-avatar
+        // EntityCreate that parses cleanly as an item -- including equipped gear / inventory
+        // contents the server replicates when peer avatars enter your AOI (every player you
+        // see in the HUB ships ~20 items worth of wire traffic).  HUNT MATCH below stays
+        // ungated so the actual user-facing alert still fires reliably regardless of the
+        // verbose toggle.
+        // Snapshot the self-state lambdas once per drop so the diagnostic logs and the
+        // hunt-match call all see the same values (avoid races where the user pins a hero
+        // mid-evaluation and one log line shows the old name and another shows the new).
+        uint   selfProto = SelfPrototypeIndex();
+        ulong  selfOwner = SelfOwnerId();
+        string selfHero  = SelfHeroName();
+
+        // Resolve the item's intended hero via the root-enum table -- this is the value
+        // SelfOnly's hero-name comparison gates on.  Null = the drop's EquippableBy isn't a
+        // known shipping hero (server-merged custom avatar, or "any hero" item).
+        string? itemHero = AvatarNamesByProto.Get(spec.EquippableByEnumIndex);
+
+        // Fire a one-shot diagnostic when the resolved hero name changes -- gives the user
+        // a single glanceable "self filter is now armed" signal without grepping through
+        // pages of self-owner-pin / self-proto-resolved chatter.  selfOwner + selfProto are
+        // surfaced too so the legacy enum-based state stays visible for triage.
+        if (!string.Equals(selfHero, _lastSelfHeroSeen, System.StringComparison.OrdinalIgnoreCase))
+        {
+            Diagnostic?.Invoke(
+                $"LootScannerDiagnostic: self-state changed selfOwner={selfOwner} "
+              + $"selfProto={selfProto} selfHero '{_lastSelfHeroSeen ?? "<unknown>"}' -> '{selfHero}' "
+              + $"({(string.IsNullOrEmpty(selfHero)
+                        ? "hero not resolved yet -- fire a power on your active avatar to pin it"
+                        : "ready for SelfOnly filter")})");
+            _lastSelfHeroSeen = selfHero;
+        }
+        bool isForSelf = !string.IsNullOrEmpty(selfHero)
+                      && !string.IsNullOrEmpty(itemHero)
+                      && string.Equals(selfHero, itemHero, System.StringComparison.OrdinalIgnoreCase);
+        // selfProto surfaced verbatim in the log so the user can distinguish "avatar not
+        // identified yet" (selfProto=0) from "identified but mismatched" (non-zero but
+        // != equippableBy).  The two cases need different fixes -- "not identified" is a
+        // timing issue (launch Cerebro before logging in, or activate a power), but
+        // "mismatched" implies the EquippableBy field uses a different enum than the
+        // avatar's EntityCreate prototype, which is a wire-format question we have to
+        // investigate.
+        if (IsVerboseEnabled())
+        {
+            Diagnostic?.Invoke(
+                $"LootScannerDiagnostic: + Loot drop entityId={ev.EntityId} score={score} "
+              + $"IL={spec.ItemLevel} affixes={affixCount} "
+              + $"(T1={t1Count} T2={t2Count} T3={t3Count} ?={noneCount}) "
+              + $"itemProto={spec.ItemProtoEnumIndex} rarityProto={spec.RarityProtoEnumIndex} "
+              + $"equippableBy={spec.EquippableByEnumIndex} itemHero='{itemHero ?? "<unknown>"}' "
+              + $"selfOwner={selfOwner} selfProto={selfProto} selfHero='{selfHero}'"
+              + $"{(isForSelf ? " [SELF]" : "")} "
+              + $"-- [{details}]");
+        }
 
         // Hunt match: does this drop match the user's configured criteria?  Emits a louder
         // log line AND fires HuntMatched so the presenter can play an alert sound.  Avatar-
         // based identity match works regardless of how the server numbers its prototype
         // enums.
-        if (HuntCriteria.MatchesHunt(spec, spec.AffixSpecs, selfProto, out var huntAffixes))
+        bool huntMatched = HuntCriteria.MatchesHunt(spec, spec.AffixSpecs, selfProto, selfHero, out var huntAffixes);
+
+        // Always emit a one-liner explaining the hunt decision -- it's the most-frequent
+        // "why didn't this trigger?" question and the cost is one log line per drop, which
+        // is rare-enough traffic that we don't need a verbose gate.  Format mirrors the
+        // user's mental model: what config we evaluated against, what we found, what
+        // decided.  When a known-good drop fails to match, this line tells you instantly
+        // whether the patterns failed to match, MinHits gated it, the rarity gate gated it,
+        // or the self gate gated it.
+        var cfgNow = LootHuntConfig.Current;
+        Diagnostic?.Invoke(
+            $"LootScannerDiagnostic: hunt-eval entityId={ev.EntityId} matched={huntMatched} "
+          + $"matches=[{string.Join(",", huntAffixes)}] (count={huntAffixes.Count} need>={cfgNow.MinHits}) "
+          + $"selfHero='{selfHero}' itemHero='{itemHero ?? "<unknown>"}' selfMatch={isForSelf} "
+          + $"cfg.Enabled={cfgNow.Enabled} cfg.SelfOnly={cfgNow.SelfOnly} cfg.Rarity={cfgNow.Rarity} "
+          + $"cfg.WantedPatterns=[{string.Join(",", cfgNow.WantedPatterns)}]");
+
+        if (huntMatched)
         {
             Diagnostic?.Invoke(
                 $"LootScannerDiagnostic: *** HUNT MATCH *** entityId={ev.EntityId} "

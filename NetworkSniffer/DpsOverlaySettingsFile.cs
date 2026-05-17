@@ -60,6 +60,26 @@ public sealed class DpsOverlaySettingsFile
     /// <summary>See <see cref="OverlayWidth"/>.</summary>
     public double OverlayHeight { get; set; } = 0;
 
+    /// <summary>When <c>true</c>, a separate always-on-top floating "buff overlay" window
+    /// is shown alongside the main DPS overlay.  The buff overlay only renders buffs on
+    /// the user's <see cref="TrackedBuffsConfig.Tracked"/> watchlist (WeakAuras-style
+    /// focused display), independent of whether the DPS overlay is visible.  Defaults to
+    /// off -- the buff strip on the live dashboard remains the primary surface for users
+    /// who haven't opted into the focused floating view.</summary>
+    public bool ShowBuffOverlay { get; set; } = false;
+
+    /// <summary>Persisted geometry for the floating buff overlay.  Modeled on the DPS
+    /// overlay's Left/Top/OverlayWidth/OverlayHeight pair so user-resized positions
+    /// survive across launches.  Default positions place the window in the upper-right
+    /// quadrant (offset from origin so it doesn't open on top of the DPS overlay's default
+    /// upper-left position).  Zero <c>Width</c> / <c>Height</c> mean "auto-fit to content
+    /// on first launch, then capture the resulting dimensions" -- same first-run pattern
+    /// as the DPS overlay.</summary>
+    public double BuffOverlayLeft { get; set; } = 400;
+    public double BuffOverlayTop { get; set; } = 40;
+    public double BuffOverlayWidth { get; set; } = 0;
+    public double BuffOverlayHeight { get; set; } = 0;
+
     /// <summary>
     /// Boss-only filter — when <c>true</c> the leaderboard only credits damage against
     /// Boss / GroupBoss prototypes (MiniBoss is excluded by design — see
@@ -156,6 +176,17 @@ public sealed class DpsOverlaySettingsFile
     /// for "Eternity" -- combined with the modifier default gives Ctrl+Shift+E, which is
     /// unbound by Marvel Heroes' default keymap and by Windows itself.</summary>
     public uint SplinterArmHotkeyVk { get; set; } = 0x45;  // VK_E
+
+    /// <summary>UTC timestamp of the most recently observed (or manually armed) splinter
+    /// drop.  Persisted so the ~6-minute cooldown countdown survives a Cerebro restart:
+    /// if you got a splinter, quit the app, and relaunch within the cooldown window, the
+    /// in-app timer continues where it left off instead of resetting to "ready".
+    /// <see cref="DateTime.MinValue"/> means "no drop ever observed" -- treated as
+    /// already-eligible by <c>EternitySplinterTracker</c>.
+    ///
+    /// <para>Serialized as ISO-8601 (System.Text.Json's default for DateTime) so the JSON
+    /// is human-readable and time-zone-safe.</para></summary>
+    public DateTime LastSplinterDropUtc { get; set; } = DateTime.MinValue;
 
     /// <summary>Legacy setting from the overlay-first era of the app.  Previously meant:
     /// <c>true</c> = show DPS in the regular titled <c>DpsLiveWindow</c>, <c>false</c> = show

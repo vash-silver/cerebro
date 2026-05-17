@@ -39,6 +39,7 @@ public sealed class DpsOverlayPresenter : IDisposable
     /// <c>SelectTopHeroesForOverlay</c> and <c>SnapshotBossMeter</c>.</summary>
     private const int MaxLeaderboardRows = 15;
     private DpsOverlayWindow? _overlayWindow;
+    private BuffOverlayWindow? _buffOverlayWindow;
     private MainAppWindow? _mainWindow;
     private DpsOverlaySettingsFile? _sharedSettings;
     private GlobalHotkey? _armSplinterHotkey;
@@ -99,7 +100,24 @@ public sealed class DpsOverlayPresenter : IDisposable
         // a cooldown ticker (see EternitySplinterTracker.CooldownDuration for the actual
         // window length).  Independent of the DPS meters and unaffected by boss-only mode /
         // encounter lifecycle.
-        _splinterTracker = new EternitySplinterTracker(_sniffer) { Diagnostic = AppendLog };
+        _splinterTracker = new EternitySplinterTracker(_sniffer)
+        {
+            Diagnostic = AppendLog,
+            // Persist the last-drop timestamp on every change so a mid-cooldown Cerebro
+            // restart resumes the countdown from where it left off (the user typically
+            // wants to know "is my splinter timer still running"; resetting on every
+            // launch is the legacy behavior we're fixing here).  Best-effort save -- the
+            // settings file's atomic write-temp-then-rename pattern means a crash in the
+            // middle of a save leaves the previous valid file intact.  _sharedSettings
+            // may not be loaded yet on the first invocation (the field is populated later
+            // on the UI thread); the null-check guards against that pre-init window.
+            LastDropTimestampChanged = utc =>
+            {
+                if (_sharedSettings == null) return;
+                _sharedSettings.LastSplinterDropUtc = utc;
+                DpsOverlaySettingsFile.Save(_sharedSettings);
+            },
+        };
         // Route the sound player's fallback diagnostics through the same log so we can see
         // *why* the system-asterisk fallback fired -- "file not found" vs. "exception
         // during MediaPlayer.Open" are very different failure modes and previously looked
@@ -144,6 +162,12 @@ public sealed class DpsOverlayPresenter : IDisposable
         // non-zero).  The tracker handles a 0 SelfOwnerId by ignoring events, so wiring
         // up early is safe.
         _buffTracker = new BuffTracker(_sniffer) { Diagnostic = AppendLog };
+        // Event-driven snapshot push: BuffChanged fires on the sniffer thread the moment
+        // a condition is added or removed.  Driving the UI off this (in addition to the
+        // 4 Hz decay-tick poll) gives near-zero latency on the state pill -- critical for
+        // short-window buffs like Nightcrawler's ~1.5 s Bamf-teleport stealth, where the
+        // tick-rate poll would leave the user blind for up to a quarter of the window.
+        _buffTracker.BuffChanged += OnBuffChanged;
 
         // Loot scanner -- recon-only diagnostic that dumps every Unique-item EntityCreate's
         // property collection when verbose diagnostics is enabled.  Phase 1 of the
@@ -159,6 +183,15 @@ public sealed class DpsOverlayPresenter : IDisposable
             // every drop.  Returning 0 (avatar not yet identified) just skips the hunt
             // match silently; the rest of the scanner still works.
             SelfPrototypeIndex = () => _meter?.LikelySelfPrototypeIndex ?? 0u,
+            // SelfOwnerId is plumbed alongside so the diagnostic log can distinguish
+            // "meter never pinned a self-owner" (heuristic-only DPS mode) from "meter
+            // pinned self but the avatar's EntityCreate was missed so the proto cache
+            // is empty".  Both produce selfProto=0 but require different fixes.
+            SelfOwnerId = () => _meter?.LikelySelfOwnerId ?? 0uL,
+            // SelfHeroName drives the SelfOnly filter's hero-name comparison.  Sourced
+            // from DpsMeter.LikelySelfHeroName which is set when the BuffTracker observes
+            // a self-buff whose source power is in PowerHeroByProto.  Empty until pinned.
+            SelfHeroName = () => _meter?.LikelySelfHeroName ?? string.Empty,
         };
         // Hunt-match sound: marshal to UI dispatcher because WPF's MediaPlayer is
         // Freezable-bound to its creating thread.  HuntMatched fires from the capture
@@ -166,6 +199,23 @@ public sealed class DpsOverlayPresenter : IDisposable
         _lootScanner.HuntMatched += (_, args) =>
         {
             _uiDispatcher.BeginInvoke(new Action(() => PlayHuntMatchAlert(args)));
+        };
+
+        // Self-hero inference: when a condition is applied to (or by) the local avatar and
+        // the source power resolves to a known shipping-hero powerset, pin the hero name on
+        // the meter.  This is the server-merge-resistant identification path -- the buff's
+        // CreatorPowerPrototypeRef uses the root Prototype enum (stable across merge drift),
+        // and PowerHeroByProto maps root-power-enum -> hero name.  Fires from the sniffer's
+        // capture thread; NoteSelfBuffFromPower is lock-guarded so concurrent reads from the
+        // UI thread are safe.  Cheap on miss (dictionary probe).
+        _sniffer.ConditionAdded += (_, ev) =>
+        {
+            ulong selfOwner = _meter?.LikelySelfOwnerId ?? 0uL;
+            if (selfOwner == 0 || ev.CreatorPowerPrototypeRef == 0) return;
+            bool isSelf = ev.OwnerEntityId == selfOwner;
+            bool isMine = ev.CreatorEntityId == selfOwner || ev.UltimateCreatorEntityId == selfOwner;
+            if (!isSelf && !isMine) return;
+            _meter!.NoteSelfBuffFromPower((uint)ev.CreatorPowerPrototypeRef);
         };
 
         // Discovery hook -- ONLY when verbose diagnostics is enabled.  Dumps the full
@@ -206,25 +256,60 @@ public sealed class DpsOverlayPresenter : IDisposable
             _sharedSettings = DpsOverlaySettingsFile.Load();
             _overlayVisible = _sharedSettings.ShowOverlay;
 
+            // Restore the persisted splinter cooldown anchor if we have one.  Older
+            // session timestamps (past the 6-min window) are still set on the tracker,
+            // but CooldownRemaining returns zero so the UI shows "ready" -- no harm.
+            // Within-window timestamps resume the countdown from the restored value, so
+            // a mid-cooldown Cerebro restart picks up where it left off instead of
+            // resetting to "ready" (the legacy behavior).
+            if (_splinterTracker != null && _sharedSettings.LastSplinterDropUtc != DateTime.MinValue)
+                _splinterTracker.RestoreLastDrop(_sharedSettings.LastSplinterDropUtc);
+
             // Load the loot-hunt config from its own JSON file and publish as the
             // current.  The LootScannerPanel reads from Current on its first paint; the
             // live HuntCriteria reads on every loot scan.
             LootHuntConfig.ReplaceCurrent(LootHuntConfig.Load());
+            // Same pattern for the buff watchlist -- BuffStripPanel reads
+            // TrackedBuffsConfig.Current to filter the chip strip; the BuffTrackerPanel
+            // reads / mutates it from its tab.  Loading here means the strip respects
+            // the user's saved filter from the very first paint, not after the user
+            // visits the tab.
+            TrackedBuffsConfig.ReplaceCurrent(TrackedBuffsConfig.Load());
 
             // App-first layout: the main window is created and shown unconditionally; the
             // floating overlay is created up front too (so we can push DPS updates to it
             // even before it's visible), but Show()n only when the user opts in.
-            _mainWindow    = new MainAppWindow(_sharedSettings);
-            _overlayWindow = new DpsOverlayWindow(_sharedSettings);
+            _mainWindow        = new MainAppWindow(_sharedSettings);
+            _overlayWindow     = new DpsOverlayWindow(_sharedSettings);
+            _buffOverlayWindow = new BuffOverlayWindow(_sharedSettings);
+
+            // Hand the live buff tracker to the Buff Tracker tab so its discovery lists
+            // can poll it.  Must come after _mainWindow construction (panel must exist)
+            // and after _buffTracker construction above (tracker must exist) -- ordering
+            // already satisfies both.
+            _mainWindow.SetBuffTracker(_buffTracker);
 
             initialBossOnly = _mainWindow.InitialBossOnlyPreference;
 
             WireWindowEvents(_mainWindow);
             WireWindowEvents(_overlayWindow);
 
+            // Buff overlay's only out-bound event is "user closed me via Alt+F4 / WM_CLOSE"
+            // -- when that happens we sync the header checkbox + persist ShowBuffOverlay=false
+            // so the user's dismissal sticks across launches.  No other event wiring needed;
+            // the window doesn't drive any DPS-meter actions.
+            _buffOverlayWindow.HideRequested += () =>
+            {
+                _sharedSettings.ShowBuffOverlay = false;
+                DpsOverlaySettingsFile.Save(_sharedSettings);
+                _mainWindow?.SetShowBuffOverlayChecked(false);
+            };
+
             _mainWindow.Show();
             if (_overlayVisible)
                 _overlayWindow.ShowWithoutActivating();
+            if (_sharedSettings.ShowBuffOverlay)
+                _buffOverlayWindow.ShowWithoutActivating();
 
             // Global "I got a splinter" hotkey -- registered AFTER Show() so the main
             // window's HWND exists.  Failures (combo already owned by another app) are
@@ -308,6 +393,9 @@ public sealed class DpsOverlayPresenter : IDisposable
 
         // Header "Show overlay" checkbox -- the canonical user-facing toggle in the new layout.
         w.ShowOverlayToggled += SetOverlayVisible;
+        // Header "Show buff overlay" checkbox -- spawns / hides the dedicated floating
+        // buff-tracker window.  Independent of the DPS overlay above.
+        w.ShowBuffOverlayToggled += SetBuffOverlayVisible;
 
         // "Show buffs and procs" -- forwards from the Settings tab to the live dashboard.
         // The Settings panel has already persisted the new value; the presenter just pushes
@@ -348,6 +436,26 @@ public sealed class DpsOverlayPresenter : IDisposable
         AppendLog($"DpsOverlayPresenter: overlay visibility = {visible}");
     }
 
+    /// <summary>Show or hide the floating buff overlay window.  Persists the new state to
+    /// <see cref="DpsOverlaySettingsFile.ShowBuffOverlay"/> so the choice survives restart.
+    /// Mirrors <see cref="SetOverlayVisible"/> but for the buff overlay -- the two windows
+    /// are independently toggleable so users can run any combination (DPS only, buffs only,
+    /// both, neither).</summary>
+    public void SetBuffOverlayVisible(bool visible)
+    {
+        if (_buffOverlayWindow == null) return;
+        if (visible)
+            _buffOverlayWindow.ShowWithoutActivating();
+        else
+            _buffOverlayWindow.Hide();
+        if (_sharedSettings != null)
+        {
+            _sharedSettings.ShowBuffOverlay = visible;
+            DpsOverlaySettingsFile.Save(_sharedSettings);
+        }
+        AppendLog($"DpsOverlayPresenter: buff overlay visibility = {visible}");
+    }
+
     public void Stop()
     {
         if (!IsRunning) return;
@@ -358,8 +466,22 @@ public sealed class DpsOverlayPresenter : IDisposable
             _decayTimer = null;
             try { _armSplinterHotkey?.Dispose(); } catch { }
             _armSplinterHotkey = null;
+            // Belt-and-suspenders: flush the current in-memory settings to disk on shutdown.
+            // Every individual toggle path (Show overlay, Show buff overlay, splinter
+            // timestamp, etc.) already persists synchronously when it fires -- but a settings
+            // mutation that happened JUST BEFORE quit might not have been saved yet if the
+            // Save was queued behind a panel SaveAll race.  An unconditional save here costs
+            // a single ~1KB JSON write at app exit and guarantees the latest state lands.
+            // Best-effort: failure (file locked, disk full) is silently swallowed.
+            if (_sharedSettings != null)
+            {
+                try { DpsOverlaySettingsFile.Save(_sharedSettings); }
+                catch (Exception ex) { AppendLog($"DpsOverlayPresenter: shutdown settings save failed: {ex.Message}"); }
+            }
             try { _overlayWindow?.CloseByPresenter(); } catch { }
             _overlayWindow = null;
+            try { _buffOverlayWindow?.CloseByPresenter(); } catch { }
+            _buffOverlayWindow = null;
             try { _mainWindow?.CloseByPresenter(); } catch { }
             _mainWindow = null;
             _sharedSettings = null;
@@ -398,6 +520,56 @@ public sealed class DpsOverlayPresenter : IDisposable
             _meter = null;
         }
         AppendLog("DpsOverlayPresenter stopped");
+    }
+
+    /// <summary>True when an event-driven buff-snapshot push has already been scheduled
+    /// on the UI dispatcher but hasn't run yet.  Used by <see cref="OnBuffChanged"/> to
+    /// coalesce a burst of add/remove events (artifact procs in heavy combat can fire
+    /// 10+ per second) into a single UI-thread invoke -- the queued invoke always reads
+    /// the latest snapshot when it runs, so subsequent events are no-ops.  Reset to false
+    /// inside the invoke before doing the snapshot read, so a new event that arrives
+    /// while we're in the middle of pushing still triggers a follow-up.</summary>
+    private int _buffPushPending;
+
+    /// <summary>Push the current <see cref="_buffTracker"/> active-buffs snapshot to the
+    /// main window's dashboard strip, the BuffStats panel, and the floating buff overlay.
+    /// Idempotent -- safe to call as often as desired (no-op when the tracker isn't
+    /// constructed yet or the main window has been torn down).
+    ///
+    /// <para>Routed through both the periodic decay tick (every 250 ms, drives countdown
+    /// smoothness) and <see cref="OnBuffChanged"/> (fires the instant a condition is
+    /// added/removed, drives state-pill latency for transient buffs like Nightcrawler's
+    /// 1.5-second Bamf stealth window).</para></summary>
+    private void PushBuffSnapshot()
+    {
+        if (_buffTracker == null || _mainWindow == null) return;
+        var snapshot = _buffTracker.GetActiveBuffs();
+        var buffNow  = DateTime.UtcNow;
+        _mainWindow.UpdateBuffs(snapshot, buffNow);
+        _mainWindow.UpdateBuffStats(_buffTracker);
+        // Same snapshot fed into the floating buff overlay -- when it's not visible this
+        // is still cheap (the BuffStripPanel rebuilds its internal ItemsControl from
+        // the new snapshot but no rendering happens until the window becomes visible).
+        _buffOverlayWindow?.UpdateBuffs(snapshot, buffNow);
+    }
+
+    /// <summary>Fires on the SNIFFER thread the instant a buff is added or removed.
+    /// Marshals to the UI dispatcher to push a fresh snapshot down to the strip / overlay,
+    /// coalescing rapid fires so we don't queue 50 invokes during heavy combat -- the
+    /// latest invoke always wins because <see cref="PushBuffSnapshot"/> reads the live
+    /// tracker state when it runs.</summary>
+    private void OnBuffChanged(ActiveBuff _, bool __)
+    {
+        // CAS-style guard: only enqueue an invoke when one isn't already pending.  We
+        // clear the flag inside the invoke before doing the actual push, so any further
+        // events that fire while we're in PushBuffSnapshot still get picked up by a
+        // follow-up invoke.
+        if (System.Threading.Interlocked.Exchange(ref _buffPushPending, 1) != 0) return;
+        _uiDispatcher.BeginInvoke(new Action(() =>
+        {
+            System.Threading.Interlocked.Exchange(ref _buffPushPending, 0);
+            PushBuffSnapshot();
+        }));
     }
 
     private void OnDpsChanged(object? sender, EventArgs e)
@@ -460,12 +632,7 @@ public sealed class DpsOverlayPresenter : IDisposable
         // option-A stat tiles ("+%damage from active buffs" etc).  Same tick rate; the
         // panel asks the tracker for a one-pass aggregate of the curated PropertyEnum set,
         // so the cost is the same order as the buff-strip rebuild.
-        if (_buffTracker != null && _mainWindow != null)
-        {
-            var snapshot = _buffTracker.GetActiveBuffs();
-            _mainWindow.UpdateBuffs(snapshot, DateTime.UtcNow);
-            _mainWindow.UpdateBuffStats(_buffTracker);
-        }
+        PushBuffSnapshot();
 
         bool bossOnly = _meter.BossOnlyMode;
         var  encounter = _meter.GetEncounterSnapshot();

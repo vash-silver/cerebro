@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!--
+      net8.0-windows is required because UpkManager + DDSLib both target it (they use
+      System.Windows.Media.Imaging for the DDS->BitmapSource decode that's exposed by
+      DdsFile.BitmapSource).  Same TFM as MHUpkManager's UpkManager/DDSLib so the
+      project references resolve cleanly.
+    -->
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>disable</Nullable>
+    <RootNamespace>IconExtractor</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <!--
+      AlexBond2/MHUpkManager pulled into a sibling clone under ~/Code/.  We reference its
+      already-built projects rather than copying the source so we automatically pick up
+      any fixes the upstream repo makes (regenerate with `dotnet build` over there if
+      they update).  No NuGet packaging exists for it; project references are the path.
+    -->
+    <ProjectReference Include="C:\Users\robin\Code\MHUpkManager\UpkManager\UpkManager.csproj" />
+    <ProjectReference Include="C:\Users\robin\Code\MHUpkManager\DDSLib\DDSLib.csproj" />
+  </ItemGroup>
+</Project>

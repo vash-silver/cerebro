@@ -67,8 +67,14 @@ public partial class MainAppWindow : Window
     /// accordingly, then persists the new state to <c>dps-overlay.json</c>.</summary>
     public event Action<bool>?   ShowOverlayToggled;
 
+    /// <summary>Raised when the user ticks / unticks the "Show buff overlay" header
+    /// checkbox.  Mirrors <see cref="ShowOverlayToggled"/> but drives the floating buff
+    /// overlay (a separate window from the DPS overlay).</summary>
+    public event Action<bool>?   ShowBuffOverlayToggled;
+
     private bool _suppressShowOverlayCheckboxEvents;
     private bool _suppressPersistOverlayCheckboxEvents;
+    private bool _suppressShowBuffOverlayCheckboxEvents;
     /// <summary>Stashed reference to the shared settings object so the persist-overlay
     /// checkbox handler can mutate + persist without going through an event-roundtrip to
     /// the presenter (the presenter polls the field every decay tick, so a direct write +
@@ -93,6 +99,8 @@ public partial class MainAppWindow : Window
         _suppressPersistOverlayCheckboxEvents = true;
         try { PersistOverlayCheckbox.IsChecked = settings.PersistOverlay; }
         finally { _suppressPersistOverlayCheckboxEvents = false; }
+        // Same bootstrap suppression for the buff-overlay checkbox.
+        SetShowBuffOverlayChecked(settings.ShowBuffOverlay);
         // Honour the persisted buff-panels preference at startup -- the LiveDashboardPanel
         // defaults to visible, so we only need to push down the explicit-off case here.
         // (Pushing down "on" would be a no-op but keeps the code path symmetric.)
@@ -154,6 +162,18 @@ public partial class MainAppWindow : Window
         finally { _suppressShowOverlayCheckboxEvents = false; }
     }
 
+    /// <summary>Mirror of <see cref="SetShowOverlayChecked"/> for the buff overlay's header
+    /// checkbox.  Used by the presenter when the user closes the buff overlay window via
+    /// Alt+F4 / WM_CLOSE -- we sync the checkbox visual back to false so the dismissal is
+    /// reflected everywhere.</summary>
+    public void SetShowBuffOverlayChecked(bool value)
+    {
+        if (ShowBuffOverlayCheckbox.IsChecked == value) return;
+        _suppressShowBuffOverlayCheckboxEvents = true;
+        try { ShowBuffOverlayCheckbox.IsChecked = value; }
+        finally { _suppressShowBuffOverlayCheckboxEvents = false; }
+    }
+
     /// <summary>Update the small badge on the right of the header.  Wired by the presenter
     /// from the same data the live overlay shows: hero name, splinter cooldown state, etc.
     /// Keep it short -- the badge is informational, not a settings surface.</summary>
@@ -188,6 +208,16 @@ public partial class MainAppWindow : Window
         if (_suppressPersistOverlayCheckboxEvents || _settings == null) return;
         _settings.PersistOverlay = PersistOverlayCheckbox.IsChecked == true;
         DpsOverlaySettingsFile.Save(_settings);
+    }
+
+    /// <summary>"Show buff overlay" header checkbox.  Forwards through
+    /// <see cref="ShowBuffOverlayToggled"/> so the presenter can spawn / hide the floating
+    /// buff window and persist the new state.  Single handler for both Checked and
+    /// Unchecked since the toggle event-arg is just the bool.</summary>
+    private void ShowBuffOverlayCheckbox_OnChanged(object sender, RoutedEventArgs e)
+    {
+        if (_suppressShowBuffOverlayCheckboxEvents) return;
+        ShowBuffOverlayToggled?.Invoke(ShowBuffOverlayCheckbox.IsChecked == true);
     }
 
     // ── Forwarded UpdateDps / UpdateSplinterStatus ────────────────────────────────────────────
@@ -271,4 +301,11 @@ public partial class MainAppWindow : Window
     /// are already on the UI thread (Settings checkbox handlers fire there).</summary>
     public void SetBuffPanelsVisible(bool visible)
         => LivePanel.SetBuffPanelsVisible(visible);
+
+    /// <summary>Hand the live <see cref="MarvelHeroes.DpsMeter.Services.BuffTracker"/>
+    /// reference to the Buff Tracker tab so its discovery lists can poll it.  Called by
+    /// the presenter exactly once after <c>new BuffTracker(...)</c> completes -- before
+    /// that the tab renders with empty lists.</summary>
+    public void SetBuffTracker(MarvelHeroes.DpsMeter.Services.BuffTracker? tracker)
+        => BuffTrackerTab.SetBuffTracker(tracker);
 }
