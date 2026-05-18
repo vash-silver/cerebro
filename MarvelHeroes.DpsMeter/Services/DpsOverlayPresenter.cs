@@ -29,6 +29,7 @@ public sealed class DpsOverlayPresenter : IDisposable
     private DpsMeter? _bossMeter;
     private EternitySplinterTracker? _splinterTracker;
     private BuffTracker? _buffTracker;
+    private CooldownTracker? _cooldownTracker;
     private LootScannerDiagnostic? _lootScanner;
 
     /// <summary>How many hero rows the main app's Live dashboard leaderboard requests per
@@ -40,6 +41,7 @@ public sealed class DpsOverlayPresenter : IDisposable
     private const int MaxLeaderboardRows = 15;
     private DpsOverlayWindow? _overlayWindow;
     private BuffOverlayWindow? _buffOverlayWindow;
+    private CooldownOverlayWindow? _cooldownOverlayWindow;
     private MainAppWindow? _mainWindow;
     private DpsOverlaySettingsFile? _sharedSettings;
     private GlobalHotkey? _armSplinterHotkey;
@@ -162,6 +164,14 @@ public sealed class DpsOverlayPresenter : IDisposable
         // non-zero).  The tracker handles a 0 SelfOwnerId by ignoring events, so wiring
         // up early is safe.
         _buffTracker = new BuffTracker(_sniffer) { Diagnostic = AppendLog };
+        // Cooldown tracker -- subscribes to LocalPowerActivated.  Self-owner id is pushed
+        // in OnDecayTick alongside the buff tracker, since the same self-pinning logic
+        // covers both.  Cheap to construct; idle until SelfOwnerId becomes non-zero.
+        _cooldownTracker = new CooldownTracker(_sniffer) { Diagnostic = AppendLog };
+        // Bootstrap the persisted cooldown-watchlist into Current so the tab reads the
+        // user's saved set immediately on first paint.  Same publish/subscribe pattern
+        // as TrackedBuffsConfig.
+        CooldownTrackerConfig.ReplaceCurrent(CooldownTrackerConfig.Load());
         // Event-driven snapshot push: BuffChanged fires on the sniffer thread the moment
         // a condition is added or removed.  Driving the UI off this (in addition to the
         // 4 Hz decay-tick poll) gives near-zero latency on the state pill -- critical for
@@ -282,12 +292,15 @@ public sealed class DpsOverlayPresenter : IDisposable
             _mainWindow        = new MainAppWindow(_sharedSettings);
             _overlayWindow     = new DpsOverlayWindow(_sharedSettings);
             _buffOverlayWindow = new BuffOverlayWindow(_sharedSettings);
+            _cooldownOverlayWindow = new CooldownOverlayWindow();
+            _cooldownOverlayWindow.SetTracker(_cooldownTracker);
 
             // Hand the live buff tracker to the Buff Tracker tab so its discovery lists
             // can poll it.  Must come after _mainWindow construction (panel must exist)
             // and after _buffTracker construction above (tracker must exist) -- ordering
             // already satisfies both.
             _mainWindow.SetBuffTracker(_buffTracker);
+            _mainWindow.SetCooldownTracker(_cooldownTracker);
 
             initialBossOnly = _mainWindow.InitialBossOnlyPreference;
 
@@ -305,11 +318,21 @@ public sealed class DpsOverlayPresenter : IDisposable
                 _mainWindow?.SetShowBuffOverlayChecked(false);
             };
 
+            // Cooldown overlay's user-close handler -- mirrors the buff overlay pattern.
+            _cooldownOverlayWindow.HideRequested += () =>
+            {
+                _sharedSettings.ShowCooldownOverlay = false;
+                DpsOverlaySettingsFile.Save(_sharedSettings);
+                _mainWindow?.SetShowCooldownOverlayChecked(false);
+            };
+
             _mainWindow.Show();
             if (_overlayVisible)
                 _overlayWindow.ShowWithoutActivating();
             if (_sharedSettings.ShowBuffOverlay)
                 _buffOverlayWindow.ShowWithoutActivating();
+            if (_sharedSettings.ShowCooldownOverlay)
+                _cooldownOverlayWindow.ShowWithoutActivating();
 
             // Global "I got a splinter" hotkey -- registered AFTER Show() so the main
             // window's HWND exists.  Failures (combo already owned by another app) are
@@ -396,6 +419,7 @@ public sealed class DpsOverlayPresenter : IDisposable
         // Header "Show buff overlay" checkbox -- spawns / hides the dedicated floating
         // buff-tracker window.  Independent of the DPS overlay above.
         w.ShowBuffOverlayToggled += SetBuffOverlayVisible;
+        w.ShowCooldownOverlayToggled += SetCooldownOverlayVisible;
 
         // "Show buffs and procs" -- forwards from the Settings tab to the live dashboard.
         // The Settings panel has already persisted the new value; the presenter just pushes
@@ -413,6 +437,16 @@ public sealed class DpsOverlayPresenter : IDisposable
         {
             _overlayWindow?.SetDpsSummaryVisible(enabled);
             AppendLog($"DpsOverlayPresenter: overlay DPS summary visible = {enabled}");
+        };
+
+        // "Lock overlay (click-through)" -- forwards from the Settings tab to the
+        // floating overlay's WS_EX_TRANSPARENT bit so the lock takes effect
+        // immediately.  Setting is persisted in DpsOverlaySettingsFile by the panel
+        // itself before the event fires; the presenter just flips the runtime state.
+        w.OverlayLockedToggled += locked =>
+        {
+            _overlayWindow?.SetLocked(locked);
+            AppendLog($"DpsOverlayPresenter: overlay locked = {locked}");
         };
     }
 
@@ -456,6 +490,24 @@ public sealed class DpsOverlayPresenter : IDisposable
         AppendLog($"DpsOverlayPresenter: buff overlay visibility = {visible}");
     }
 
+    /// <summary>Show or hide the floating cooldown overlay window.  Mirrors
+    /// <see cref="SetBuffOverlayVisible"/>; the two overlays are independent so the
+    /// user can opt into any combination.</summary>
+    public void SetCooldownOverlayVisible(bool visible)
+    {
+        if (_cooldownOverlayWindow == null) return;
+        if (visible)
+            _cooldownOverlayWindow.ShowWithoutActivating();
+        else
+            _cooldownOverlayWindow.Hide();
+        if (_sharedSettings != null)
+        {
+            _sharedSettings.ShowCooldownOverlay = visible;
+            DpsOverlaySettingsFile.Save(_sharedSettings);
+        }
+        AppendLog($"DpsOverlayPresenter: cooldown overlay visibility = {visible}");
+    }
+
     public void Stop()
     {
         if (!IsRunning) return;
@@ -482,6 +534,8 @@ public sealed class DpsOverlayPresenter : IDisposable
             _overlayWindow = null;
             try { _buffOverlayWindow?.CloseByPresenter(); } catch { }
             _buffOverlayWindow = null;
+            try { _cooldownOverlayWindow?.CloseByPresenter(); } catch { }
+            _cooldownOverlayWindow = null;
             try { _mainWindow?.CloseByPresenter(); } catch { }
             _mainWindow = null;
             _sharedSettings = null;
@@ -504,6 +558,12 @@ public sealed class DpsOverlayPresenter : IDisposable
         {
             _buffTracker.Dispose();
             _buffTracker = null;
+        }
+
+        if (_cooldownTracker != null)
+        {
+            _cooldownTracker.Dispose();
+            _cooldownTracker = null;
         }
 
         if (_lootScanner != null)
@@ -551,6 +611,11 @@ public sealed class DpsOverlayPresenter : IDisposable
         // is still cheap (the BuffStripPanel rebuilds its internal ItemsControl from
         // the new snapshot but no rendering happens until the window becomes visible).
         _buffOverlayWindow?.UpdateBuffs(snapshot, buffNow);
+        // Cooldown overlay tick.  Stateless from the overlay's perspective -- it
+        // reads its data from CooldownTracker on each call, so we just need to
+        // poke it with the current wall-clock.  Cheap when hidden (Visibility check
+        // inside ApplyClickThrough / SetEditMode short-circuits).
+        _cooldownOverlayWindow?.UpdateCooldowns(buffNow);
     }
 
     /// <summary>Fires on the SNIFFER thread the instant a buff is added or removed.
@@ -622,6 +687,8 @@ public sealed class DpsOverlayPresenter : IDisposable
         // unless the value actually changed).
         if (_buffTracker != null)
             _buffTracker.SelfOwnerId = _meter.LikelySelfOwnerId;
+        if (_cooldownTracker != null)
+            _cooldownTracker.SelfOwnerId = _meter.LikelySelfOwnerId;
 
         // Push the latest active-buff snapshot to the dashboard's BuffStrip.  We do this
         // every tick (4 Hz) rather than only on BuffChanged events so the chip countdowns

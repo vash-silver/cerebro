@@ -15,19 +15,35 @@
         Focusable="False"
         WindowStartupLocation="Manual">
     <!--
-        Wraps the existing BuffStripPanel in a transparent always-on-top frame.  Same
-        chrome handling as DpsOverlayWindow: WM_NCHITTEST routes edge clicks to the OS
-        resize path, body clicks drag the window via DragMove.  Background is dimmer than
-        the DPS overlay's #B2 since the strip already has per-chip borders/fills and a
-        full overlay-style backdrop here would compete visually.
+        Two render modes inside the same window:
+          * Strip mode  (default).  BuffStripPanel inside a styled card border.  Chips
+                                    auto-flow horizontally; tightly-spaced status pill.
+          * Free-layout mode.       FreeLayoutBuffPanel inside a transparent backdrop.
+                                    Each tracked buff is a bare icon at a user-set
+                                    (X, Y) on the canvas; WeakAuras-style HUD.
+        Mode swap is driven by TrackedBuffsConfig.Current.FreeLayoutMode, polled by the
+        code-behind on every UpdateBuffs call (cheap; single field read).
     -->
-    <Border x:Name="Frame"
-            Padding="8,6"
-            Background="#99000000"
-            CornerRadius="8"
-            BorderBrush="#552E7FFF"
-            BorderThickness="1"
-            MouseLeftButtonDown="Frame_MouseLeftButtonDown">
-        <controls:BuffStripPanel x:Name="Strip"/>
-    </Border>
+    <Grid>
+        <!-- Strip-mode container.  Visible when FreeLayoutMode == false. -->
+        <Border x:Name="StripFrame"
+                Padding="8,6"
+                Background="#99000000"
+                CornerRadius="8"
+                BorderBrush="#552E7FFF"
+                BorderThickness="1"
+                MouseLeftButtonDown="Frame_MouseLeftButtonDown">
+            <controls:BuffStripPanel x:Name="Strip"/>
+        </Border>
+        <!-- Free-layout container.  Visible when FreeLayoutMode == true.  No background
+             chrome, icons float on the game.  Mouse events on the canvas itself drag
+             the window (matches strip mode), but chip-level events handle their own
+             drag in edit mode (mouse capture wins over the canvas-level handler). -->
+        <Grid x:Name="FreeLayoutFrame"
+              Visibility="Collapsed"
+              Background="Transparent"
+              MouseLeftButtonDown="Frame_MouseLeftButtonDown">
+            <controls:FreeLayoutBuffPanel x:Name="FreeLayout"/>
+        </Grid>
+    </Grid>
 </Window>

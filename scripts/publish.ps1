@@ -43,6 +43,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Normalize the version string for AssemblyInformationalVersion / AssemblyFileVersion --
+# .NET's version-attribute machinery requires N.N.N or N.N.N.N.  Tags like "2.8" need
+# padding to "2.8.0" before they're acceptable as -p:Version, but the user-facing zip
+# filename keeps the short tag for continuity with prior releases.
+$VersionForAssembly = if ($Version -match '^\d+\.\d+$') { "$Version.0" } else { $Version }
+
 # Paths --------------------------------------------------------------------
 # $PSScriptRoot is scripts/, so the repo root is one up.
 $RepoRoot      = Split-Path -Parent $PSScriptRoot
@@ -97,6 +103,11 @@ $publishArgs = @(
     '-p:ContinuousIntegrationBuild=true'
     '-p:DeterministicSourcePaths=true'
     '-p:GenerateDocumentationFile=false'
+    # Bake the release version into the assembly's AssemblyInformationalVersion so the
+    # in-app updater can read it via Services.CerebroVersion and compare against the
+    # latest GitHub release tag.  System.Version requires N.N.N format -- pad
+    # 2-component tags ("2.8") to 3 ("2.8.0") so AssemblyFileVersion accepts it.
+    "-p:Version=$VersionForAssembly"
     '-o', $StagingDir
     '-nologo'
 )

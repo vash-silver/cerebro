@@ -35,6 +35,14 @@ internal static class User32
     /// behaviour expected of a HUD overlay.</summary>
     public const nint WS_EX_NOACTIVATE = 0x08000000;
 
+    /// <summary>WS_EX_TRANSPARENT — clicks fall through to the window underneath.  Combined
+    /// with <c>WS_EX_LAYERED</c> (which WPF's <c>AllowsTransparency=True</c> already sets)
+    /// gives us a fully click-through HUD: the overlay paints over the game but mouse
+    /// input ignores it entirely.  Toggle this flag dynamically (free-layout edit mode
+    /// turns it off so the user can drag chips; non-edit mode turns it on so the game
+    /// receives clicks).</summary>
+    public const nint WS_EX_TRANSPARENT = 0x00000020;
+
     /// <summary>WM_NCHITTEST — sent by the OS to ask "what part of the window is at this
     /// screen-space cursor point?".  By default WPF returns HTCLIENT for everything inside a
     /// transparent borderless window, which means the OS-drawn resize sizing border never

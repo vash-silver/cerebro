@@ -14,6 +14,14 @@
       taskbar, in Alt+Tab, and in Explorer reads as Cerebro.exe.
     -->
     <AssemblyName>Cerebro</AssemblyName>
+    <!--
+      Default version baked into dev builds.  The publish.ps1 release script overrides
+      this with `-p:Version=<tag>` so the published EXE knows what release it is, which
+      the in-app update checker compares against the latest GitHub release tag.  Keep the
+      default ahead of the most recently shipped tag so a fresh dev build doesn't trigger
+      an "update available" notification against itself.
+    -->
+    <Version>2.9.0</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <!--
       Sets the EXE's Windows shell icon (what Explorer, the taskbar pin, and Alt+Tab show

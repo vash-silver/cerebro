@@ -68,6 +68,13 @@ public sealed class DpsOverlaySettingsFile
     /// who haven't opted into the focused floating view.</summary>
     public bool ShowBuffOverlay { get; set; } = false;
 
+    /// <summary>When <c>true</c>, a separate always-on-top floating "cooldown overlay"
+    /// window is shown.  Renders user-tracked power cooldowns as WeakAuras-style
+    /// icons: full opacity when ready, dimmed + countdown text + fill-from-bottom
+    /// progress overlay while on cooldown.  Independent of <see cref="ShowBuffOverlay"/>
+    /// and <see cref="ShowOverlay"/> so users can pick any combination.</summary>
+    public bool ShowCooldownOverlay { get; set; } = false;
+
     /// <summary>Persisted geometry for the floating buff overlay.  Modeled on the DPS
     /// overlay's Left/Top/OverlayWidth/OverlayHeight pair so user-resized positions
     /// survive across launches.  Default positions place the window in the upper-right
@@ -177,6 +184,14 @@ public sealed class DpsOverlaySettingsFile
     /// unbound by Marvel Heroes' default keymap and by Windows itself.</summary>
     public uint SplinterArmHotkeyVk { get; set; } = 0x45;  // VK_E
 
+    /// <summary>Last update-banner version the user dismissed via the "✕" close button.
+    /// The in-app updater suppresses the banner whenever this matches the latest GitHub
+    /// release tag -- so a one-click dismiss sticks across launches until a NEWER release
+    /// is published.  Empty string means "never dismissed".  Stored as the raw tag
+    /// string ("v2.9") rather than parsed components so comparison is a single string
+    /// equality.</summary>
+    public string DismissedUpdateVersion { get; set; } = "";
+
     /// <summary>UTC timestamp of the most recently observed (or manually armed) splinter
     /// drop.  Persisted so the ~6-minute cooldown countdown survives a Cerebro restart:
     /// if you got a splinter, quit the app, and relaunch within the cooldown window, the
@@ -210,6 +225,20 @@ public sealed class DpsOverlaySettingsFile
     /// from covering whatever else they're working on.  No effect when
     /// <see cref="ShowOverlay"/> is false.</summary>
     public bool PersistOverlay { get; set; } = false;
+
+    /// <summary>When <c>true</c>, the floating DPS overlay window is click-through:
+    /// <c>WS_EX_TRANSPARENT</c> is applied so mouse input passes through to whatever's
+    /// underneath (the game, the desktop, another window).  The user can't drag,
+    /// resize, or right-click the overlay until they unlock it.  Same lock concept as
+    /// the buff-overlay's <c>TrackedBuffsConfig.OverlayLocked</c> but persisted here so
+    /// it's right next to the DPS overlay's other geometry / visibility flags.
+    ///
+    /// <para>Defaults to <c>false</c> (unlocked) so first-launch users can drag the
+    /// overlay into position and use its right-click menu.  Once placed, locking makes
+    /// the overlay completely passive: it paints DPS / leaderboard / Splinter status
+    /// over the game without ever intercepting clicks.  No effect when
+    /// <see cref="ShowOverlay"/> is false.</para></summary>
+    public bool OverlayLocked { get; set; } = false;
 
     /// <summary>Primary game mux / frontend TCP port (default 4306 when missing or invalid).</summary>
     public int GameTcpPort { get; set; }

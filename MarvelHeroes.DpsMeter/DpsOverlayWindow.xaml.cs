@@ -62,7 +62,15 @@ public partial class DpsOverlayWindow : Window
             Panel.SaveAll(Left, Top);
         };
 
-        Panel.DragStarted          += () => { try { DragMove(); } catch { } };
+        Panel.DragStarted          += () =>
+        {
+            // Locked: defense-in-depth.  WS_EX_TRANSPARENT should already prevent the
+            // click from ever reaching the panel, but if a stray event slips through
+            // (DragMove is also invoked by some keyboard paths), never start a drag
+            // when the user has explicitly frozen the overlay in place.
+            if (_settings.OverlayLocked) return;
+            try { DragMove(); } catch { }
+        };
         // Clicking the overlay's small X button used to quit the entire app -- the overlay
         // WAS the app.  In the new app-first layout the main window is the app, and the
         // overlay is an auxiliary view, so X just hides the overlay (same effect as
@@ -185,6 +193,42 @@ public partial class DpsOverlayWindow : Window
 
         if (HwndSource.FromHwnd(hwnd) is { } source)
             source.AddHook(WndProc);
+
+        // Apply persisted lock state.  Must happen here (after HWND exists) rather
+        // than in the ctor because WS_EX_TRANSPARENT is a Win32 ex-style bit and we
+        // need a valid window handle to set it.
+        ApplyClickThrough(_settings.OverlayLocked);
+    }
+
+    /// <summary>Toggle the overlay's lock state at runtime.  The presenter calls this
+    /// when the user flips the "Lock overlay" checkbox in Settings so the change takes
+    /// effect immediately.  Idempotent at the Win32 level; safe to call with the same
+    /// value as the current one.</summary>
+    public void SetLocked(bool locked)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(() => SetLocked(locked)));
+            return;
+        }
+        ApplyClickThrough(locked);
+    }
+
+    /// <summary>Toggle the <c>WS_EX_TRANSPARENT</c> extended window style.  When set,
+    /// the OS routes mouse input through this window to whatever's underneath --
+    /// enabling click-through so the game receives all clicks normally even though the
+    /// overlay paints over it.  Idempotent: re-applying the same state is a no-op at
+    /// the Win32 level.</summary>
+    private void ApplyClickThrough(bool clickThrough)
+    {
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero) return;
+        var ex = User32.GetWindowLongPtr(hwnd, User32.GWL_EXSTYLE);
+        nint newEx = clickThrough
+            ? (ex | User32.WS_EX_TRANSPARENT)
+            : (ex & ~User32.WS_EX_TRANSPARENT);
+        if (newEx != ex)
+            User32.SetWindowLongPtr(hwnd, User32.GWL_EXSTYLE, newEx);
     }
 
     private nint WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -222,6 +266,12 @@ public partial class DpsOverlayWindow : Window
     /// menu).</summary>
     private nint HitTestNc(IntPtr lParam)
     {
+        // Locked: no edge-resize.  Return 0 so WPF falls through to its default
+        // HTCLIENT path; combined with WS_EX_TRANSPARENT this means the cursor never
+        // changes when hovering the overlay and edge clicks never resize it.  Unlock
+        // to resize.
+        if (_settings.OverlayLocked) return 0;
+
         // lParam packs the screen X / Y as two signed 16-bit values.  Use the unchecked cast
         // path so negative coords on multi-monitor setups (window straddles the primary)
         // still round-trip correctly.

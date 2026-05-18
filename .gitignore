@@ -4,6 +4,9 @@ obj/
 out/
 publish/
 *.user
+# WPF's MSBuild emits transient *_wpftmp.csproj files alongside the real csproj
+# during XAML codegen; they're meaningless outside an in-flight build.
+*_wpftmp.csproj
 
 # ── IDE state (no preferences should bleed into the repo) ────────────────────
 .vs/

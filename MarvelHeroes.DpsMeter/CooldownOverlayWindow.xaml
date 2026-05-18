@@ -1,0 +1,24 @@
+<Window x:Class="MarvelHeroes.DpsMeter.CooldownOverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:MarvelHeroes.DpsMeter.Controls"
+        Title="Cooldowns"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        Topmost="True"
+        Focusable="False"
+        WindowStartupLocation="Manual">
+    <!--
+        WeakAuras-style cooldown overlay.  Full-screen transparent canvas; the user
+        positions tracked-power icons anywhere on it.  Locked vs unlocked is driven
+        by CooldownTrackerConfig.OverlayLocked.  Locked = WS_EX_TRANSPARENT (game
+        gets clicks); unlocked = mouse-interactive (drag / resize chips).
+    -->
+    <Grid x:Name="FreeLayoutFrame"
+          Background="Transparent">
+        <controls:FreeLayoutCooldownPanel x:Name="FreeLayout"/>
+    </Grid>
+</Window>

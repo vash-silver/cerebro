@@ -67,6 +67,7 @@
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>  <!-- header strip -->
+            <RowDefinition Height="Auto"/>  <!-- update banner (collapsed by default) -->
             <RowDefinition Height="*"/>     <!-- main content -->
             <RowDefinition Height="Auto"/>  <!-- footer status strip -->
         </Grid.RowDefinitions>
@@ -119,12 +120,53 @@
                               ToolTip="Floating window that shows your tracked buffs over the game.  Configure the watchlist in the Buff Tracker tab."
                               Checked="ShowBuffOverlayCheckbox_OnChanged"
                               Unchecked="ShowBuffOverlayCheckbox_OnChanged"/>
+                    <CheckBox x:Name="ShowCooldownOverlayCheckbox"
+                              Style="{StaticResource HeaderCheckbox}"
+                              Content="Show cooldown overlay"
+                              Margin="0,4,0,0"
+                              ToolTip="Floating WeakAuras-style icons for tracked power cooldowns.  Configure in the Cooldown Tracker tab."
+                              Checked="ShowCooldownOverlayCheckbox_OnChanged"
+                              Unchecked="ShowCooldownOverlayCheckbox_OnChanged"/>
                 </StackPanel>
             </Grid>
         </Border>
 
         <!-- ── Tabs ──────────────────────────────────────────────────────────────── -->
-        <TabControl Grid.Row="1" x:Name="MainTabs" Style="{StaticResource DarkTab}">
+        <!--
+            Update-available banner.  Collapsed by default; toggled visible by the
+            background update checker when a newer GitHub release is detected and the
+            user hasn't dismissed it (the dismiss state is stored as the tag name in
+            DpsOverlaySettingsFile.DismissedUpdateVersion so the banner re-appears only
+            for genuinely-newer releases).
+        -->
+        <Border Grid.Row="1" x:Name="UpdateBanner" Visibility="Collapsed"
+                Background="#332E7FFF" BorderBrush="#882E7FFF" BorderThickness="0,0,0,1"
+                Padding="14,6">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="UpdateBannerText" Grid.Column="0"
+                           Foreground="#FFCC99FF" FontSize="12"
+                           VerticalAlignment="Center"
+                           Text="Update available"/>
+                <Button Grid.Column="1" Content="Download"
+                        Margin="0,0,6,0" Padding="14,3" Cursor="Hand"
+                        Background="#552E7FFF" BorderBrush="#AA2E7FFF" BorderThickness="1"
+                        Foreground="#FFFFFFFF"
+                        Click="UpdateBannerDownload_Click"/>
+                <Button Grid.Column="2" Content="✕"
+                        Padding="8,3" Cursor="Hand"
+                        Background="Transparent" BorderBrush="#552E7FFF" BorderThickness="1"
+                        Foreground="#DDFFFFFF"
+                        ToolTip="Dismiss until a newer release is published"
+                        Click="UpdateBannerDismiss_Click"/>
+            </Grid>
+        </Border>
+
+        <TabControl Grid.Row="2" x:Name="MainTabs" Style="{StaticResource DarkTab}">
             <TabItem Header="Live">
                 <Border Background="#1A1A1A" Padding="0">
                     <!--
@@ -181,6 +223,16 @@
                 -->
                 <controls:BuffTrackerPanel x:Name="BuffTrackerTab"/>
             </TabItem>
+            <TabItem Header="Cooldown Tracker">
+                <!--
+                    WeakAuras-style cooldown watchlist.  User picks abilities to track,
+                    enters cooldown duration per ability; the floating cooldown overlay
+                    renders each as a bare icon that fades while on cooldown and lights
+                    back up when ready.  Watchlist persists to
+                    %LocalAppData%\MarvelHeroesComporator\cooldown-watchlist.json.
+                -->
+                <controls:CooldownTrackerPanel x:Name="CooldownTrackerTab"/>
+            </TabItem>
             <TabItem Header="Diagnostics">
                 <!--
                     Live log viewer for triage.  Tails dps-meter.log on disk so the user (or a
@@ -193,7 +245,7 @@
         </TabControl>
 
         <!-- ── Footer status strip ───────────────────────────────────────────────── -->
-        <Border Grid.Row="2"
+        <Border Grid.Row="3"
                 Background="#0F0F0F" BorderBrush="#33FFFFFF"
                 BorderThickness="0,1,0,0" Padding="14,4">
             <TextBlock x:Name="FooterStatus"

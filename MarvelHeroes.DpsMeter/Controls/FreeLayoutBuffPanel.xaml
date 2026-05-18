@@ -1,0 +1,126 @@
+<UserControl x:Class="MarvelHeroes.DpsMeter.Controls.FreeLayoutBuffPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="Transparent">
+    <!--
+        WeakAuras-style canvas.  Each tracked buff renders as a bare icon (no chrome) at
+        its persisted (X, Y) position and (Size, Size) dimensions.  The user drags icons
+        around in edit mode; in non-edit (locked) mode the icons are click-through so
+        the game receives mouse clicks normally.
+
+        Architecture:
+          * ItemsControl with a Canvas ItemsPanelTemplate.  The ItemContainerStyle
+            binds Canvas.Left / Canvas.Top to the row VM's X/Y, so when we rebuild the
+            ItemsSource on each UpdateBuffs tick the chips reposition correctly.
+          * Each icon is an Image + optional overlay TextBlocks for countdown and stack
+            count (WeakAuras style: small text overlaid on the icon corners).
+          * In edit mode (controlled by the code-behind), each icon gets a dashed border
+            indicating it's draggable and a resize grip in the bottom-right corner.
+    -->
+    <Canvas x:Name="RootCanvas" Background="Transparent" ClipToBounds="False">
+        <ItemsControl x:Name="WidgetHost" Canvas.Left="0" Canvas.Top="0">
+            <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <Canvas/>
+                </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemContainerStyle>
+                <Style TargetType="ContentPresenter">
+                    <Setter Property="Canvas.Left" Value="{Binding X}"/>
+                    <Setter Property="Canvas.Top"  Value="{Binding Y}"/>
+                </Style>
+            </ItemsControl.ItemContainerStyle>
+            <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                    <!--
+                        Each chip is a Grid:
+                          * Row 0 = Icon (the actual visual)
+                          * Overlay TextBlocks position via Grid.Row=0 with alignment so
+                            they sit on top of the icon at the desired corners.
+                        Border around the whole thing is invisible by default; visible
+                        when in edit mode so the user can see what they're grabbing.
+                    -->
+                    <Border BorderBrush="{Binding EditBorderBrush}"
+                            BorderThickness="{Binding EditBorderThickness}"
+                            Background="Transparent"
+                            Width="{Binding Size}"
+                            Height="{Binding Size}"
+                            Opacity="{Binding Opacity}"
+                            Tag="{Binding ShortName}"
+                            Cursor="{Binding ChipCursor}"
+                            MouseLeftButtonDown="Chip_MouseLeftButtonDown"
+                            MouseLeftButtonUp="Chip_MouseLeftButtonUp"
+                            MouseMove="Chip_MouseMove">
+                        <Grid>
+                            <!-- Icon image, fills the chip.  When IconImageSource is null
+                                 (no icon configured for this buff) we show a colored
+                                 placeholder square with the short name as text. -->
+                            <Image Source="{Binding IconImageSource}"
+                                   Visibility="{Binding IconVisibility}"
+                                   Stretch="UniformToFill"/>
+                            <Border Background="#552E7FFF"
+                                    BorderBrush="#882E7FFF" BorderThickness="1"
+                                    CornerRadius="4"
+                                    Visibility="{Binding PlaceholderVisibility}">
+                                <TextBlock Text="{Binding ShortName}"
+                                           FontFamily="Segoe UI Semibold"
+                                           Foreground="#FFCCDDFF"
+                                           FontSize="{Binding PlaceholderFontSize}"
+                                           TextWrapping="Wrap"
+                                           HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           TextAlignment="Center"/>
+                            </Border>
+                            <!-- Countdown text: bottom-center, WeakAuras style.  Black
+                                 outline (via shadow) for legibility over varied icon
+                                 backgrounds.  Empty when permanent / not on a timer. -->
+                            <TextBlock Text="{Binding RemainingText}"
+                                       FontFamily="Segoe UI Semibold"
+                                       FontWeight="Bold"
+                                       Foreground="#FFFFFFFF"
+                                       FontSize="{Binding RemainingFontSize}"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Bottom"
+                                       Margin="0,0,0,2"
+                                       Visibility="{Binding RemainingVisibility}">
+                                <TextBlock.Effect>
+                                    <DropShadowEffect ShadowDepth="1" BlurRadius="2"
+                                                      Color="Black" Opacity="0.9"/>
+                                </TextBlock.Effect>
+                            </TextBlock>
+                            <!-- Stack count badge in the top-right corner.  Only shown
+                                 when the buff is actually stacked. -->
+                            <TextBlock Text="{Binding StackText}"
+                                       FontFamily="Segoe UI Semibold"
+                                       FontWeight="Bold"
+                                       Foreground="#FFFFCC66"
+                                       FontSize="{Binding StackFontSize}"
+                                       HorizontalAlignment="Right"
+                                       VerticalAlignment="Top"
+                                       Margin="0,1,3,0"
+                                       Visibility="{Binding StackVisibility}">
+                                <TextBlock.Effect>
+                                    <DropShadowEffect ShadowDepth="1" BlurRadius="2"
+                                                      Color="Black" Opacity="0.9"/>
+                                </TextBlock.Effect>
+                            </TextBlock>
+                            <!-- Resize grip: bottom-right triangle visible only in edit
+                                 mode.  Drag it to resize the icon uniformly. -->
+                            <Rectangle Width="10" Height="10"
+                                       Fill="#AAFFCC66"
+                                       Stroke="#FFFFCC66" StrokeThickness="1"
+                                       HorizontalAlignment="Right"
+                                       VerticalAlignment="Bottom"
+                                       Cursor="SizeNWSE"
+                                       Tag="{Binding ShortName}"
+                                       Visibility="{Binding ResizeHandleVisibility}"
+                                       MouseLeftButtonDown="ResizeHandle_MouseLeftButtonDown"
+                                       MouseLeftButtonUp="ResizeHandle_MouseLeftButtonUp"
+                                       MouseMove="ResizeHandle_MouseMove"/>
+                        </Grid>
+                    </Border>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+    </Canvas>
+</UserControl>

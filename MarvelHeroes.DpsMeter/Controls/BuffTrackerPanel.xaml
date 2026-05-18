@@ -165,6 +165,22 @@
             <TextBlock Style="{StaticResource HintText}"
                        Text="Highlights when any active condition grants stealth or invisibility (PropertyEnum 899 / 993).  Useful for talents that gate damage on stealth state -- e.g. Nightcrawler's Surprise Attack doubling Bamf Bomb / Run Through damage while stealthed.  Off by default; only useful on heroes whose talents care."/>
 
+            <CheckBox x:Name="FreeLayoutModeCheck"
+                      Style="{StaticResource MasterCheck}"
+                      Content="WeakAuras-style free layout (floating overlay)"
+                      Checked="FreeLayoutModeCheck_OnChanged"
+                      Unchecked="FreeLayoutModeCheck_OnChanged"/>
+            <TextBlock Style="{StaticResource HintText}"
+                       Text="When on, the floating buff overlay renders each tracked buff as a bare icon that you can drag and resize anywhere on screen (WeakAuras-style).  When off, all tracked buffs flow as a horizontal chip strip.  Free layout requires you to track buffs first; untracked buffs never appear in this mode."/>
+
+            <CheckBox x:Name="LockOverlayCheck"
+                      Style="{StaticResource MasterCheck}"
+                      Content="Lock overlay (click-through)"
+                      Checked="LockOverlayCheck_OnChanged"
+                      Unchecked="LockOverlayCheck_OnChanged"/>
+            <TextBlock Style="{StaticResource HintText}"
+                       Text="When on, the floating buff overlay becomes click-through in both layouts -- the game receives all mouse input even though the overlay paints over it.  Strip mode stays parked, free-layout icons render in place.  Turn off to drag the strip / individual icons around (edit chrome appears in free layout).  Persisted: stays locked across sessions once you set it."/>
+
             <!-- ── Tracked watchlist ─────────────────────────────────────────────────── -->
             <Grid Margin="0,8,0,0">
                 <Grid.ColumnDefinitions>

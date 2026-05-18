@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using System.Windows;
 using MarvelHeroesComporator.NetworkSniffer;
 using MarvelHeroes.DpsMeter.Services;
@@ -38,6 +39,10 @@ public partial class MainAppWindow : Window
     /// The presenter listens and pushes the new visibility down to the floating overlay's
     /// DpsDisplayPanel.</summary>
     public event Action<bool>?   ShowOverlayDpsSummaryToggled;
+    /// <summary>Forwarded from the Settings tab's "Lock overlay (click-through)" checkbox.
+    /// The presenter listens and flips <c>WS_EX_TRANSPARENT</c> on the floating DPS overlay
+    /// window so click-through takes effect immediately.</summary>
+    public event Action<bool>?   OverlayLockedToggled;
     // SwitchModeRequested kept for API parity with the overlay window so the presenter's
     // WireWindowEvents overload signatures stay symmetric.  The main window itself has no
     // way to fire it (no "switch mode" surface) -- suppress the never-used warning.
@@ -72,9 +77,15 @@ public partial class MainAppWindow : Window
     /// overlay (a separate window from the DPS overlay).</summary>
     public event Action<bool>?   ShowBuffOverlayToggled;
 
+    /// <summary>Raised when the user ticks / unticks the "Show cooldown overlay" header
+    /// checkbox.  Presenter listens to spawn / hide the floating cooldown overlay window
+    /// and persist <c>ShowCooldownOverlay</c> to <c>dps-overlay.json</c>.</summary>
+    public event Action<bool>?   ShowCooldownOverlayToggled;
+
     private bool _suppressShowOverlayCheckboxEvents;
     private bool _suppressPersistOverlayCheckboxEvents;
     private bool _suppressShowBuffOverlayCheckboxEvents;
+    private bool _suppressShowCooldownOverlayCheckboxEvents;
     /// <summary>Stashed reference to the shared settings object so the persist-overlay
     /// checkbox handler can mutate + persist without going through an event-roundtrip to
     /// the presenter (the presenter polls the field every decay tick, so a direct write +
@@ -101,6 +112,7 @@ public partial class MainAppWindow : Window
         finally { _suppressPersistOverlayCheckboxEvents = false; }
         // Same bootstrap suppression for the buff-overlay checkbox.
         SetShowBuffOverlayChecked(settings.ShowBuffOverlay);
+        SetShowCooldownOverlayChecked(settings.ShowCooldownOverlay);
         // Honour the persisted buff-panels preference at startup -- the LiveDashboardPanel
         // defaults to visible, so we only need to push down the explicit-off case here.
         // (Pushing down "on" would be a no-op but keeps the code path symmetric.)
@@ -111,6 +123,7 @@ public partial class MainAppWindow : Window
         SettingsTab.BossOnlyToggled                 += v  => BossOnlyToggled?.Invoke(v);
         SettingsTab.ShowBuffPanelsToggled           += v  => ShowBuffPanelsToggled?.Invoke(v);
         SettingsTab.ShowOverlayDpsSummaryToggled    += v  => ShowOverlayDpsSummaryToggled?.Invoke(v);
+        SettingsTab.OverlayLockedToggled            += v  => OverlayLockedToggled?.Invoke(v);
         SettingsTab.ClearDpsRequested               += () => ClearDpsRequested?.Invoke();
         SettingsTab.ResetMaxHitRecordRequested      += () => ResetMaxHitRecordRequested?.Invoke();
         SettingsTab.ResetSplinterCooldownRequested  += () => ResetSplinterCooldownRequested?.Invoke();
@@ -141,6 +154,88 @@ public partial class MainAppWindow : Window
             // happens, and the LiveDashboardPanel has no settings to save.
             Application.Current?.Shutdown();
         };
+
+        // Kick off the GitHub update check once the window is up.  Deliberately fired
+        // from Loaded (not the ctor) so a slow/blocked network doesn't delay window
+        // paint.  Best-effort: any failure (offline, GitHub rate-limited, etc.) is
+        // silently swallowed inside UpdateChecker.CheckAsync.
+        Loaded += async (_, _) =>
+        {
+            try
+            {
+                var result = await Services.UpdateChecker.CheckAsync();
+                ApplyUpdateCheckResult(result);
+            }
+            catch { /* extra-defensive: never let the update check crash startup */ }
+        };
+    }
+
+    /// <summary>Cached most-recent update result, used so the manual "Check for updates"
+    /// button in Settings can pop a toast with the same data the startup check found.</summary>
+    private Services.UpdateChecker.Result _lastUpdateResult = Services.UpdateChecker.Result.None;
+
+    /// <summary>Show / hide the update banner based on a CheckAsync result, honoring the
+    /// user's persisted dismissal so a banner the user has already clicked "✕" on doesn't
+    /// reappear until a NEWER release supersedes it.</summary>
+    private void ApplyUpdateCheckResult(Services.UpdateChecker.Result result)
+    {
+        _lastUpdateResult = result;
+        if (!result.Available)
+        {
+            UpdateBanner.Visibility = Visibility.Collapsed;
+            return;
+        }
+        // Dismissal: if the user previously clicked ✕ on this exact tag, stay hidden.
+        // Any newer tag wins (the user's dismissed-version is overwritten only on click,
+        // and the result we have here is by definition strictly newer than local, so a
+        // mismatch between "dismissed tag" and "current tag" means a fresh release).
+        string? dismissed = _settings?.DismissedUpdateVersion;
+        if (!string.IsNullOrEmpty(dismissed) && string.Equals(dismissed, result.TagName, StringComparison.OrdinalIgnoreCase))
+        {
+            UpdateBanner.Visibility = Visibility.Collapsed;
+            return;
+        }
+        UpdateBannerText.Text =
+            $"Cerebro v{result.DisplayVersion} is available  (you have v{Services.CerebroVersion.DisplayVersion})";
+        UpdateBanner.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>Open the release page in the user's default browser.  We don't try to
+    /// auto-download / auto-install -- the user unzips the new release manually over the
+    /// existing install.  Simple, no can't-replace-the-running-EXE shenanigans.</summary>
+    private void UpdateBannerDownload_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrEmpty(_lastUpdateResult.HtmlUrl)) return;
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName        = _lastUpdateResult.HtmlUrl,
+                UseShellExecute = true,
+            });
+        }
+        catch { /* shell-execute can fail on locked-down systems; non-fatal */ }
+    }
+
+    /// <summary>Persist the dismissed tag so the banner stays hidden across launches
+    /// until a newer release supersedes this one.</summary>
+    private void UpdateBannerDismiss_Click(object sender, RoutedEventArgs e)
+    {
+        UpdateBanner.Visibility = Visibility.Collapsed;
+        if (_settings == null) return;
+        _settings.DismissedUpdateVersion = _lastUpdateResult.TagName ?? "";
+        DpsOverlaySettingsFile.Save(_settings);
+    }
+
+    /// <summary>Triggered by the Settings tab's "Check for updates" button.  Runs a fresh
+    /// network call so the user can force a re-check after dismissing or after a known
+    /// upstream release.  Returns the result so the Settings tab can show a toast/dialog
+    /// rather than relying on the silent banner.</summary>
+    internal async Task<Services.UpdateChecker.Result> CheckForUpdatesNowAsync()
+    {
+        var result = await Services.UpdateChecker.CheckAsync();
+        ApplyUpdateCheckResult(result);
+        return result;
     }
 
     /// <summary>Called by the presenter during teardown so the Closing handler doesn't
@@ -172,6 +267,17 @@ public partial class MainAppWindow : Window
         _suppressShowBuffOverlayCheckboxEvents = true;
         try { ShowBuffOverlayCheckbox.IsChecked = value; }
         finally { _suppressShowBuffOverlayCheckboxEvents = false; }
+    }
+
+    /// <summary>Mirror of <see cref="SetShowOverlayChecked"/> for the cooldown overlay
+    /// header checkbox.  Called by the presenter when the user closes the cooldown
+    /// overlay via Alt+F4 / WM_CLOSE so the dismissal is reflected here too.</summary>
+    public void SetShowCooldownOverlayChecked(bool value)
+    {
+        if (ShowCooldownOverlayCheckbox.IsChecked == value) return;
+        _suppressShowCooldownOverlayCheckboxEvents = true;
+        try { ShowCooldownOverlayCheckbox.IsChecked = value; }
+        finally { _suppressShowCooldownOverlayCheckboxEvents = false; }
     }
 
     /// <summary>Update the small badge on the right of the header.  Wired by the presenter
@@ -218,6 +324,15 @@ public partial class MainAppWindow : Window
     {
         if (_suppressShowBuffOverlayCheckboxEvents) return;
         ShowBuffOverlayToggled?.Invoke(ShowBuffOverlayCheckbox.IsChecked == true);
+    }
+
+    /// <summary>"Show cooldown overlay" header checkbox.  Mirrors the buff-overlay
+    /// toggle -- forwards through <see cref="ShowCooldownOverlayToggled"/> for the
+    /// presenter to spawn / hide the floating cooldown window.</summary>
+    private void ShowCooldownOverlayCheckbox_OnChanged(object sender, RoutedEventArgs e)
+    {
+        if (_suppressShowCooldownOverlayCheckboxEvents) return;
+        ShowCooldownOverlayToggled?.Invoke(ShowCooldownOverlayCheckbox.IsChecked == true);
     }
 
     // ── Forwarded UpdateDps / UpdateSplinterStatus ────────────────────────────────────────────
@@ -308,4 +423,10 @@ public partial class MainAppWindow : Window
     /// that the tab renders with empty lists.</summary>
     public void SetBuffTracker(MarvelHeroes.DpsMeter.Services.BuffTracker? tracker)
         => BuffTrackerTab.SetBuffTracker(tracker);
+
+    /// <summary>Hand the live <see cref="MarvelHeroes.DpsMeter.Services.CooldownTracker"/>
+    /// reference to the Cooldown Tracker tab so its discovery / watchlist UI can poll
+    /// it.  Called by the presenter post-construction.</summary>
+    public void SetCooldownTracker(MarvelHeroes.DpsMeter.Services.CooldownTracker? tracker)
+        => CooldownTrackerTab.SetCooldownTracker(tracker);
 }

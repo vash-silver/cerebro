@@ -110,6 +110,8 @@ public partial class BuffTrackerPanel : UserControl
             var cfg = TrackedBuffsConfig.Current;
             OnlyShowTrackedCheck.IsChecked = cfg.OnlyShowTracked;
             ShowStealthPillCheck.IsChecked = cfg.ShowStealthStatePill;
+            FreeLayoutModeCheck.IsChecked  = cfg.FreeLayoutMode;
+            LockOverlayCheck.IsChecked     = cfg.OverlayLocked;
         }
         finally { _suppressEvents = false; }
     }
@@ -314,6 +316,32 @@ public partial class BuffTrackerPanel : UserControl
         PublishConfig(cfg);
     }
 
+    /// <summary>Toggle the floating buff overlay between chip-strip and WeakAuras-style
+    /// free-layout rendering.  Persisted -- users who set up their auras want them to
+    /// come back the same way next session.</summary>
+    private void FreeLayoutModeCheck_OnChanged(object sender, RoutedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        var cfg = CloneCurrent();
+        cfg.FreeLayoutMode = FreeLayoutModeCheck.IsChecked == true;
+        PublishConfig(cfg);
+    }
+
+    /// <summary>Master lock for the floating buff overlay.  Persisted so the user's
+    /// "place auras once, lock for play" workflow survives relaunches.  When checked
+    /// the overlay is click-through in BOTH render modes; when unchecked it's mouse-
+    /// interactive (drag the strip in strip mode; drag/resize individual chips in
+    /// free-layout mode).  The overlay window polls
+    /// <see cref="TrackedBuffsConfig.OverlayLocked"/> on every UpdateBuffs tick so the
+    /// flip takes effect within 250 ms.</summary>
+    private void LockOverlayCheck_OnChanged(object sender, RoutedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        var cfg = CloneCurrent();
+        cfg.OverlayLocked = LockOverlayCheck.IsChecked == true;
+        PublishConfig(cfg);
+    }
+
     private void TrackButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button btn) return;
@@ -515,9 +543,12 @@ public partial class BuffTrackerPanel : UserControl
         {
             OnlyShowTracked       = src.OnlyShowTracked,
             ShowStealthStatePill  = src.ShowStealthStatePill,
+            FreeLayoutMode        = src.FreeLayoutMode,
+            OverlayLocked         = src.OverlayLocked,
             Tracked   = new HashSet<string>(src.Tracked, StringComparer.OrdinalIgnoreCase),
             IconPaths = new Dictionary<string, string>(src.IconPaths, StringComparer.OrdinalIgnoreCase),
             Aliases   = new Dictionary<string, string>(src.Aliases,   StringComparer.OrdinalIgnoreCase),
+            Layouts   = new Dictionary<string, BuffLayout>(src.Layouts, StringComparer.OrdinalIgnoreCase),
         };
     }
 

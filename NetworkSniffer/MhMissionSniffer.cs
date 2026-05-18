@@ -323,6 +323,77 @@ public sealed class LocalAvatarObservedEvent
 }
 
 /// <summary>
+/// Fired when the local client sent a <c>NetMessageTryActivatePower</c> AND the message
+/// carried a non-zero <c>PowerPrototypeId</c> field.  Distinct from
+/// <see cref="LocalAvatarObservedEvent"/> -- the avatar-observed signal fires on every
+/// client power message (try-activate, release, cancel) to confirm "this avatar is me",
+/// whereas this event ALSO carries the power that was fired so downstream tools
+/// (the CooldownTracker) can know exactly which ability went on cooldown.
+///
+/// <para>The wire field is <c>ulong</c> (full prototype ref).  Downstream lookups
+/// (PowerIconByProto, PowerNamesByProto) use the lower 32 bits as the root-prototype
+/// enum index; the consumer is responsible for that conversion.</para>
+/// </summary>
+public sealed class LocalPowerActivatedEvent
+{
+    /// <summary>Entity id of the avatar firing the power -- by construction, this is the
+    /// local player's avatar (only the local client sends TryActivatePower).</summary>
+    public required ulong LocalAvatarEntityId { get; init; }
+    /// <summary>Full 64-bit prototype reference for the power that was activated.  Cast
+    /// to <c>uint</c> to look up display name / icon via <c>PowerNamesByProto</c> /
+    /// <c>PowerIconByProto</c>.  Always non-zero when the event fires.</summary>
+    public required ulong PowerPrototypeId { get; init; }
+    public required DateTime UtcTime { get; init; }
+}
+
+/// <summary>
+/// Raw <c>NetMessageSetProperty</c> / <c>NetMessageRemoveProperty</c> parse output.
+/// Surfaces every property delta the server pushes to the local client, regardless
+/// of which entity it targets -- consumers filter by <see cref="ReplicationId"/>
+/// against their own entity↔replicationId mapping.
+///
+/// <para><b>Wire format</b>: the on-the-wire <c>PropertyId</c> ulong is endianness-
+/// swapped from the raw uint64 field; after swap the top 11 bits encode the
+/// <see cref="PropertyEnum"/> index and the lower 53 bits hold <see cref="ParamBits"/>
+/// (typically a prototype reference or a tuple-packed key, depending on the property's
+/// param-spec).  This event provides BOTH the decoded fields and the raw value bits
+/// so downstream code can reinterpret as int64 / float / uint32 as the property
+/// schema dictates.</para>
+///
+/// <para><b>Used by</b>: <c>CooldownTracker</c> filters to PropertyEnum 732
+/// (<c>PowerCooldownDuration</c>) and 734 (<c>PowerCooldownStartTime</c>) keyed by
+/// power proto in <see cref="ParamBits"/>.  Future consumers (stat tracking,
+/// resource pool tracking, etc.) subscribe to the same stream.</para>
+/// </summary>
+public sealed class PropertyChangedEvent
+{
+    /// <summary>Property-collection replication id (NOT the entity id).  Each entity
+    /// has one primary property collection whose id is established at
+    /// <c>EntityCreate</c> time.  Consumers maintain a <c>replicationId →
+    /// entityId</c> map (or auto-discover via a heuristic) to figure out which
+    /// entity this delta targets.</summary>
+    public required ulong ReplicationId { get; init; }
+    /// <summary>The decoded property enum (top 11 bits of the wire propertyId, after
+    /// endianness swap).  Cross-reference with <c>PropertyEnumNames.cs</c>.</summary>
+    public required uint PropertyEnum { get; init; }
+    /// <summary>Lower 53 bits of the (endianness-swapped) wire propertyId.  Typically
+    /// a prototype enum index (uint in the low bits) for per-prototype properties
+    /// like power cooldowns; tuple-packed otherwise.</summary>
+    public required ulong ParamBits { get; init; }
+    /// <summary>Raw value bits as sent on the wire.  Decode according to the
+    /// property's type-spec: zigzag-rotated int64 via
+    /// <c>(long)((ValueBits >> 1) | (ValueBits &lt;&lt; 63))</c>, or float32 via
+    /// <c>BitConverter.UInt32BitsToSingle((uint)ValueBits)</c>.</summary>
+    public required ulong ValueBits { get; init; }
+    /// <summary>True for <c>NetMessageRemoveProperty</c> (property cleared off the
+    /// collection); false for <c>NetMessageSetProperty</c>.  Remove events carry the
+    /// same ReplicationId / PropertyEnum / ParamBits keys; <see cref="ValueBits"/>
+    /// is meaningless (zero) on removes.</summary>
+    public required bool Removed { get; init; }
+    public required DateTime UtcTime { get; init; }
+}
+
+/// <summary>
 /// Payload for <c>NetMessageModifyCommunityMember</c>: the server pushes one of these to the
 /// local client every time a community member (friend, party member, *nearby player*, ...) is
 /// created, updated, or removed.  Nearby-circle broadcasts arrive automatically when someone
@@ -659,6 +730,18 @@ public sealed class MhMissionSniffer : IDisposable
     /// because unlike the login-time <see cref="LocalPlayerIdentified"/> signal this one works
     /// even when the app was started mid-session.</summary>
     public event EventHandler<LocalAvatarObservedEvent>? LocalAvatarObserved;
+    /// <summary>Fires when the local client sends a <c>NetMessageTryActivatePower</c> that
+    /// includes a power-prototype id.  The CooldownTracker subscribes to start its per-power
+    /// timer at the exact moment the player commits to an ability.  Carries (avatarEntityId,
+    /// powerProtoId, timestamp) -- see <see cref="LocalPowerActivatedEvent"/>.</summary>
+    public event EventHandler<LocalPowerActivatedEvent>? LocalPowerActivated;
+    /// <summary>Fires for every <c>NetMessageSetProperty</c> / <c>NetMessageRemoveProperty</c>
+    /// the server pushes to the local client.  Carries the raw (replicationId,
+    /// propertyEnum, paramBits, valueBits) tuple so downstream code can filter and
+    /// decode as needed.  Used by the CooldownTracker to observe per-power cooldown
+    /// state on the local avatar (PropertyEnum 732 / 734).  Fires on the sniffer
+    /// thread; UI subscribers must marshal.</summary>
+    public event EventHandler<PropertyChangedEvent>? PropertyChanged;
     public event EventHandler<CommunityMemberUpdatedEvent>? CommunityMemberUpdated;
     /// <summary>Fires for every <c>NetMessageLootEntity</c> -- a loot item just spawned on the
     /// ground.  The <see cref="LootDroppedEvent.ItemProtoRef"/> is the full 64-bit PrototypeId
@@ -913,6 +996,10 @@ public sealed class MhMissionSniffer : IDisposable
                 case "NetMessageLootEntity":             ParseLootEntity(body); break;
                 case "NetMessageAddCondition":           ParseAddCondition(body); break;
                 case "NetMessageDeleteCondition":        ParseDeleteCondition(body); break;
+                case "NetMessageSetProperty":            ParseSetProperty(body); break;
+                case "NetMessageRemoveProperty":         ParseRemoveProperty(body); break;
+                case "NetMessageActivatePower":          ParseActivatePowerForDiag(body); break;
+                case "NetMessagePreActivatePower":       ParsePreActivatePowerForDiag(body); break;
                 case "NetMessageModifyCommunityMember":  ParseModifyCommunityMember(body); break;
                 case "NetMessageRegionChange":           ParseRegionChange(body); break;
                 case "NetMessageRegionDifficultyChange": ParseDifficultyChange(body); break;
@@ -1369,17 +1456,51 @@ public sealed class MhMissionSniffer : IDisposable
 
     private void ParseTryActivatePower(byte[] body)
     {
-        if (LocalAvatarObserved is null) return;
+        if (LocalAvatarObserved is null && LocalPowerActivated is null) return;
         try
         {
             var msg = NetMessageTryActivatePower.ParseFrom(body);
             if (msg.HasIdUserEntity) EmitLocalAvatarObserved(msg.IdUserEntity, "TryActivatePower");
+            if (LocalPowerActivated is not null
+                && msg.HasIdUserEntity
+                && msg.HasPowerPrototypeId
+                && msg.PowerPrototypeId != 0)
+            {
+                LocalPowerActivated.Invoke(this, new LocalPowerActivatedEvent
+                {
+                    LocalAvatarEntityId = msg.IdUserEntity,
+                    PowerPrototypeId    = msg.PowerPrototypeId,
+                    UtcTime             = DateTime.UtcNow,
+                });
+
+                // Arm the SetProperty focus window: log every property delta for
+                // the next 2 seconds in full so we can correlate the cast with
+                // server-side cooldown updates.
+                _setPropertyFocusProto    = (uint)(msg.PowerPrototypeId & 0xFFFFFFFFu);
+                _setPropertyFocusUntilUtc = DateTime.UtcNow.AddSeconds(2);
+                Diagnostic?.Invoke($"== FOCUS WINDOW armed for power #{_setPropertyFocusProto} (2s) ==");
+
+                // Cooldown-debug dump: when the user fires a power, snapshot the
+                // current S2C message-name distribution so we can see WHICH server
+                // messages arrived in the same session.  Capped to first ~5 dumps.
+                long n = System.Threading.Interlocked.Increment(ref _tryActivateDumpBudget);
+                if (n <= 5)
+                {
+                    var sb = new System.Text.StringBuilder();
+                    sb.Append($"TryActivate dump[{n}]: S2C counts so far -> ");
+                    foreach (var kv in ServerToClientCounts)
+                        sb.Append($"{kv.Key}={kv.Value} ");
+                    Diagnostic?.Invoke(sb.ToString());
+                }
+            }
         }
         catch (Exception ex)
         {
             Diagnostic?.Invoke($"TryActivatePower parse failed: {ex.Message}");
         }
     }
+
+    private long _tryActivateDumpBudget;
 
     private void ParsePowerRelease(byte[] body)
     {
@@ -1392,6 +1513,149 @@ public sealed class MhMissionSniffer : IDisposable
         catch (Exception ex)
         {
             Diagnostic?.Invoke($"PowerRelease parse failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>Parse <c>NetMessageSetProperty</c> and surface a <see cref="PropertyChangedEvent"/>.
+    /// The message carries (replicationId, propertyId, valueBits) -- we decode the propertyId
+    /// into its (enum, paramBits) parts and pass everything raw to the consumer.
+    ///
+    /// <para><b>Wire endianness:</b> the propertyId field is byte-reversed on the wire (same
+    /// gotcha as <c>ParsePropertyCollectionAt</c> and the splinter-currency parser).  Without
+    /// the swap the enum value would read as a garbage bit-pattern, e.g. a Cooldown property
+    /// (732 = 0x2DC) would appear as the top byte of some unrelated value.</para>
+    ///
+    /// <para>No filtering happens here -- consumers (CooldownTracker) handle that.  Cheap
+    /// when nothing's subscribed (early-out at the top); cheap when consumers don't care
+    /// about this particular property (one enum compare and they bail).</para></summary>
+    /// <summary>Bounded counter for cooldown-feature diagnostic logging.  We log the
+    /// first ~50 SetProperty arrivals (and a sample of distinct enums after) so the
+    /// user can confirm whether cooldowns even arrive via SetProperty without the
+    /// log getting overwhelmed in a busy session.</summary>
+    private long _setPropertyLogBudget;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<uint, byte> _setPropertyEnumsSeen = new();
+
+    private void ParseSetProperty(byte[] body)
+    {
+        try
+        {
+            var msg = NetMessageSetProperty.ParseFrom(body);
+            if (!msg.HasReplicationId || !msg.HasPropertyId) return;
+            ulong propertyIdRaw = System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(msg.PropertyId);
+            uint  enumValue     = (uint)(propertyIdRaw >> 53);
+            ulong paramBits     = propertyIdRaw & 0x1FFFFFFFFFFFFFul;
+            ulong valueBits     = msg.HasValueBits ? msg.ValueBits : 0;
+
+            // Diagnostic logging is now driven by the CooldownTracker's empirical
+            // signature learning -- it logs the high-signal "LEARNED signature"
+            // line when it observes a new (enum, paramBits) -> power mapping.
+            // Per-event SetProperty spam is no longer useful; keep just a single
+            // first-N tracer so we can confirm the dispatch path still works at
+            // startup.
+            long n = System.Threading.Interlocked.Increment(ref _setPropertyLogBudget);
+            if (n == 1)
+            {
+                Diagnostic?.Invoke($"SetProperty dispatch live: first event repId={msg.ReplicationId} enum={enumValue}");
+            }
+
+            if (PropertyChanged is null) return;
+            PropertyChanged.Invoke(this, new PropertyChangedEvent
+            {
+                ReplicationId = msg.ReplicationId,
+                PropertyEnum  = enumValue,
+                ParamBits     = paramBits,
+                ValueBits     = valueBits,
+                Removed       = false,
+                UtcTime       = DateTime.UtcNow,
+            });
+        }
+        catch (Exception ex)
+        {
+            Diagnostic?.Invoke($"SetProperty parse failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>Focus-window state: when this is non-MinValue and now &lt; UntilUtc,
+    /// every SetProperty event is logged in full regardless of budget.  Set by
+    /// ParseTryActivatePower whenever a local power is cast.  2-second window is
+    /// generous enough to capture the server's full response (PreActivate +
+    /// Activate + cooldown property deltas).</summary>
+    private DateTime _setPropertyFocusUntilUtc = DateTime.MinValue;
+    private uint     _setPropertyFocusProto;
+
+    /// <summary>Parse <c>NetMessageRemoveProperty</c> -- same wire layout as SetProperty
+    /// but the property was CLEARED rather than set.  Fires the same
+    /// <see cref="PropertyChangedEvent"/> with <see cref="PropertyChangedEvent.Removed"/>
+    /// = true so downstream code knows to mark the relevant state as "absent".
+    /// Cooldowns end via this path: the server removes <c>PowerCooldownDuration</c>
+    /// from the avatar's property collection when the cooldown elapses.</summary>
+    private void ParseRemoveProperty(byte[] body)
+    {
+        if (PropertyChanged is null) return;
+        try
+        {
+            var msg = NetMessageRemoveProperty.ParseFrom(body);
+            if (!msg.HasReplicationId || !msg.HasPropertyId) return;
+            ulong propertyIdRaw = System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(msg.PropertyId);
+            uint  enumValue     = (uint)(propertyIdRaw >> 53);
+            ulong paramBits     = propertyIdRaw & 0x1FFFFFFFFFFFFFul;
+            PropertyChanged.Invoke(this, new PropertyChangedEvent
+            {
+                ReplicationId = msg.ReplicationId,
+                PropertyEnum  = enumValue,
+                ParamBits     = paramBits,
+                ValueBits     = 0,
+                Removed       = true,
+                UtcTime       = DateTime.UtcNow,
+            });
+        }
+        catch (Exception ex)
+        {
+            Diagnostic?.Invoke($"RemoveProperty parse failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>Diagnostic-only handler for <c>NetMessageActivatePower</c> (server-to-
+    /// client confirmation of a power activation).  The message carries an
+    /// <c>archiveData</c> blob that MAY contain embedded cooldown state -- if our
+    /// NetMessageSetProperty hypothesis turns out wrong, this is the most likely
+    /// alternate vehicle.  We log the first ~30 arrivals with archive size + a hex
+    /// dump of the first 64 bytes so we can post-hoc analyze the layout.</summary>
+    private long _activatePowerLogBudget;
+    private void ParseActivatePowerForDiag(byte[] body)
+    {
+        long n = System.Threading.Interlocked.Increment(ref _activatePowerLogBudget);
+        if (n > 30) return;
+        try
+        {
+            var msg = NetMessageActivatePower.ParseFrom(body);
+            int archiveLen = msg.HasArchiveData ? msg.ArchiveData.Length : 0;
+            string preview = archiveLen > 0
+                ? Convert.ToHexString(msg.ArchiveData.ToByteArray(),
+                                      0, Math.Min(64, archiveLen))
+                : "<empty>";
+            Diagnostic?.Invoke($"ActivatePower[{n}] archiveLen={archiveLen} first64={preview}");
+        }
+        catch (Exception ex)
+        {
+            Diagnostic?.Invoke($"ActivatePower parse failed: {ex.Message}");
+        }
+    }
+
+    private long _preActivatePowerLogBudget;
+    private void ParsePreActivatePowerForDiag(byte[] body)
+    {
+        long n = System.Threading.Interlocked.Increment(ref _preActivatePowerLogBudget);
+        if (n > 30) return;
+        try
+        {
+            var msg = NetMessagePreActivatePower.ParseFrom(body);
+            // PreActivatePower has minimal fields; this is just a "we saw the message" tracer.
+            Diagnostic?.Invoke($"PreActivatePower[{n}] size={body.Length}");
+        }
+        catch (Exception ex)
+        {
+            Diagnostic?.Invoke($"PreActivatePower parse failed: {ex.Message}");
         }
     }
 

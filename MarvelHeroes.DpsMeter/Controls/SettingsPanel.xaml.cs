@@ -42,6 +42,7 @@ public partial class SettingsPanel : UserControl
     private bool _suppressShowPowerBreakdown;
     private bool _suppressShowBuffPanels;
     private bool _suppressShowOverlayDpsSummary;
+    private bool _suppressOverlayLocked;
     private bool _suppressShowSplinter;
     private bool _suppressSplinterSound;
     private bool _suppressSplinterVolume;
@@ -64,6 +65,11 @@ public partial class SettingsPanel : UserControl
     /// listens and pushes the new visibility down to the floating overlay's DpsDisplayPanel
     /// so the change takes effect immediately.</summary>
     public event Action<bool>? ShowOverlayDpsSummaryToggled;
+    /// <summary>Fires when the user toggles "Lock overlay (click-through)".  The presenter
+    /// listens and pushes the new state down to <see cref="DpsOverlayWindow.SetLocked"/>
+    /// so <c>WS_EX_TRANSPARENT</c> flips immediately -- locking takes effect on the next
+    /// mouse interaction without an app restart.</summary>
+    public event Action<bool>? OverlayLockedToggled;
     public event Action?       ClearDpsRequested;
     public event Action?       ResetMaxHitRecordRequested;
     public event Action?       ResetSplinterCooldownRequested;
@@ -84,9 +90,30 @@ public partial class SettingsPanel : UserControl
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "MarvelHeroesComporator", "dps-meter.log");
 
-        var version = Assembly.GetExecutingAssembly().GetName().Version;
-        AboutText.Text = $"Cerebro  ·  DPS meter for Marvel Heroes  ·  v{version}\n" +
+        // Use the dedicated CerebroVersion helper which reads AssemblyInformationalVersion
+        // -- that's what the in-app updater compares against the latest GitHub release
+        // tag, so the About display matches the version-check semantics exactly.
+        AboutText.Text = $"Cerebro  ·  DPS meter for Marvel Heroes  ·  v{Services.CerebroVersion.DisplayVersion}\n" +
                          $"Settings file: %LocalAppData%\\MarvelHeroesComporator\\dps-overlay.json";
+    }
+
+    /// <summary>"Check for updates" button -- runs a fresh GitHub API call and surfaces a
+    /// short status string regardless of whether the banner would have shown.  Useful
+    /// after a user dismisses the banner ("oh wait, what version was that again") or
+    /// when the silent startup check missed (network was offline at app start).</summary>
+    private async void CheckForUpdatesButton_Click(object sender, RoutedEventArgs e)
+    {
+        UpdateCheckStatus.Text = "Checking GitHub…";
+        // Walk up to the parent MainAppWindow so we share the update-result state and
+        // banner-toggle logic with the startup-time check.  Falls back to a direct call
+        // if we're hosted somewhere unexpected (e.g. unit tests, design-time preview).
+        var host = Window.GetWindow(this) as MarvelHeroes.DpsMeter.Windows.MainAppWindow;
+        var result = host != null
+            ? await host.CheckForUpdatesNowAsync()
+            : await Services.UpdateChecker.CheckAsync();
+        UpdateCheckStatus.Text = result.Available
+            ? $"v{result.DisplayVersion} is available -- see the banner up top, or click 'Download' to open the release page."
+            : $"You're on the latest version (v{Services.CerebroVersion.DisplayVersion}).";
     }
 
     /// <summary>Wire the panel to the shared settings object and sync every control to the
@@ -101,6 +128,7 @@ public partial class SettingsPanel : UserControl
         SetChecked(ShowPowerBreakdownCheckbox,  settings.ShowPowerBreakdown,         ref _suppressShowPowerBreakdown);
         SetChecked(ShowBuffPanelsCheckbox,      settings.ShowBuffPanels,             ref _suppressShowBuffPanels);
         SetChecked(ShowOverlayDpsSummaryCheckbox, settings.ShowOverlayDpsSummary,    ref _suppressShowOverlayDpsSummary);
+        SetChecked(OverlayLockedCheckbox,       settings.OverlayLocked,              ref _suppressOverlayLocked);
         SetChecked(ShowSplinterCheckbox,        settings.ShowEternitySplinterTracker, ref _suppressShowSplinter);
         SetChecked(SplinterSoundCheckbox,       settings.SplinterCooldownSoundEnabled, ref _suppressSplinterSound);
 
@@ -224,6 +252,21 @@ public partial class SettingsPanel : UserControl
         if (_suppressShowOverlayDpsSummary || _settings == null) return;
         _settings.ShowOverlayDpsSummary = false; Save();
         ShowOverlayDpsSummaryToggled?.Invoke(false);
+    }
+
+    private void OverlayLockedCheckbox_OnChecked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressOverlayLocked || _settings == null) return;
+        _settings.OverlayLocked = true; Save();
+        // The presenter listens and pushes the new state into the floating overlay
+        // window's WS_EX_TRANSPARENT bit so click-through takes effect immediately.
+        OverlayLockedToggled?.Invoke(true);
+    }
+    private void OverlayLockedCheckbox_OnUnchecked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressOverlayLocked || _settings == null) return;
+        _settings.OverlayLocked = false; Save();
+        OverlayLockedToggled?.Invoke(false);
     }
 
     private void ShowSplinterCheckbox_OnChecked(object sender, RoutedEventArgs e)

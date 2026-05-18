@@ -1,0 +1,162 @@
+<UserControl x:Class="MarvelHeroes.DpsMeter.Controls.CooldownTrackerPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="#1A1A1A"
+             Foreground="#CCFFFFFF"
+             FontFamily="Segoe UI"
+             FontSize="12">
+    <UserControl.Resources>
+        <Style x:Key="SectionHeader" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="FontSize"   Value="13"/>
+            <Setter Property="Foreground" Value="#FFFFB347"/>
+            <Setter Property="Margin"     Value="0,12,0,4"/>
+        </Style>
+        <Style x:Key="HintText" TargetType="TextBlock">
+            <Setter Property="FontSize"     Value="10"/>
+            <Setter Property="Foreground"   Value="#77FFFFFF"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="Margin"       Value="0,2,0,8"/>
+        </Style>
+        <Style x:Key="MasterCheck" TargetType="CheckBox">
+            <Setter Property="Foreground" Value="#CCFFFFFF"/>
+            <Setter Property="FontSize"   Value="12"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin"     Value="0,6,0,4"/>
+        </Style>
+        <Style x:Key="RowButton" TargetType="Button">
+            <Setter Property="Background"   Value="#222"/>
+            <Setter Property="BorderBrush"  Value="#44FFFFFF"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Foreground"   Value="#DDFFFFFF"/>
+            <Setter Property="Padding"      Value="8,2"/>
+            <Setter Property="FontSize"     Value="11"/>
+            <Setter Property="Cursor"       Value="Hand"/>
+        </Style>
+        <!--
+            Per-row template shared by the Watchlist and Recently-fired lists.
+            Watchlist rows include a cooldown-duration TextBox + Untrack button; recent
+            rows hide the cooldown input and show a "+ Track" button instead.  Bound
+            through a code-side ViewModel (see panel.cs); rebuilt each refresh tick.
+        -->
+        <DataTemplate x:Key="CooldownRowTemplate">
+            <Grid Margin="0,3,0,3">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>  <!-- icon -->
+                    <ColumnDefinition Width="*"/>     <!-- name -->
+                    <ColumnDefinition Width="Auto"/>  <!-- metadata -->
+                    <ColumnDefinition Width="Auto"/>  <!-- icon buttons (Watchlist only) -->
+                    <ColumnDefinition Width="Auto"/>  <!-- track / untrack -->
+                </Grid.ColumnDefinitions>
+                <Image Grid.Column="0"
+                       Source="{Binding IconImageSource}"
+                       Visibility="{Binding IconImageVisibility}"
+                       Width="18" Height="18" Margin="0,0,6,0"
+                       Stretch="UniformToFill"
+                       VerticalAlignment="Center"
+                       ToolTip="{Binding IconTooltip}"/>
+                <TextBlock Grid.Column="1" Text="{Binding DisplayName}"
+                           Foreground="#DDFFFFFF" FontSize="12"
+                           VerticalAlignment="Center"/>
+                <TextBlock Grid.Column="2" Text="{Binding Metadata}"
+                           Foreground="#77FFFFFF" FontSize="10"
+                           Margin="6,0,10,0"
+                           VerticalAlignment="Center"/>
+                <StackPanel Grid.Column="3" Orientation="Horizontal"
+                            Visibility="{Binding IconButtonRowVisibility}"
+                            Margin="0,0,6,0">
+                    <Button Style="{StaticResource RowButton}"
+                            Content="Browse..."
+                            Tag="{Binding ProtoId}"
+                            ToolTip="Pick from the bundled in-game power icons"
+                            Click="BrowseIconButton_Click"/>
+                    <Button Style="{StaticResource RowButton}"
+                            Content="✕"
+                            Margin="4,0,0,0"
+                            Padding="6,2"
+                            Visibility="{Binding ClearIconButtonVisibility}"
+                            Tag="{Binding ProtoId}"
+                            ToolTip="Reset to the auto-resolved power icon"
+                            Click="ClearIconButton_Click"/>
+                </StackPanel>
+                <Button Grid.Column="4"
+                        Style="{StaticResource RowButton}"
+                        Content="{Binding TrackButtonLabel}"
+                        Background="{Binding TrackButtonBackground}"
+                        BorderBrush="{Binding TrackButtonBorder}"
+                        Tag="{Binding ProtoId}"
+                        Click="TrackButton_Click"/>
+            </Grid>
+        </DataTemplate>
+    </UserControl.Resources>
+    <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16,12,16,16">
+        <StackPanel>
+            <TextBlock FontSize="16" FontWeight="SemiBold" Foreground="#DDFFFFFF"
+                       Text="Cooldown Tracker"/>
+            <TextBlock Style="{StaticResource HintText}"
+                       Text="Pick the abilities you want to track and they'll show on the floating cooldown overlay as WeakAuras-style icons.  Fire an ability in-game once to register it in 'Recently fired' below, click '+ Track'.  Cooldowns are driven directly by the server -- including cooldown-reduction procs -- so no manual configuration is needed."/>
+
+            <CheckBox x:Name="FreeLayoutModeCheck"
+                      Style="{StaticResource MasterCheck}"
+                      Content="WeakAuras-style free layout (floating overlay)"
+                      Checked="FreeLayoutModeCheck_OnChanged"
+                      Unchecked="FreeLayoutModeCheck_OnChanged"/>
+            <TextBlock Style="{StaticResource HintText}"
+                       Text="When on, the floating cooldown overlay renders each tracked ability as a bare icon you can drag anywhere on screen.  When off, the icons flow as a horizontal strip."/>
+
+            <CheckBox x:Name="LockOverlayCheck"
+                      Style="{StaticResource MasterCheck}"
+                      Content="Lock overlay (click-through)"
+                      Checked="LockOverlayCheck_OnChanged"
+                      Unchecked="LockOverlayCheck_OnChanged"/>
+            <TextBlock Style="{StaticResource HintText}"
+                       Text="When on, the cooldown overlay becomes click-through -- the game receives all mouse input.  Turn off to drag/resize icons."/>
+
+            <Grid Margin="0,8,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Style="{StaticResource SectionHeader}" Text="Watchlist"/>
+                <Button   Grid.Column="1" Content="Clear all"
+                          Style="{StaticResource RowButton}"
+                          VerticalAlignment="Bottom" Margin="0,0,0,4"
+                          Click="ClearAllButton_Click"/>
+            </Grid>
+            <TextBlock x:Name="WatchlistEmptyHint"
+                       Style="{StaticResource HintText}"
+                       Text="Watchlist is empty.  Fire an ability in-game; it'll appear below.  Click '+ Track' to add it."/>
+            <ItemsControl x:Name="TrackedList"
+                          ItemTemplate="{StaticResource CooldownRowTemplate}"/>
+
+            <Grid Margin="0,12,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Style="{StaticResource SectionHeader}" Text="Recently fired"/>
+                <Button   Grid.Column="1" Content="Clear history"
+                          Style="{StaticResource RowButton}"
+                          VerticalAlignment="Bottom" Margin="0,0,0,4"
+                          Click="ClearHistoryButton_Click"/>
+            </Grid>
+            <TextBlock Style="{StaticResource HintText}"
+                       Text="Abilities you've fired this session.  Click '+ Track' next to one to start tracking its cooldown."/>
+            <TextBlock x:Name="RecentEmptyHint"
+                       Style="{StaticResource HintText}"
+                       Text="Nothing fired yet.  Use an ability in-game to see it appear here."/>
+            <ItemsControl x:Name="RecentList"
+                          ItemTemplate="{StaticResource CooldownRowTemplate}"/>
+
+            <Border Margin="0,16,0,0" Padding="10,8"
+                    Background="#0F0F0F"
+                    BorderBrush="#44FFFFFF" BorderThickness="1"
+                    CornerRadius="3">
+                <TextBlock x:Name="StatusLine"
+                           Foreground="#AAFFFFFF" FontSize="11"
+                           TextWrapping="Wrap"
+                           Text="loading..."/>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

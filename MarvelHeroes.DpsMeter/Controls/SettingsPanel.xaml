@@ -101,6 +101,13 @@
             <TextBlock Style="{StaticResource HintText}"
                        Text="Floating overlay only.  When off, hides the big DPS number, the 'DPS' title, the max-hit triplet, and the idle/status text.  Leaves the leaderboard, ES badge, and boss section visible (those have their own toggles)."/>
 
+            <CheckBox x:Name="OverlayLockedCheckbox" Style="{StaticResource SettingCheckbox}"
+                      Content="Lock overlay (click-through)"
+                      Checked="OverlayLockedCheckbox_OnChecked"
+                      Unchecked="OverlayLockedCheckbox_OnUnchecked"/>
+            <TextBlock Style="{StaticResource HintText}"
+                       Text="Floating overlay only.  When on, the overlay is click-through -- the game receives all mouse input even though the overlay paints over it.  You can't drag, resize, or right-click the overlay until you unlock it.  Use this once you've positioned the overlay where you want it for play."/>
+
             <CheckBox x:Name="ShowSplinterCheckbox" Style="{StaticResource SettingCheckbox}"
                       Content="Show Eternity Splinter tracker"
                       Checked="ShowSplinterCheckbox_OnChecked"
@@ -325,6 +332,27 @@
                        FontFamily="Segoe UI" FontSize="11" Foreground="#AAFFFFFF"
                        TextWrapping="Wrap"
                        Text="Cerebro"/>
+
+            <!-- Manual "check for updates" trigger.  Same code path as the silent
+                 startup poll, but surfaces a toast-style result (textblock that flips
+                 between "Checking..." / "Update available: vN" / "Up to date") so the
+                 user gets feedback even when the result wouldn't change the banner
+                 (e.g. they already dismissed it). -->
+            <Grid Margin="0,8,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Button Grid.Column="0" Content="Check for updates"
+                        Padding="14,4" Cursor="Hand"
+                        Background="#222" BorderBrush="#44FFFFFF" BorderThickness="1"
+                        Foreground="#DDFFFFFF"
+                        Click="CheckForUpdatesButton_Click"/>
+                <TextBlock x:Name="UpdateCheckStatus" Grid.Column="1"
+                           Margin="10,0,0,0" VerticalAlignment="Center"
+                           Foreground="#AAFFFFFF" FontSize="11"
+                           TextWrapping="Wrap"/>
+            </Grid>
 
         </StackPanel>
     </ScrollViewer>

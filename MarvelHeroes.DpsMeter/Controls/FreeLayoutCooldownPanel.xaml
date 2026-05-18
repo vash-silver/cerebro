@@ -1,0 +1,118 @@
+<UserControl x:Class="MarvelHeroes.DpsMeter.Controls.FreeLayoutCooldownPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="Transparent">
+    <!--
+        WeakAuras-style cooldown canvas.  Each tracked power renders as:
+          * The power icon at full opacity when ready
+          * Dimmed icon (opacity 0.35) when on cooldown
+          * A dark "fill from bottom" rectangle whose height is proportional to the
+            remaining cooldown fraction.  Cheap visual approximation of the classic
+            radial cooldown sweep without needing Arc geometry.
+          * Centered countdown text (white, bold, drop shadow) while on cooldown
+          * Edit-mode chrome (yellow border + bottom-right resize grip) when unlocked
+    -->
+    <Canvas x:Name="RootCanvas" Background="Transparent" ClipToBounds="False">
+        <ItemsControl x:Name="WidgetHost" Canvas.Left="0" Canvas.Top="0">
+            <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <Canvas/>
+                </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemContainerStyle>
+                <Style TargetType="ContentPresenter">
+                    <Setter Property="Canvas.Left" Value="{Binding X}"/>
+                    <Setter Property="Canvas.Top"  Value="{Binding Y}"/>
+                </Style>
+            </ItemsControl.ItemContainerStyle>
+            <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                    <Border BorderBrush="{Binding EditBorderBrush}"
+                            BorderThickness="{Binding EditBorderThickness}"
+                            Background="Transparent"
+                            Width="{Binding Size}"
+                            Height="{Binding Size}"
+                            Tag="{Binding ProtoId}"
+                            Cursor="{Binding ChipCursor}"
+                            MouseLeftButtonDown="Chip_MouseLeftButtonDown"
+                            MouseLeftButtonUp="Chip_MouseLeftButtonUp"
+                            MouseMove="Chip_MouseMove">
+                        <Grid ClipToBounds="True">
+                            <!-- Icon image, dim when on cooldown.  Opacity is bound
+                                 to the VM so the same image element handles both
+                                 ready and cooling-down states. -->
+                            <Image Source="{Binding IconImageSource}"
+                                   Opacity="{Binding IconOpacity}"
+                                   Stretch="UniformToFill"/>
+                            <!-- Placeholder when no icon is configured -->
+                            <Border Background="#552E7FFF"
+                                    BorderBrush="#882E7FFF" BorderThickness="1"
+                                    CornerRadius="4"
+                                    Visibility="{Binding PlaceholderVisibility}">
+                                <TextBlock Text="?"
+                                           FontSize="{Binding PlaceholderFontSize}"
+                                           Foreground="#FFCCDDFF"
+                                           FontFamily="Segoe UI Semibold"
+                                           HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"/>
+                            </Border>
+                            <!-- Cooldown progress overlay.  Height is bound to a VM
+                                 field that's recomputed every tick.  Renders from
+                                 BOTTOM up (VerticalAlignment=Bottom) so the icon
+                                 'fills back in' from the top as the cooldown elapses,
+                                 matching the WoW-style cooldown look. -->
+                            <Rectangle Fill="#99000000"
+                                       Height="{Binding CooldownOverlayHeight}"
+                                       HorizontalAlignment="Stretch"
+                                       VerticalAlignment="Bottom"
+                                       IsHitTestVisible="False"/>
+                            <!-- Countdown text -->
+                            <TextBlock Text="{Binding RemainingText}"
+                                       FontFamily="Segoe UI"
+                                       FontWeight="Bold"
+                                       Foreground="#FFFFFFFF"
+                                       FontSize="{Binding RemainingFontSize}"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       Visibility="{Binding RemainingVisibility}"
+                                       IsHitTestVisible="False">
+                                <TextBlock.Effect>
+                                    <DropShadowEffect ShadowDepth="1" BlurRadius="2"
+                                                      Color="Black" Opacity="0.9"/>
+                                </TextBlock.Effect>
+                            </TextBlock>
+                            <!-- Charge count badge (top-right corner, golden) -->
+                            <TextBlock Text="{Binding ChargeText}"
+                                       FontFamily="Segoe UI Semibold"
+                                       FontWeight="Bold"
+                                       Foreground="#FFFFCC66"
+                                       FontSize="{Binding RemainingFontSize}"
+                                       HorizontalAlignment="Right"
+                                       VerticalAlignment="Top"
+                                       Margin="0,2,4,0"
+                                       Visibility="{Binding ChargeVisibility}"
+                                       IsHitTestVisible="False">
+                                <TextBlock.Effect>
+                                    <DropShadowEffect ShadowDepth="1" BlurRadius="2"
+                                                      Color="Black" Opacity="0.9"/>
+                                </TextBlock.Effect>
+                            </TextBlock>
+                            <!-- Resize grip (edit mode only) -->
+                            <Rectangle Width="10" Height="10"
+                                       Fill="#AAFFCC66"
+                                       Stroke="#FFFFCC66" StrokeThickness="1"
+                                       HorizontalAlignment="Right"
+                                       VerticalAlignment="Bottom"
+                                       Cursor="SizeNWSE"
+                                       Tag="{Binding ProtoId}"
+                                       Visibility="{Binding ResizeHandleVisibility}"
+                                       MouseLeftButtonDown="ResizeHandle_MouseLeftButtonDown"
+                                       MouseLeftButtonUp="ResizeHandle_MouseLeftButtonUp"
+                                       MouseMove="ResizeHandle_MouseMove"/>
+                        </Grid>
+                    </Border>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+    </Canvas>
+</UserControl>
