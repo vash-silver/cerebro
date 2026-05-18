@@ -21,7 +21,7 @@
       default ahead of the most recently shipped tag so a fresh dev build doesn't trigger
       an "update available" notification against itself.
     -->
-    <Version>2.10.0</Version>
+    <Version>2.11.0</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <!--
       Sets the EXE's Windows shell icon (what Explorer, the taskbar pin, and Alt+Tab show
