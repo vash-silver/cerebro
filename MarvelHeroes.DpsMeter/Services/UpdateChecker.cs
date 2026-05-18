@@ -48,9 +48,29 @@ internal static class UpdateChecker
         /// for cleaner UI display.</summary>
         public string DisplayVersion { get; init; } = "";
 
-        /// <summary>Browser-openable HTML page for the release.  Click target for the
-        /// "Download" button in the banner.</summary>
+        /// <summary>Browser-openable HTML page for the release.  Fallback when the
+        /// in-app self-update flow fails -- the banner offers a "Open release page"
+        /// link so the user can still grab the new zip manually.</summary>
         public string HtmlUrl { get; init; } = "";
+
+        /// <summary>Direct download URL for the <c>Cerebro-v&lt;N&gt;.zip</c> asset
+        /// attached to the release.  Empty when GitHub didn't return a matching
+        /// asset (the release was published without uploading the zip, for
+        /// example), in which case the auto-update flow falls back to the browser
+        /// link.</summary>
+        public string AssetDownloadUrl { get; init; } = "";
+
+        /// <summary>Asset size in bytes from the GitHub API.  Surfaced so the
+        /// progress UI can show "MB / total MB" without doing a HEAD request.
+        /// Zero when no matching asset was found.</summary>
+        public long AssetSize { get; init; }
+
+        /// <summary>Hex-encoded SHA-256 of the release asset, as advertised by
+        /// GitHub.  Verified against the downloaded bytes before we touch the
+        /// running EXE.  Empty when GitHub didn't provide a digest (rare; older
+        /// releases may not have one) -- in that case we skip verification.
+        /// Stored in lower-case to make the post-download hash compare trivial.</summary>
+        public string AssetSha256 { get; init; } = "";
     }
 
     /// <summary>Fetch the latest release from GitHub and compare its tag against the
@@ -96,12 +116,41 @@ internal static class UpdateChecker
             if (remoteNorm <= localNorm) return Result.None;
 
             string htmlUrl = root.TryGetProperty("html_url", out var urlProp) ? (urlProp.GetString() ?? "") : "";
+
+            // Walk the assets array looking for the Cerebro release zip.  The
+            // publish script always names it Cerebro-v<TAG>.zip; we match by
+            // prefix/extension rather than exact tag so a hand-renamed asset
+            // (e.g. "Cerebro-v2.9-hotfix.zip") still gets picked up.
+            string assetUrl = "";
+            long   assetSize = 0;
+            string assetSha = "";
+            if (root.TryGetProperty("assets", out var assetsProp) && assetsProp.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var a in assetsProp.EnumerateArray())
+                {
+                    string name = a.TryGetProperty("name", out var nameProp) ? (nameProp.GetString() ?? "") : "";
+                    if (!name.StartsWith("Cerebro", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!name.EndsWith(".zip",     StringComparison.OrdinalIgnoreCase)) continue;
+                    assetUrl  = a.TryGetProperty("browser_download_url", out var urlP) ? (urlP.GetString() ?? "") : "";
+                    assetSize = a.TryGetProperty("size",                  out var szP) ? szP.GetInt64()           : 0;
+                    string rawDigest = a.TryGetProperty("digest", out var dP) ? (dP.GetString() ?? "") : "";
+                    // GitHub returns the digest as "sha256:HEX..."; strip the prefix so
+                    // callers can compare directly against a hex hash they computed.
+                    if (rawDigest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase))
+                        assetSha = rawDigest.Substring("sha256:".Length).ToLowerInvariant();
+                    break;
+                }
+            }
+
             return new Result
             {
-                Available      = true,
-                TagName        = tag,
-                DisplayVersion = display,
-                HtmlUrl        = htmlUrl,
+                Available        = true,
+                TagName          = tag,
+                DisplayVersion   = display,
+                HtmlUrl          = htmlUrl,
+                AssetDownloadUrl = assetUrl,
+                AssetSize        = assetSize,
+                AssetSha256      = assetSha,
             };
         }
         catch

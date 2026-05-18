@@ -200,10 +200,72 @@ public partial class MainAppWindow : Window
         UpdateBanner.Visibility = Visibility.Visible;
     }
 
-    /// <summary>Open the release page in the user's default browser.  We don't try to
-    /// auto-download / auto-install -- the user unzips the new release manually over the
-    /// existing install.  Simple, no can't-replace-the-running-EXE shenanigans.</summary>
-    private void UpdateBannerDownload_Click(object sender, RoutedEventArgs e)
+    /// <summary>"Update now" -- the primary action: download the release zip from
+    /// GitHub, verify its SHA-256, extract <c>Cerebro.exe</c>, write a bootstrap
+    /// PowerShell script, launch the script, and quit so the script can swap the
+    /// running EXE.  Progress (download bytes, verify, extract) is reported into
+    /// the banner.  On any failure the banner reverts to an error state with a
+    /// fallback "Open release page" button.</summary>
+    private async void UpdateBannerInstall_Click(object sender, RoutedEventArgs e)
+    {
+        // Guard against double-clicks while a previous install is in flight --
+        // disable the install button + dismiss button while we work; the latter
+        // re-enables on failure so the user can still dismiss the failed banner.
+        UpdateBannerInstallButton.IsEnabled = false;
+        UpdateBannerDismissButton.IsEnabled = false;
+        UpdateBannerOpenPageButton.Visibility = Visibility.Collapsed;
+        UpdateBannerProgress.Visibility = Visibility.Visible;
+        UpdateBannerProgress.IsIndeterminate = true;
+        UpdateBannerText.Text = "Preparing update…";
+
+        var progress = new Progress<Services.UpdateInstaller.DownloadProgress>(p =>
+        {
+            // Marshal already happens via Progress<T>; just update the UI.
+            if (p.TotalBytes > 0)
+            {
+                UpdateBannerProgress.IsIndeterminate = false;
+                UpdateBannerProgress.Value = (double)p.BytesReceived / p.TotalBytes * 100.0;
+                double mbRecv = p.BytesReceived / 1024.0 / 1024.0;
+                double mbTot  = p.TotalBytes    / 1024.0 / 1024.0;
+                UpdateBannerText.Text = $"{p.Status}  {mbRecv:0.0} / {mbTot:0.0} MB";
+            }
+            else
+            {
+                UpdateBannerProgress.IsIndeterminate = true;
+                UpdateBannerText.Text = p.Status;
+            }
+        });
+
+        var outcome = await Services.UpdateInstaller.InstallAsync(_lastUpdateResult, progress);
+
+        if (outcome.Success)
+        {
+            // Bootstrap is launched; shut Cerebro down so the file lock releases
+            // and the PowerShell script can swap the EXE.  The script will
+            // relaunch Cerebro automatically.
+            UpdateBannerText.Text = "Restarting Cerebro to finish the update…";
+            UpdateBannerProgress.IsIndeterminate = true;
+            // Tiny pause so the user can read the status before the window closes.
+            await Task.Delay(400);
+            Application.Current.Shutdown();
+            return;
+        }
+
+        // Failure path: surface the error, re-enable buttons, expose the
+        // "Open release page" fallback so the user can grab the zip manually.
+        UpdateBannerProgress.Visibility = Visibility.Collapsed;
+        UpdateBannerProgress.IsIndeterminate = false;
+        UpdateBannerInstallButton.IsEnabled = true;
+        UpdateBannerDismissButton.IsEnabled = true;
+        UpdateBannerOpenPageButton.Visibility = string.IsNullOrEmpty(_lastUpdateResult.HtmlUrl)
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        UpdateBannerText.Text = "Update failed: " + outcome.ErrorMessage;
+    }
+
+    /// <summary>Manual fallback when self-update fails: open the GitHub release page
+    /// in the user's default browser so they can grab the zip the old way.</summary>
+    private void UpdateBannerOpenPage_Click(object sender, RoutedEventArgs e)
     {
         if (string.IsNullOrEmpty(_lastUpdateResult.HtmlUrl)) return;
         try

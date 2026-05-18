@@ -142,28 +142,60 @@
         <Border Grid.Row="1" x:Name="UpdateBanner" Visibility="Collapsed"
                 Background="#332E7FFF" BorderBrush="#882E7FFF" BorderThickness="0,0,0,1"
                 Padding="14,6">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <TextBlock x:Name="UpdateBannerText" Grid.Column="0"
-                           Foreground="#FFCC99FF" FontSize="12"
-                           VerticalAlignment="Center"
-                           Text="Update available"/>
-                <Button Grid.Column="1" Content="Download"
-                        Margin="0,0,6,0" Padding="14,3" Cursor="Hand"
-                        Background="#552E7FFF" BorderBrush="#AA2E7FFF" BorderThickness="1"
-                        Foreground="#FFFFFFFF"
-                        Click="UpdateBannerDownload_Click"/>
-                <Button Grid.Column="2" Content="✕"
-                        Padding="8,3" Cursor="Hand"
-                        Background="Transparent" BorderBrush="#552E7FFF" BorderThickness="1"
-                        Foreground="#DDFFFFFF"
-                        ToolTip="Dismiss until a newer release is published"
-                        Click="UpdateBannerDismiss_Click"/>
-            </Grid>
+            <StackPanel Orientation="Vertical">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="UpdateBannerText" Grid.Column="0"
+                               Foreground="#FFCC99FF" FontSize="12"
+                               VerticalAlignment="Center"
+                               TextWrapping="Wrap"
+                               Text="Update available"/>
+                    <!-- Primary action: in-place self-update.  Downloads + verifies +
+                         extracts the new zip, then relaunches Cerebro via a tiny
+                         PowerShell bootstrap (the only way to replace a running EXE
+                         on Windows). -->
+                    <Button x:Name="UpdateBannerInstallButton"
+                            Grid.Column="1" Content="Update now"
+                            Margin="0,0,6,0" Padding="14,3" Cursor="Hand"
+                            Background="#552E7FFF" BorderBrush="#AA2E7FFF" BorderThickness="1"
+                            Foreground="#FFFFFFFF"
+                            ToolTip="Download + install the latest version, then restart Cerebro"
+                            Click="UpdateBannerInstall_Click"/>
+                    <!-- Fallback: open the release page in a browser.  Hidden during
+                         normal flow; we surface it only on install failure so the
+                         user always has a manual path. -->
+                    <Button x:Name="UpdateBannerOpenPageButton"
+                            Grid.Column="2" Content="Open release page"
+                            Margin="0,0,6,0" Padding="10,3" Cursor="Hand"
+                            Background="Transparent" BorderBrush="#552E7FFF" BorderThickness="1"
+                            Foreground="#DDFFFFFF" FontSize="11"
+                            Visibility="Collapsed"
+                            Click="UpdateBannerOpenPage_Click"/>
+                    <Button x:Name="UpdateBannerDismissButton"
+                            Grid.Column="3" Content="✕"
+                            Padding="8,3" Cursor="Hand"
+                            Background="Transparent" BorderBrush="#552E7FFF" BorderThickness="1"
+                            Foreground="#DDFFFFFF"
+                            ToolTip="Dismiss until a newer release is published"
+                            Click="UpdateBannerDismiss_Click"/>
+                </Grid>
+                <!-- Progress bar lives on a second row so it can span the full width
+                     of the banner without fighting the buttons for space.  Hidden
+                     except during an active install. -->
+                <ProgressBar x:Name="UpdateBannerProgress"
+                             Visibility="Collapsed"
+                             Margin="0,6,0,0"
+                             Height="6"
+                             Minimum="0" Maximum="100"
+                             Background="#22000000"
+                             Foreground="#FF2E7FFF"
+                             BorderThickness="0"/>
+            </StackPanel>
         </Border>
 
         <TabControl Grid.Row="2" x:Name="MainTabs" Style="{StaticResource DarkTab}">
