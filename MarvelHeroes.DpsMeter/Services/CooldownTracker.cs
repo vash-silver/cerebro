@@ -84,11 +84,35 @@ public sealed class CooldownTracker : IDisposable
 
     /// <summary>Learned charge-count signatures.  Charged abilities (Nightcrawler
     /// Teleport, Bamf Bomb, etc.) decrement an integer count on each cast rather
-    /// than (or in addition to) putting the power on cooldown.  Same correlation
-    /// model as <see cref="_signatures"/>: the first small-int (&lt;= 30) property
-    /// delta in a learn window gets bound to the just-cast power, and subsequent
-    /// matching deltas update <c>state.ChargesAvailable</c>.</summary>
+    /// than (or in addition to) putting the power on cooldown.  Populated via
+    /// multi-cast decrement detection -- see <see cref="_pendingChargeCandidates"/>
+    /// for the safer two-cast learning model that replaced the v2.10's
+    /// single-event approach (which false-positived on incidental counters).</summary>
     private readonly Dictionary<(uint Enum, ulong ParamBits), uint> _chargeSignatures = new();
+
+    /// <summary>Pending charge-candidate buffer: (enum, paramBits) we've observed
+    /// once with a small-int value in a learn window but haven't confirmed as a
+    /// real charge signature yet.  Promoted to <see cref="_chargeSignatures"/>
+    /// when the SAME (enum, paramBits) shows up in a later cast's learn window
+    /// with a STRICTLY LOWER value -- charges only ever decrement on cast, so
+    /// two consecutive decrements is high-confidence "this is the charge
+    /// counter".  Incidental small-int props that fire alongside a cooldown
+    /// (Sig's enum 720 counting "something that decrements but isn't charges")
+    /// get DISCARDED whenever we learn a cooldown sig for the same proto in the
+    /// same window -- the cooldown is the authoritative ready-state gate, so
+    /// any small-int counter sharing the window is by definition not the
+    /// charges signal.</summary>
+    private readonly Dictionary<(uint Enum, ulong ParamBits), PendingChargeCandidate> _pendingChargeCandidates = new();
+
+    /// <summary>One un-confirmed small-int observation.  We keep just the proto
+    /// + value + when -- enough to confirm a decrement on the next observation
+    /// and prune stale entries on owner change.</summary>
+    private sealed class PendingChargeCandidate
+    {
+        public uint ProtoId;
+        public long FirstValue;
+        public DateTime FirstSeenUtc;
+    }
 
     /// <summary>Pending cast: the most recent TryActivatePower observation, used
     /// during the SignatureLearnWindow to assign newly-observed cooldown deltas
@@ -117,6 +141,7 @@ public sealed class CooldownTracker : IDisposable
                 _state.Clear();
                 _signatures.Clear();
                 _chargeSignatures.Clear();
+                _pendingChargeCandidates.Clear();
                 _selfReplicationId = null;
                 _pendingCast = null;
                 _selfOwnerId = value;
@@ -208,14 +233,17 @@ public sealed class CooldownTracker : IDisposable
 
         uint matchedProto = pending.Value.Proto;
 
-        // Cooldown duration candidate?  Plausible range [50, 600000] ms.
-        // We ONLY learn cooldown signatures from the learn window.  Charges are
-        // tricky to disambiguate from random small-int counters that happen to
-        // fire alongside (enum 720 was a "PlayerScalingHealthPctBonus"-style
-        // property in the old enum table; in MH 2.16 it's still some small-int
-        // value that decrements alongside a cast but isn't actually charges).
-        // We'll add charge detection in a separate path that requires
-        // multi-cast confirmation -- safer than eagerly grabbing any small int.
+        // ── Branch 1: Cooldown duration candidate (value in [50ms, 10min]) ──
+        // Cooldown sigs are learned eagerly on first observation -- the value
+        // range is narrow enough that false positives are vanishingly unlikely
+        // (no incidental property falls between 50ms and 10 minutes as a raw
+        // int64).  Learning a cooldown sig ALSO discards any pending charge
+        // candidates we've stashed for this same proto: a non-charged ability
+        // can have an incidental small-int counter that decrements alongside
+        // the cooldown property (the old enum 720 / Sig regression).  By the
+        // time we see the cooldown property we know this isn't really a
+        // charged ability -- drop the candidates so they can't false-promote
+        // on the user's next cast.
         if (rotated >= CooldownMinMs && rotated <= CooldownMaxMs)
         {
             lock (_sync)
@@ -226,6 +254,10 @@ public sealed class CooldownTracker : IDisposable
                     _selfReplicationId = e.ReplicationId;
                     Diagnostic?.Invoke($"CooldownTracker: locked self replicationId={e.ReplicationId} via cooldown correlation");
                 }
+                // Drop pending charge candidates for THIS proto -- they're
+                // incidental counters that just happened to fire during the
+                // cooldown's learn window.
+                DiscardPendingChargeCandidatesForLocked(matchedProto);
             }
             Diagnostic?.Invoke(
                 $"CooldownTracker: LEARNED COOLDOWN sig (enum={e.PropertyEnum}, params=0x{e.ParamBits:X}) "
@@ -234,16 +266,136 @@ public sealed class CooldownTracker : IDisposable
             return;
         }
 
-        // Otherwise: log a rejection so we can see what's being skipped.  Capped
-        // at one log per unique (enum, paramBits) so a noisy session doesn't
-        // fill the log.
+        // ── Branch 2: Charge-count candidate (small positive int [1, 30]) ──
+        // SAFER multi-cast learning: we don't promote on first sighting.
+        //   * If proto already has a cooldown sig: SKIP entirely.  The cooldown
+        //     is the ready-state gate; any small-int decrement is incidental.
+        //   * If we've stashed a candidate for this (enum, paramBits) before:
+        //     compare values.  Strict decrement -> promote (charges only
+        //     decrement on cast, so two consecutive decrements is the
+        //     unambiguous signal).  Equal-or-greater -> drop the candidate
+        //     (false positive; this was probably just a re-broadcast of an
+        //     unrelated property).
+        //   * Otherwise: stash for next time.
+        if (rotated >= 1 && rotated <= ChargesMaxValue)
+        {
+            bool protoHasCooldownSig;
+            lock (_sync) protoHasCooldownSig = HasCooldownSigForLocked(matchedProto);
+            if (protoHasCooldownSig)
+            {
+                // Cooldown gate; small-int is incidental. Reject silently.
+                return;
+            }
+
+            PendingChargeCandidate? existing;
+            lock (_sync) _pendingChargeCandidates.TryGetValue((e.PropertyEnum, e.ParamBits), out existing);
+
+            if (existing == null)
+            {
+                lock (_sync)
+                {
+                    _pendingChargeCandidates[(e.PropertyEnum, e.ParamBits)] = new PendingChargeCandidate
+                    {
+                        ProtoId      = matchedProto,
+                        FirstValue   = rotated,
+                        FirstSeenUtc = e.UtcTime,
+                    };
+                    // Same self-replicationId lock-in as cooldown branch.  If
+                    // this candidate is ever promoted, we've already proven the
+                    // replicationId belongs to us.
+                    if (_selfReplicationId is null) _selfReplicationId = e.ReplicationId;
+                }
+                Diagnostic?.Invoke(
+                    $"CooldownTracker: stashed CHARGE candidate (enum={e.PropertyEnum}, params=0x{e.ParamBits:X}) "
+                  + $"-> power #{matchedProto}  value={rotated} (awaiting next cast for confirmation)");
+                return;
+            }
+
+            // We already have a candidate.  Different proto?  That shouldn't
+            // happen on the local avatar -- but if it does, prefer the most
+            // recent one (the user changed avatars / hero).
+            if (existing.ProtoId != matchedProto)
+            {
+                lock (_sync)
+                {
+                    _pendingChargeCandidates[(e.PropertyEnum, e.ParamBits)] = new PendingChargeCandidate
+                    {
+                        ProtoId = matchedProto, FirstValue = rotated, FirstSeenUtc = e.UtcTime,
+                    };
+                }
+                return;
+            }
+
+            if (rotated < existing.FirstValue)
+            {
+                // Confirmed decrement: promote to charge sig.
+                lock (_sync)
+                {
+                    _chargeSignatures[(e.PropertyEnum, e.ParamBits)] = matchedProto;
+                    _pendingChargeCandidates.Remove((e.PropertyEnum, e.ParamBits));
+                }
+                Diagnostic?.Invoke(
+                    $"CooldownTracker: LEARNED CHARGE sig (enum={e.PropertyEnum}, params=0x{e.ParamBits:X}) "
+                  + $"-> power #{matchedProto}  prev={existing.FirstValue}, now={rotated}");
+                // Also seed ChargesMax with the higher value so the UI knows the
+                // ability is multi-charge (renders the badge).  We take +1 because
+                // the FIRST stashed value was AFTER the first cast (charges had
+                // already decremented once); the true max is at least one above.
+                lock (_sync)
+                {
+                    if (_state.TryGetValue(matchedProto, out var s))
+                    {
+                        int seenMax = (int)Math.Max(existing.FirstValue + 1, rotated);
+                        if (seenMax > s.ChargesMax) s.ChargesMax = seenMax;
+                        s.ChargesAvailable = (int)Math.Max(0, Math.Min(ChargesMaxValue, rotated));
+                    }
+                }
+                PowerActivated?.Invoke(matchedProto);
+                return;
+            }
+
+            // Non-decrement: drop the candidate (false positive).
+            lock (_sync) _pendingChargeCandidates.Remove((e.PropertyEnum, e.ParamBits));
+            Diagnostic?.Invoke(
+                $"CooldownTracker: dropped CHARGE candidate (enum={e.PropertyEnum}, params=0x{e.ParamBits:X}) "
+              + $"-> power #{matchedProto}  prev={existing.FirstValue}, now={rotated} (not a decrement)");
+            return;
+        }
+
+        // ── Branch 3: Out-of-range value.  Log once per signature for triage. ──
         if (_loggedRejections.TryAdd((e.PropertyEnum, e.ParamBits), 0))
         {
             Diagnostic?.Invoke(
                 $"CooldownTracker: rejected candidate (enum={e.PropertyEnum}, params=0x{e.ParamBits:X}, "
               + $"value=0x{e.ValueBits:X}, int64Rot={rotated}) for power #{matchedProto} -- "
-              + $"value outside cooldown[{CooldownMinMs},{CooldownMaxMs}] ms range");
+              + $"outside cooldown[{CooldownMinMs},{CooldownMaxMs}]ms and charges[1,{ChargesMaxValue}] ranges");
         }
+    }
+
+    /// <summary>Returns true if any (enum, paramBits) -> protoId entry in the
+    /// cooldown sig map points at <paramref name="protoId"/>.  Caller must hold
+    /// the <see cref="_sync"/> lock.  Linear in the sig map size; the map is
+    /// small (one entry per cooldown-having power the user has cast, max ~30
+    /// for a heavy session).</summary>
+    private bool HasCooldownSigForLocked(uint protoId)
+    {
+        foreach (var v in _signatures.Values)
+            if (v == protoId) return true;
+        return false;
+    }
+
+    /// <summary>Drop pending charge candidates whose proto matches the supplied
+    /// one.  Used after we learn a cooldown sig: a power with a cooldown gate
+    /// is non-charged, so any small-int property in the same window is
+    /// incidental and shouldn't be promoted on the user's next cast.  Caller
+    /// must hold the <see cref="_sync"/> lock.</summary>
+    private void DiscardPendingChargeCandidatesForLocked(uint protoId)
+    {
+        if (_pendingChargeCandidates.Count == 0) return;
+        var stale = new List<(uint, ulong)>();
+        foreach (var kv in _pendingChargeCandidates)
+            if (kv.Value.ProtoId == protoId) stale.Add(kv.Key);
+        foreach (var k in stale) _pendingChargeCandidates.Remove(k);
     }
 
     /// <summary>Bounded set of (enum, paramBits) tuples we've already logged as
@@ -340,8 +492,12 @@ public sealed class CooldownTracker : IDisposable
         {
             cleared = _state.Count;
             _state.Clear();
-            // Keep _signatures and _selfReplicationId -- those represent wire-level
-            // knowledge that's still valid even after a UI-only history wipe.
+            // Keep _signatures, _chargeSignatures, _selfReplicationId -- those
+            // represent wire-level knowledge that's still valid even after a UI-
+            // only history wipe.  Pending charge candidates DO get dropped
+            // because they're orphaned without a state entry to attach to (the
+            // user explicitly asked us to forget activations).
+            _pendingChargeCandidates.Clear();
         }
         Diagnostic?.Invoke($"CooldownTracker: cleared {cleared} recent powers");
         PowerActivated?.Invoke(0);
@@ -369,21 +525,27 @@ public sealed class PowerCooldownState
     /// ability as far as we know".</summary>
     public int ChargesMax { get; set; }
 
-    /// <summary>Logical "this power can be cast right now" check.  Cooldown is
-    /// the authoritative source of truth: a power is ready when it's not on
-    /// cooldown (or the cooldown has elapsed).  Charges (when properly learned)
-    /// add an additional gate -- a charged ability with charges = 0 is unusable
-    /// even if not currently on cooldown -- but charge tracking is currently
-    /// disabled (we don't reliably distinguish real charges from coincidental
-    /// counters yet), so this collapses to a pure cooldown check.</summary>
+    /// <summary>Logical "this power can be cast right now" check.  Two flavours:
+    /// <list type="bullet">
+    ///   <item><b>Charged ability</b> (<see cref="ChargesMax"/> &gt; 0): charges
+    ///         are the source of truth.  You can cast any time at least one
+    ///         charge is available, regardless of cooldown state -- the cooldown
+    ///         IS the regen timer for the NEXT charge, not a gate on casting.</item>
+    ///   <item><b>Non-charged ability</b>: cooldown is the gate.  Ready when
+    ///         not on cooldown, OR the cooldown has elapsed without us having
+    ///         received the RemoveProperty yet.</item>
+    /// </list>
+    /// <para>The charge-first priority is safe because charge signatures are
+    /// only learned via multi-cast decrement detection (in
+    /// <c>CooldownTracker</c>'s pending-candidate flow), which won't false-
+    /// positive on incidental small-int counters that fire alongside cooldown
+    /// properties.</para></summary>
     public bool IsReady(DateTime nowUtc)
     {
-        if (OnCooldown && CooldownDurationMs > 0)
-        {
-            return (nowUtc - CooldownStartUtc).TotalMilliseconds >= CooldownDurationMs;
-        }
         if (ChargesMax > 0) return ChargesAvailable > 0;
-        return true;
+        if (!OnCooldown) return true;
+        if (CooldownDurationMs <= 0) return true;
+        return (nowUtc - CooldownStartUtc).TotalMilliseconds >= CooldownDurationMs;
     }
 
     public PowerCooldownState Clone() => new()

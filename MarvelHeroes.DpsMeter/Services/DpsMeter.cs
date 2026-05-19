@@ -1381,6 +1381,24 @@ public sealed class DpsMeter : IDisposable
             {
                 Diagnostic?.Invoke($"DpsMeter: prototype-cache id-reuse — entityId={e.EntityId} replaced protoIdx={existingProto} (combatant={wasCombatant}) → {e.PrototypeEnumIndex} (combatant={isCombatant}). Server reallocated the entity-id slot without an EntityKilled/Destroyed reaching us in between (event dropped on the wire OR not emitted for this entity type). Cache updated to the new protoIdx; previous-mapping ghost-damage admits to this id are now closed.");
             }
+
+            // ── Stale hero-name invalidation on id-reuse ──────────────────────────
+            // _prototypeByEntityId updates unconditionally below, but the hero-name
+            // cache (_heroNameByOwnerId) and local-avatar set are guarded by
+            // ContainsKey / Add checks at their write sites -- they wouldn't pick up
+            // the new proto's identity for this id.  Concrete failure mode this
+            // closes: entity id N was a Juggernaut NPC earlier in the session, got
+            // its hero-name cached, the server reused id N for the local player's
+            // Cyclops avatar, and the dashboard kept reading "Juggernaut" for the
+            // self entity even though _prototypeByEntityId[N] correctly reflected
+            // Cyclops.  Nuking the stale entries here lets the downstream
+            // OnLocalAvatarObserved / OnInventoryMoved back-fill repopulate them
+            // with the correct hero on the next signal.
+            lock (_sync)
+            {
+                _heroNameByOwnerId.Remove(e.EntityId);
+                _localAvatarEntityIds.Remove(e.EntityId);
+            }
         }
 
         // Tracked on a separate concurrent map rather than under _sync to keep this callback

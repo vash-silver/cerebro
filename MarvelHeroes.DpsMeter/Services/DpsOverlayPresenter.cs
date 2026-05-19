@@ -253,12 +253,17 @@ public sealed class DpsOverlayPresenter : IDisposable
                 propertyEnumNameResolver: PropertyEnumNames.Get);
         };
 
-        {
-            var prior = _sniffer.Diagnostic;
-            _sniffer.Diagnostic = prior == null
-                ? AppendLog
-                : msg => { prior(msg); AppendLog(msg); };
-        }
+        // Wire the sniffer's diagnostic to the presenter's AppendLog (which
+        // applies the verbose-noise filter on top of the same on-disk file
+        // writer App.xaml.cs uses).  Overwrite outright -- App.xaml.cs
+        // ALREADY set Diagnostic to its own AppendLog at sniffer construction
+        // time (so TryStart's device-probe messages have a log target before
+        // the presenter exists), and our chain-on-non-null pattern would
+        // double-log every event from this point forward because BOTH
+        // AppendLog implementations append the same line to the same file.
+        // The early-lifecycle messages already landed via App's AppendLog;
+        // from here on, the filtered presenter version is what we want.
+        _sniffer.Diagnostic = AppendLog;
 
         bool initialBossOnly = false;
         _uiDispatcher.Invoke(() =>
