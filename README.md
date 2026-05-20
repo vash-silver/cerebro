@@ -6,11 +6,14 @@
 
 *A real-time DPS meter for Marvel Heroes (Tahiti / MHServerEmu builds).*
 
-Standalone WPF app with a full main window plus an optional always-on-top
-overlay. Displays live DPS, boss-fight breakdowns, party leaderboard, ability
-contribution, fight history, personal bests, and an Eternity Splinter cooldown
-tracker. Runs as its own process — no patching, no DLL injection, no game-side
-hooks — by passively sniffing the client's TCP/4306 traffic with Npcap.
+Standalone WPF app with a full main window plus optional always-on-top
+overlays for DPS, buffs, and ability cooldowns. Displays live DPS, boss-fight
+breakdowns, party leaderboard, ability contribution, fight history, personal
+bests, an Eternity Splinter cooldown tracker, a WeakAuras-style buff watchlist,
+and a Cooldown Tracker that knows when your abilities are actually back up
+(server-authoritative, CDR-aware). Updates itself in place via a one-click
+in-app updater. Runs as its own process — no patching, no DLL injection, no
+game-side hooks — by passively sniffing the client's TCP/4306 traffic with Npcap.
 
 ```
 ┌───────────────────────────────┐
@@ -59,23 +62,41 @@ persist across restarts.
   against a generated table of 1115 names (extracted from `BossPrototypes`),
   so report labels read like *"Doctor Doom — Blade"* instead of *"Boss Fight"*.
 
-### Two views: main app + optional overlay
+### Main app + three overlays
 
 Cerebro starts as a normal tabbed app window with **Live / Reports / Settings /
-Cosmic Loot Scanner / Diagnostics** tabs. Tick *Show overlay* in the header for
-a small always-on-top floating meter; untick it again to put it away. Closing
-the overlay's ✕ just hides it — the main app keeps running.
+Cosmic Loot Scanner / Buff Tracker / Cooldown Tracker / Diagnostics** tabs.
+Three independent always-on-top overlays toggle from the compact one-row
+header (under the **Overlays:** group label):
 
-| View | Best for |
+| Header toggle | Floating window |
 |---|---|
-| **Main app** | Looking at the full dashboard between fights, browsing report history, adjusting settings, configuring loot hunts, tailing the diagnostic log |
-| **Overlay** | Active play — small, non-activating (never steals keyboard focus), auto-hides when Marvel Heroes isn't the foreground app |
+| **DPS** | DPS / leaderboard / boss / power-breakdown / Eternity Splinter — the original compact meter |
+| **Buff** | Tracked buffs (chip-strip or WeakAuras free layout — your pick in Buff Tracker tab) |
+| **Cooldown** | Tracked ability cooldowns as WeakAuras-style icons (Cooldown Tracker tab) |
 
-**Persist overlay** — second header checkbox, off by default. When on, the
-overlay stays visible even when Marvel Heroes isn't the foreground window
-(useful on multi-monitor setups where the game lives on a different display
-than the overlay). The tooltip reads *"Will keep overlay active when you alt
-tab. Turn off if you're a single monitor user."*
+Closing any overlay's ✕ just hides it; the main app keeps running. Each
+overlay's geometry, lock state, and content are persisted independently.
+
+**Click-through lock** (per overlay). Both the DPS overlay (Settings tab) and
+the Buff / Cooldown overlays (Buff Tracker / Cooldown Tracker tabs) have a
+"Lock overlay (click-through)" toggle. Locked = `WS_EX_TRANSPARENT`, the game
+gets all mouse input even though the overlay paints over it. Unlocked =
+mouse-interactive so you can drag, resize, or right-click. The typical
+workflow is *unlock to position, then lock for play*.
+
+**Persist when alt-tabbed** — separate header checkbox (after a vertical
+divider since it's a different concept from the three visibility toggles),
+off by default. When on, the DPS overlay stays visible even when Marvel
+Heroes isn't the foreground window (useful on multi-monitor setups where
+the game lives on a different display than the overlay).
+
+**Boss-key hotkey** — `Ctrl+Shift+H` by default. System-wide press that
+flips the three visibility checkboxes off at once; press again to bring
+them back in exactly the same pattern that was on before (stashed in
+memory). The checkboxes always reflect what's actually visible, so the
+header is a faithful mirror of the runtime state. Rebind / disable in
+Settings.
 
 ### Live dashboard
 
@@ -223,6 +244,94 @@ Configuration persists to
 `%LocalAppData%\MarvelHeroesComporator\loot-hunt-config.json` and is re-read
 on every drop, so changes take effect without a restart.
 
+### Buff Tracker
+
+WeakAuras-style watchlist UI for buffs and procs. Discover what's firing on
+you live, pick the ones you want to see, and they'll appear on the floating
+**Buff Overlay** in your preferred layout.
+
+- **Discovery** — three lists: *Watchlist* (your picks), *Currently active*
+  (real-time snapshot of every condition on you), *Recently seen* (history
+  of buffs that have fired this session). Click `+ Track` on any row to
+  promote it to the watchlist.
+- **Per-buff icon** — `Browse…` picks from ~2,300 bundled in-game power
+  icons (extracted from `ICO__MarvelUIIcons_SF.upk` + `Talents_SF.upk`);
+  `Custom file…` lets you pick any image on disk. Auto-suggests the
+  source-power's icon when you first Track a buff.
+- **Per-buff alias** — click the name in a watchlist row to rename for
+  display. "Teleport Stealth Combo" → "Stealth", etc. The original short
+  name stays as the underlying tracking key.
+- **Two render modes** for the floating overlay:
+  - **Chip strip** (default). Tracked buffs flow as a horizontal strip in
+    a styled card. Drag the body to move; resize via edge / corner.
+  - **WeakAuras free layout**. Each tracked buff renders as a bare icon at
+    a user-positioned (X, Y), sized to a user-configurable square. Drag
+    icons anywhere on screen, resize via the corner grip. Unlock the
+    overlay to enter edit mode (icons show a yellow border + resize grip);
+    lock for play (click-through, game gets all input).
+- **Derived state pill** — opt-in. Surfaces "Stealthed / Invisible /
+  Stealthed + Invisible" above the strip whenever an active condition
+  applies `PropertyEnum` 899 / 993 deltas (Nightcrawler's Surprise Attack
+  visibility-gated talents, etc.).
+- **Event-driven updates** — `BuffTracker.BuffChanged` fires the instant a
+  condition is added or removed, so short-window buffs (1.5 s Bamf stealth
+  etc.) flash up reliably instead of being missed by the 4 Hz periodic
+  poll.
+
+Watchlist persists to
+`%LocalAppData%\MarvelHeroesComporator\buff-watchlist.json` (icons, aliases,
+free-layout positions, lock state, all in one file).
+
+### Cooldown Tracker
+
+WeakAuras-style ability-cooldown HUD. **Server-authoritative**: cooldowns
+come from `NetMessageSetProperty` deltas pushed by the server, so
+**cooldown-reduction (CDR) procs that shorten the cooldown mid-fight are
+picked up automatically** — no manual configuration required.
+
+- **Setup**: fire each ability you want to track at least once. The first
+  cast lets Cerebro empirically learn the property signature for that
+  power (MH 2.16's enum indices have shifted from the static table, so
+  signature learning replaces hardcoded enum matching). Click `+ Track`
+  on the row that appears in *Recently fired*.
+- **Multi-charge abilities** (Bamf Bomb, Nightcrawler Teleport, etc.)
+  learn after **two** casts via multi-cast decrement detection. The chip
+  shows a yellow `xN` corner badge with the current charge count and
+  stays lit while charges > 0 (cooldown becomes the next-charge regen
+  timer rather than the cast gate).
+- **WeakAuras-style visuals** — icon at 100 % opacity when ready; dimmed
+  with a fill-from-bottom cooldown sweep + countdown text while on
+  cooldown; lights back up the moment the server clears the property.
+- **Click-through lock + free-layout positioning** — same UX as the buff
+  overlay. Unlock to drag/resize icons into place, lock for play.
+- **Per-power icon override** — `Browse…` picks from the bundled in-game
+  icon pack the buff tracker uses.
+
+Watchlist persists to
+`%LocalAppData%\MarvelHeroesComporator\cooldown-watchlist.json`.
+
+### In-app updater
+
+Cerebro checks GitHub for new releases at startup (and on demand from
+**Settings → Check for updates**). When a newer version is available, a
+banner appears at the top of the main window with a one-click **Update
+now** button:
+
+1. Probes the install folder for writeability — fails fast if Cerebro
+   lives in a read-only path (Program Files without admin, etc.).
+2. Downloads the release zip with a live progress bar.
+3. Verifies SHA-256 against GitHub's published digest. Mismatch aborts.
+4. Extracts the new `Cerebro.exe` to a temp folder.
+5. Writes a tiny PowerShell bootstrap that waits for Cerebro to exit,
+   renames the current EXE to `.old` (so a partial-swap failure rolls
+   back), moves the new EXE into place, relaunches Cerebro, and
+   self-cleans.
+
+On failure the banner shows `Update failed: <reason>` and reveals an
+**Open release page** fallback button so the manual path is always one
+click away. The bootstrap logs to `%TEMP%\cerebro-update-*.log` for
+postmortem.
+
 ### Diagnostics tab
 
 A live, filterable log viewer that tails `dps-meter.log` on disk:
@@ -241,20 +350,28 @@ A proper tabbed Settings surface in the main app consolidates all the
 right-click-menu toggles into one place:
 
 - **Display** — boss-only mode, boss section toggle, power breakdown
-  toggle, Eternity Splinter tracker toggle, splinter sound + path + volume.
-- **Scale** — 25 % to 200 % (25 / 50 / 75 / 100 / 125 / 150 / 175 / 200);
-  applies to the overlay (the main window is fixed-scale).
+  toggle, buff panels toggle, Eternity Splinter tracker toggle, splinter
+  sound + path + volume.
+- **Overlay** — Show DPS summary in overlay, Lock overlay (click-through
+  for the DPS overlay), overlay scale (25 % to 200 %).
+- **Hotkeys** — Global "I got a splinter" hotkey (rebindable, default
+  `Ctrl+Shift+E`); global "Hide all overlays" boss-key (rebindable, default
+  `Ctrl+Shift+H`).
 - **Actions** — Clear DPS, Reset hero max-hit record, Reset / Arm Splinter
   cooldown, Test Splinter sound (plays the actual configured sound, not
   a stand-in).
+- **Updates** — Check for updates button (manually re-queries GitHub).
+  The startup auto-check still runs in the background.
 - **Diagnostics** — toggle the verbose log on/off, Open log folder button.
-- **About** — Cerebro version + settings-file location.
+- **About** — Cerebro version, settings-file location, **View changelog**
+  button (opens the bundled `CHANGELOG.md` in a scrollable window).
 
 ### Overlay scale
 
-Scale the overlay from 25 % to 200 % via the right-click menu or the
+Scale the DPS overlay from 25 % to 200 % via the right-click menu or the
 Settings tab's *Scale* slider (25 / 50 / 75 / 100 / 125 / 150 / 175 /
-200 %). Scale persists across restarts.
+200 %). Dragging the slider **applies live** — the overlay resizes in
+real time as you drag. Scale persists across restarts.
 
 ---
 
@@ -352,7 +469,9 @@ All per-user state lives under `%LocalAppData%\MarvelHeroesComporator\`:
 
 | Path | Purpose |
 |---|---|
-| `dps-overlay.json` | Window position, mode (overlay/window), scale, visible sections, persist-overlay |
+| `dps-overlay.json` | DPS overlay window position + scale, mode (overlay/window), boss-only mode, persist-overlay, lock-overlay, splinter cooldown timestamp + sound config, splinter hotkey config, boss-key hotkey config, in-app updater dismissed version, Show overlay / buff / cooldown header checkbox states |
+| `buff-watchlist.json` | Buff Tracker config — tracked buff names, icon paths, aliases, free-layout positions, lock state |
+| `cooldown-watchlist.json` | Cooldown Tracker config — tracked power proto IDs, icon paths, aliases, free-layout positions, lock state |
 | `dps-max-hits.json` | Personal-best single hit per hero (sniffer-level) |
 | `dps-player-index.json` | Learned dbId → nickname / current-hero map |
 | `personal_bests.json` | Best DPS per hero across all sessions |

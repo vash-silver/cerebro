@@ -99,34 +99,56 @@
                                Text="initializing…"/>
                 </StackPanel>
 
-                <StackPanel Grid.Column="1" Orientation="Vertical" HorizontalAlignment="Right" VerticalAlignment="Center">
+                <!--
+                    Header toggles for the floating overlays.  Single-row layout
+                    saves the vertical space that 4 stacked checkboxes used to eat.
+                    The three "Show X overlay" toggles group under an "Overlays:"
+                    label with shortened content; Persist sits slightly apart
+                    because it's a different concept (alt-tab persistence, not
+                    visibility).  Tooltips spell out the full meaning so the
+                    abbreviated labels stay self-explanatory on hover.
+                -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal"
+                            HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <TextBlock Text="Overlays:"
+                               Foreground="#88FFFFFF" FontSize="11"
+                               VerticalAlignment="Center"
+                               Margin="0,0,8,0"/>
                     <CheckBox x:Name="ShowOverlayCheckbox"
                               Style="{StaticResource HeaderCheckbox}"
-                              Content="Show overlay"
-                              ToolTip="Toggle the floating always-on-top overlay window that mirrors the Live tab"
+                              Content="DPS"
+                              Margin="0,0,10,0"
+                              VerticalAlignment="Center"
+                              ToolTip="Show the floating DPS overlay that mirrors the Live tab."
                               Checked="ShowOverlayCheckbox_OnChecked"
                               Unchecked="ShowOverlayCheckbox_OnUnchecked"/>
-                    <CheckBox x:Name="PersistOverlayCheckbox"
-                              Style="{StaticResource HeaderCheckbox}"
-                              Content="Persist overlay"
-                              Margin="0,4,0,0"
-                              ToolTip="Will keep overlay active when you alt tab. Turn off if you're a single monitor user."
-                              Checked="PersistOverlayCheckbox_OnChanged"
-                              Unchecked="PersistOverlayCheckbox_OnChanged"/>
                     <CheckBox x:Name="ShowBuffOverlayCheckbox"
                               Style="{StaticResource HeaderCheckbox}"
-                              Content="Show buff overlay"
-                              Margin="0,4,0,0"
-                              ToolTip="Floating window that shows your tracked buffs over the game.  Configure the watchlist in the Buff Tracker tab."
+                              Content="Buff"
+                              Margin="0,0,10,0"
+                              VerticalAlignment="Center"
+                              ToolTip="Show the floating buff overlay.  Configure the watchlist in the Buff Tracker tab."
                               Checked="ShowBuffOverlayCheckbox_OnChanged"
                               Unchecked="ShowBuffOverlayCheckbox_OnChanged"/>
                     <CheckBox x:Name="ShowCooldownOverlayCheckbox"
                               Style="{StaticResource HeaderCheckbox}"
-                              Content="Show cooldown overlay"
-                              Margin="0,4,0,0"
-                              ToolTip="Floating WeakAuras-style icons for tracked power cooldowns.  Configure in the Cooldown Tracker tab."
+                              Content="Cooldown"
+                              Margin="0,0,14,0"
+                              VerticalAlignment="Center"
+                              ToolTip="Show the floating WeakAuras-style cooldown overlay.  Configure in the Cooldown Tracker tab."
                               Checked="ShowCooldownOverlayCheckbox_OnChanged"
                               Unchecked="ShowCooldownOverlayCheckbox_OnChanged"/>
+                    <!-- Thin vertical separator so the eye reads "Persist" as a
+                         distinct concept from the three visibility toggles. -->
+                    <Border Width="1" Margin="0,2,12,2"
+                            Background="#33FFFFFF"/>
+                    <CheckBox x:Name="PersistOverlayCheckbox"
+                              Style="{StaticResource HeaderCheckbox}"
+                              Content="Persist when alt-tabbed"
+                              VerticalAlignment="Center"
+                              ToolTip="Keep the DPS overlay visible even when Marvel Heroes isn't the foreground window.  Useful on multi-monitor setups where the overlay lives on a different screen than the game."
+                              Checked="PersistOverlayCheckbox_OnChanged"
+                              Unchecked="PersistOverlayCheckbox_OnChanged"/>
                 </StackPanel>
             </Grid>
         </Border>

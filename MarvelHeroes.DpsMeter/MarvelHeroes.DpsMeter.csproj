@@ -21,7 +21,7 @@
       default ahead of the most recently shipped tag so a fresh dev build doesn't trigger
       an "update available" notification against itself.
     -->
-    <Version>2.12.0</Version>
+    <Version>2.13.0</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <!--
       Sets the EXE's Windows shell icon (what Explorer, the taskbar pin, and Alt+Tab show
@@ -73,6 +73,14 @@
       bundle pays for itself by removing the file-picker step for the common case.
     -->
     <Resource Include="Images\powers\*.png" />
+    <!--
+      Repo-root CHANGELOG.md, bundled as a WPF resource so the in-app
+      "View changelog" button (Settings tab -> About section) can render it
+      offline at runtime via pack://application:,,,/CHANGELOG.md.  Link
+      attribute flattens the path so the resource URI is just /CHANGELOG.md
+      rather than /..\CHANGELOG.md (which would break the pack-URI resolver).
+    -->
+    <Resource Include="..\CHANGELOG.md" Link="CHANGELOG.md" />
   </ItemGroup>
 
 </Project>

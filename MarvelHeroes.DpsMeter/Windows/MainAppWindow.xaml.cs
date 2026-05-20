@@ -58,6 +58,17 @@ public partial class MainAppWindow : Window
     public event Action?         ArmSplinterCooldownRequested;
     public event Action<uint, uint>? SplinterArmHotkeyChanged;
     public event Action<bool>?       SplinterArmHotkeyEnabledChanged;
+    /// <summary>Forwarded from the Settings tab when the user rebinds the global
+    /// "toggle all overlays" hotkey.  Presenter listens to re-register the system
+    /// hotkey.</summary>
+    public event Action<uint, uint>? ToggleOverlaysHotkeyChanged;
+    /// <summary>Forwarded from the Settings tab when the user toggles the
+    /// "toggle all overlays" hotkey enable / disable checkbox.</summary>
+    public event Action<bool>?       ToggleOverlaysHotkeyEnabledChanged;
+    /// <summary>Forwarded from the Settings tab's overlay-scale slider so the
+    /// presenter can apply the new scale to the live DPS overlay without a
+    /// restart.</summary>
+    public event Action<double>?     OverlayScaleChanged;
     // ViewReportsRequested is kept in the API surface for signature parity with
     // DpsLiveWindow / DpsOverlayWindow, but the main window short-circuits the right-click
     // "View reports" menu by switching to the Reports tab in-place rather than asking the
@@ -133,6 +144,9 @@ public partial class MainAppWindow : Window
         // new binding; the presenter does the live re-register.
         SettingsTab.SplinterArmHotkeyChanged        += (m, v) => SplinterArmHotkeyChanged?.Invoke(m, v);
         SettingsTab.SplinterArmHotkeyEnabledChanged += en     => SplinterArmHotkeyEnabledChanged?.Invoke(en);
+        SettingsTab.ToggleOverlaysHotkeyChanged        += (m, v) => ToggleOverlaysHotkeyChanged?.Invoke(m, v);
+        SettingsTab.ToggleOverlaysHotkeyEnabledChanged += en     => ToggleOverlaysHotkeyEnabledChanged?.Invoke(en);
+        SettingsTab.OverlayScaleChanged                += s      => OverlayScaleChanged?.Invoke(s);
 
         // The dashboard's "Save snapshot" button forwards a snapshot of the current tick
         // (top heroes / encounter state / power breakdown all cached on the last UpdateDps).

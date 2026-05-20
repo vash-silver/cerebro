@@ -649,6 +649,14 @@ public partial class DpsDisplayPanel : UserControl
     private double _scale = 1.0;
     private MenuItem[]? _scaleMenuItems;
 
+    /// <summary>Apply a new scale factor immediately.  Public entry point for the
+    /// Settings tab's scale slider so dragging it scales the overlay live (rather
+    /// than waiting for an app restart, which was the historical behaviour).  We
+    /// always pass <c>save: false</c> here because the slider's value-change handler
+    /// has already persisted <c>_settings.Scale</c> -- saving again from inside the
+    /// panel would race and could lose a concurrent setting change.</summary>
+    public void SetScale(double scale) => ApplyScale(scale, save: false);
+
     private void ApplyScale(double scale, bool save = true)
     {
         _scale = Math.Clamp(scale, 0.25, 3.0);

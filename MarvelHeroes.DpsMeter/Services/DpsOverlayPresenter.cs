@@ -45,6 +45,17 @@ public sealed class DpsOverlayPresenter : IDisposable
     private MainAppWindow? _mainWindow;
     private DpsOverlaySettingsFile? _sharedSettings;
     private GlobalHotkey? _armSplinterHotkey;
+    private GlobalHotkey? _toggleOverlaysHotkey;
+    /// <summary>Stashed "pre-hide" Show flags.  When the user presses the toggle-all-
+    /// overlays hotkey, we copy the current ShowOverlay / ShowBuffOverlay /
+    /// ShowCooldownOverlay values into here, then zero all three.  The next press
+    /// restores from this stash, so a "1 of 3 was enabled before I hid" preference
+    /// round-trips faithfully.  Null when no hotkey-hide is currently active.
+    /// Runtime-only -- not persisted; if the user closes Cerebro while hotkey-
+    /// hidden, the next launch reads whatever the persisted flags say (all off,
+    /// because we wrote zero to all three on the hide press) -- which matches
+    /// what the checkboxes were showing at close-time.</summary>
+    private (bool Dps, bool Buff, bool Cooldown)? _preHotkeyShowState;
     // Tracks the current visibility state of the floating overlay (formerly tracked by
     // _inWindowMode; renamed to reflect the new app-first design where the main window is
     // always up and the overlay is optional).
@@ -355,6 +366,19 @@ public sealed class DpsOverlayPresenter : IDisposable
                     _sharedSettings.SplinterArmHotkeyVk);
             }
 
+            // Global "hide all overlays" boss-key hotkey -- toggles a transient
+            // override on top of the persisted Show flags.  Independent of the
+            // splinter hotkey (separate GlobalHotkey instance, separate
+            // RegisterHotKey atom).
+            if (_sharedSettings.ToggleOverlaysHotkeyEnabled)
+            {
+                _toggleOverlaysHotkey = new GlobalHotkey(_mainWindow) { Diagnostic = AppendLog };
+                _toggleOverlaysHotkey.Pressed += ToggleOverlaysHidden;
+                _toggleOverlaysHotkey.TryRegister(
+                    _sharedSettings.ToggleOverlaysHotkeyModifiers,
+                    _sharedSettings.ToggleOverlaysHotkeyVk);
+            }
+
             _decayTimer = new DispatcherTimer(
                 TimeSpan.FromMilliseconds(250),
                 DispatcherPriority.Background,
@@ -415,6 +439,16 @@ public sealed class DpsOverlayPresenter : IDisposable
         // registration and need to drop + re-add the binding for it to take effect.
         w.SplinterArmHotkeyChanged       += OnSplinterArmHotkeyChanged;
         w.SplinterArmHotkeyEnabledChanged += OnSplinterArmHotkeyEnabledChanged;
+        w.ToggleOverlaysHotkeyChanged        += OnToggleOverlaysHotkeyChanged;
+        w.ToggleOverlaysHotkeyEnabledChanged += OnToggleOverlaysHotkeyEnabledChanged;
+        w.OverlayScaleChanged += scale =>
+        {
+            // Apply the new scale live to the floating overlay -- avoids the old
+            // "scale only takes effect on next launch" behaviour.  Marshalling is
+            // handled by the window's Dispatcher.CheckAccess inside SetScale.
+            _overlayWindow?.SetScale(scale);
+            AppendLog($"DpsOverlayPresenter: overlay scale = {scale:0.00}");
+        };
         // The Live tab's right-click "View reports" switches tabs in-place (handled inside
         // MainAppWindow); the presenter doesn't need to do anything here.  No ViewReports
         // subscription means we avoid double-opening a standalone window.
@@ -487,6 +521,11 @@ public sealed class DpsOverlayPresenter : IDisposable
             _buffOverlayWindow.ShowWithoutActivating();
         else
             _buffOverlayWindow.Hide();
+        // Sync the header checkbox visual.  The user-clicked path already has the
+        // checkbox in the new state (we got here because of the toggle event); the
+        // hotkey-driven path needs us to update the visual explicitly.  SetXxxChecked
+        // is suppress-bracketed so it won't re-fire the toggle event.
+        _mainWindow?.SetShowBuffOverlayChecked(visible);
         if (_sharedSettings != null)
         {
             _sharedSettings.ShowBuffOverlay = visible;
@@ -505,6 +544,8 @@ public sealed class DpsOverlayPresenter : IDisposable
             _cooldownOverlayWindow.ShowWithoutActivating();
         else
             _cooldownOverlayWindow.Hide();
+        // Sync the header checkbox visual (see SetBuffOverlayVisible for rationale).
+        _mainWindow?.SetShowCooldownOverlayChecked(visible);
         if (_sharedSettings != null)
         {
             _sharedSettings.ShowCooldownOverlay = visible;
@@ -523,6 +564,8 @@ public sealed class DpsOverlayPresenter : IDisposable
             _decayTimer = null;
             try { _armSplinterHotkey?.Dispose(); } catch { }
             _armSplinterHotkey = null;
+            try { _toggleOverlaysHotkey?.Dispose(); } catch { }
+            _toggleOverlaysHotkey = null;
             // Belt-and-suspenders: flush the current in-memory settings to disk on shutdown.
             // Every individual toggle path (Show overlay, Show buff overlay, splinter
             // timestamp, etc.) already persists synchronously when it fires -- but a settings
@@ -1196,6 +1239,111 @@ public sealed class DpsOverlayPresenter : IDisposable
         {
             _armSplinterHotkey?.Unregister();
             AppendLog("DpsOverlayPresenter: splinter-arm hotkey disabled by user");
+        }
+    }
+
+    // ── Toggle-all-overlays (boss-key) hotkey handlers ──────────────────────────────────
+
+    /// <summary>Live re-register the toggle-overlays global hotkey with a new combo.
+    /// Mirrors <see cref="OnSplinterArmHotkeyChanged"/> -- separate GlobalHotkey instance
+    /// so the two hotkeys don't collide at the OS atom layer.</summary>
+    private void OnToggleOverlaysHotkeyChanged(uint modifiers, uint vk)
+    {
+        if (_sharedSettings?.ToggleOverlaysHotkeyEnabled != true) return;
+        if (_toggleOverlaysHotkey == null)
+        {
+            if (_mainWindow == null) return;
+            _toggleOverlaysHotkey = new GlobalHotkey(_mainWindow) { Diagnostic = AppendLog };
+            _toggleOverlaysHotkey.Pressed += ToggleOverlaysHidden;
+        }
+        _toggleOverlaysHotkey.TryRegister(modifiers, vk);
+    }
+
+    /// <summary>Register / unregister the toggle-overlays hotkey when the user flips the
+    /// checkbox.  Mirrors <see cref="OnSplinterArmHotkeyEnabledChanged"/>.</summary>
+    private void OnToggleOverlaysHotkeyEnabledChanged(bool enabled)
+    {
+        if (enabled)
+        {
+            if (_mainWindow == null || _sharedSettings == null) return;
+            if (_toggleOverlaysHotkey == null)
+            {
+                _toggleOverlaysHotkey = new GlobalHotkey(_mainWindow) { Diagnostic = AppendLog };
+                _toggleOverlaysHotkey.Pressed += ToggleOverlaysHidden;
+            }
+            _toggleOverlaysHotkey.TryRegister(
+                _sharedSettings.ToggleOverlaysHotkeyModifiers,
+                _sharedSettings.ToggleOverlaysHotkeyVk);
+        }
+        else
+        {
+            _toggleOverlaysHotkey?.Unregister();
+            AppendLog("DpsOverlayPresenter: toggle-overlays hotkey disabled by user");
+        }
+    }
+
+    /// <summary>Boss-key entry point: toggle every overlay's visibility AND flip the
+    /// persisted Show flags so the header checkboxes faithfully reflect what's on
+    /// screen.  Marshals to the UI dispatcher because GlobalHotkey fires on whichever
+    /// thread the message pump delivers WM_HOTKEY (typically the UI thread already,
+    /// but defensive).
+    /// <para>
+    /// Two-state machine:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item><b>Hide press</b> -- at least one overlay is currently enabled.  Snapshot
+    ///         the three Show flags into <see cref="_preHotkeyShowState"/>, then set
+    ///         all three to false.  All windows hide, all header checkboxes uncheck,
+    ///         settings save.</item>
+    ///   <item><b>Restore press</b> -- nothing is currently enabled.  If we have a
+    ///         stash, restore exactly those flags (so "only buff overlay was on"
+    ///         round-trips faithfully).  If no stash (e.g. user manually unchecked
+    ///         everything then pressed the hotkey), default to enabling all three.</item>
+    /// </list>
+    /// </summary>
+    private void ToggleOverlaysHidden()
+    {
+        if (_uiDispatcher == null) { ApplyOverlayHotkeyState(); return; }
+        if (_uiDispatcher.CheckAccess()) ApplyOverlayHotkeyState();
+        else _uiDispatcher.BeginInvoke(new Action(ApplyOverlayHotkeyState));
+    }
+
+    private void ApplyOverlayHotkeyState()
+    {
+        if (_sharedSettings == null) return;
+
+        bool anyOn = _sharedSettings.ShowOverlay
+                  || _sharedSettings.ShowBuffOverlay
+                  || _sharedSettings.ShowCooldownOverlay;
+
+        if (anyOn)
+        {
+            // Hide: stash and zero.
+            _preHotkeyShowState = (_sharedSettings.ShowOverlay,
+                                   _sharedSettings.ShowBuffOverlay,
+                                   _sharedSettings.ShowCooldownOverlay);
+            AppendLog($"DpsOverlayPresenter: boss-key HIDE (stashed: dps={_preHotkeyShowState.Value.Dps} buff={_preHotkeyShowState.Value.Buff} cd={_preHotkeyShowState.Value.Cooldown})");
+
+            // Route through the same SetXxxVisible helpers used by the header
+            // checkboxes -- they update the window visibility, persist the flag,
+            // AND keep the main-window checkbox visual in sync (the helpers call
+            // _mainWindow?.SetXxxChecked).  Single source of truth.
+            SetOverlayVisible(false);
+            SetBuffOverlayVisible(false);
+            SetCooldownOverlayVisible(false);
+        }
+        else
+        {
+            // Restore: use the stash if we have one, otherwise default to "all on".
+            var stash = _preHotkeyShowState ?? (true, true, true);
+            AppendLog($"DpsOverlayPresenter: boss-key RESTORE (dps={stash.Dps} buff={stash.Buff} cd={stash.Cooldown})");
+            _preHotkeyShowState = null;
+
+            // Order: DPS first, then buff, then cooldown -- matches the header
+            // checkbox order so the visible "flip on" sequence reads top-to-bottom.
+            SetOverlayVisible(stash.Dps);
+            SetBuffOverlayVisible(stash.Buff);
+            SetCooldownOverlayVisible(stash.Cooldown);
         }
     }
 

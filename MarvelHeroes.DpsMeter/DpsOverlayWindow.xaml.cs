@@ -161,6 +161,20 @@ public partial class DpsOverlayWindow : Window
         Panel.UpdateSplinterStatus(cooldownActive, remaining, dropCount, totalSplinters, justDropped);
     }
 
+    /// <summary>Apply a new overlay scale (0.25 .. 3.0) immediately.  Called by the
+    /// presenter when the Settings tab's scale slider value changes so the user sees
+    /// the resize live instead of having to restart.  Marshals to the UI thread if
+    /// called off it.</summary>
+    public void SetScale(double scale)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(() => Panel.SetScale(scale)));
+            return;
+        }
+        Panel.SetScale(scale);
+    }
+
     /// <summary>Show or hide the DPS summary block (title + big number + max-hit + status
     /// text) on the floating overlay's panel.  Called by the presenter when the user
     /// toggles "Show DPS summary in overlay" in Settings.  No-op-cheap; marshals to UI

@@ -48,6 +48,7 @@ public partial class SettingsPanel : UserControl
     private bool _suppressSplinterVolume;
     private bool _suppressSplinterDropVolume;
     private bool _suppressSplinterArmHotkey;
+    private bool _suppressToggleOverlaysHotkey;
     private bool _suppressLogging;
     private bool _suppressVerboseLogging;
     private bool _suppressScale;
@@ -78,9 +79,20 @@ public partial class SettingsPanel : UserControl
     /// Settings UI.  Args are the new (modifiers, vk) pair.  Presenter listens to
     /// re-register the system hotkey with the new combo.</summary>
     public event Action<uint, uint>? SplinterArmHotkeyChanged;
+    /// <summary>Fired when the user rebinds the "toggle all overlays" hotkey.
+    /// Presenter listens to re-register the system hotkey with the new combo.</summary>
+    public event Action<uint, uint>? ToggleOverlaysHotkeyChanged;
     /// <summary>Fires when the user toggles the hotkey on or off.  Presenter listens to
     /// register / unregister the system hotkey accordingly.</summary>
     public event Action<bool>? SplinterArmHotkeyEnabledChanged;
+    /// <summary>Fired when the user toggles the "toggle all overlays" hotkey checkbox.
+    /// Presenter listens to register / unregister the system hotkey accordingly.</summary>
+    public event Action<bool>? ToggleOverlaysHotkeyEnabledChanged;
+    /// <summary>Fires while the user is dragging the overlay-scale slider so the
+    /// presenter can apply the new scale to the live DpsOverlayWindow without
+    /// waiting for a restart.  Argument is the clamped scale factor (0.25 .. 2.0,
+    /// since that's the slider's range).</summary>
+    public event Action<double>? OverlayScaleChanged;
 
     public SettingsPanel()
     {
@@ -114,6 +126,18 @@ public partial class SettingsPanel : UserControl
         UpdateCheckStatus.Text = result.Available
             ? $"v{result.DisplayVersion} is available -- see the banner up top, or click 'Download' to open the release page."
             : $"You're on the latest version (v{Services.CerebroVersion.DisplayVersion}).";
+    }
+
+    /// <summary>Pop the bundled <c>CHANGELOG.md</c> in a scrollable modal window.
+    /// Single-purpose -- the window's code-behind reads the resource and renders;
+    /// nothing for this handler to do beyond construct + show.</summary>
+    private void ViewChangelogButton_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Windows.ChangelogWindow
+        {
+            Owner = Window.GetWindow(this),
+        };
+        dlg.ShowDialog();
     }
 
     /// <summary>Wire the panel to the shared settings object and sync every control to the
@@ -161,6 +185,11 @@ public partial class SettingsPanel : UserControl
         SplinterArmHotkeyText.Text = GlobalHotkey.Format(
             settings.SplinterArmHotkeyModifiers,
             settings.SplinterArmHotkeyVk);
+
+        SetChecked(ToggleOverlaysHotkeyCheckbox, settings.ToggleOverlaysHotkeyEnabled, ref _suppressToggleOverlaysHotkey);
+        ToggleOverlaysHotkeyText.Text = GlobalHotkey.Format(
+            settings.ToggleOverlaysHotkeyModifiers,
+            settings.ToggleOverlaysHotkeyVk);
 
         // Diagnostics
         SetChecked(LoggingCheckbox,             settings.LoggingEnabled,             ref _suppressLogging);
@@ -344,6 +373,44 @@ public partial class SettingsPanel : UserControl
         }
     }
 
+    // ── Toggle-all-overlays global hotkey (boss-key) ─────────────────────────────────
+
+    private void ToggleOverlaysHotkeyCheckbox_OnChecked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressToggleOverlaysHotkey || _settings == null) return;
+        _settings.ToggleOverlaysHotkeyEnabled = true; Save();
+        ToggleOverlaysHotkeyEnabledChanged?.Invoke(true);
+    }
+    private void ToggleOverlaysHotkeyCheckbox_OnUnchecked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressToggleOverlaysHotkey || _settings == null) return;
+        _settings.ToggleOverlaysHotkeyEnabled = false; Save();
+        ToggleOverlaysHotkeyEnabledChanged?.Invoke(false);
+    }
+
+    /// <summary>Captures the user's next key combo as the new toggle-overlays
+    /// hotkey.  Same modal-dialog pattern as the splinter rebind.</summary>
+    private void RebindToggleOverlaysHotkeyButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_settings == null) return;
+        var dlg = new HotkeyCaptureWindow
+        {
+            Owner = Window.GetWindow(this),
+            InitialDisplay = GlobalHotkey.Format(
+                _settings.ToggleOverlaysHotkeyModifiers,
+                _settings.ToggleOverlaysHotkeyVk),
+        };
+        var result = dlg.ShowDialog();
+        if (result == true && dlg.CapturedModifiers != 0 && dlg.CapturedVk != 0)
+        {
+            _settings.ToggleOverlaysHotkeyModifiers = dlg.CapturedModifiers;
+            _settings.ToggleOverlaysHotkeyVk        = dlg.CapturedVk;
+            Save();
+            ToggleOverlaysHotkeyText.Text = GlobalHotkey.Format(dlg.CapturedModifiers, dlg.CapturedVk);
+            ToggleOverlaysHotkeyChanged?.Invoke(dlg.CapturedModifiers, dlg.CapturedVk);
+        }
+    }
+
     private void UpdateSplinterVolumeReadout(double value)
     {
         // Guard for the same pre-construction null trap as the scale-slider readout --
@@ -360,12 +427,13 @@ public partial class SettingsPanel : UserControl
     {
         UpdateScaleReadout(e.NewValue);
         if (_suppressScale || _settings == null) return;
-        // Persist only -- the live DpsDisplayPanel applies its own Scale based on what it
-        // read at Initialize time.  A future commit could wire a scale-changed event to
-        // re-apply live; for now scale changes show up on next launch (acceptable since
-        // settings is a "set and forget" surface).
-        _settings.Scale = Math.Round(e.NewValue, 2);
+        double scale = Math.Round(Math.Clamp(e.NewValue, 0.25, 2.0), 2);
+        _settings.Scale = scale;
         Save();
+        // Apply the new scale live to the floating overlay -- the presenter
+        // forwards this to DpsOverlayWindow.SetScale(), which re-runs the
+        // ScaleTransform on the panel's ContentBorder.  No restart needed.
+        OverlayScaleChanged?.Invoke(scale);
     }
 
     private void UpdateScaleReadout(double value)

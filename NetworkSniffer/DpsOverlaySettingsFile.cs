@@ -184,6 +184,27 @@ public sealed class DpsOverlaySettingsFile
     /// unbound by Marvel Heroes' default keymap and by Windows itself.</summary>
     public uint SplinterArmHotkeyVk { get; set; } = 0x45;  // VK_E
 
+    /// <summary>When <c>true</c>, a global system-wide hotkey toggles the visibility of
+    /// ALL Cerebro overlay windows (DPS, Buff, Cooldown) at once.  Functions as a
+    /// "boss key" -- one keypress hides everything, second press restores exactly what
+    /// was showing before.  IMPORTANT: this toggle does NOT mutate
+    /// <see cref="ShowOverlay"/> / <see cref="ShowBuffOverlay"/> /
+    /// <see cref="ShowCooldownOverlay"/>; it applies a transient override on top so the
+    /// user's persisted layout choices come back unchanged on the next press.
+    /// Default <c>true</c> with a Ctrl+Shift+H binding.</summary>
+    public bool ToggleOverlaysHotkeyEnabled { get; set; } = true;
+
+    /// <summary>Win32 hotkey modifier mask for the toggle-all-overlays hotkey.  Stored
+    /// as the raw bitmask so registration is a direct pass-through to
+    /// <c>RegisterHotKey</c>.  Default = MOD_CONTROL | MOD_SHIFT (6) so the stock
+    /// binding is Ctrl+Shift+&lt;key&gt;.</summary>
+    public uint ToggleOverlaysHotkeyModifiers { get; set; } = 0x02 | 0x04;  // MOD_CONTROL | MOD_SHIFT
+
+    /// <summary>Win32 virtual-key code for the toggle-all-overlays hotkey.  Default =
+    /// 'H' (0x48) for "Hide" -- combined with the modifier default gives Ctrl+Shift+H,
+    /// which is unbound by Marvel Heroes' default keymap and by Windows itself.</summary>
+    public uint ToggleOverlaysHotkeyVk { get; set; } = 0x48;  // VK_H
+
     /// <summary>Last update-banner version the user dismissed via the "✕" close button.
     /// The in-app updater suppresses the banner whenever this matches the latest GitHub
     /// release tag -- so a one-click dismiss sticks across launches until a NEWER release
